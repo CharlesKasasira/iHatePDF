@@ -8,7 +8,6 @@ import {
 import "dotenv/config";
 import { PrismaClient, SignatureRequestStatus, TaskStatus } from "@prisma/client";
 import { Job, Worker } from "bullmq";
-import IORedis from "ioredis";
 import JSZip from "jszip";
 import { PDFDocument } from "pdf-lib";
 import { randomUUID } from "node:crypto";
@@ -35,9 +34,20 @@ const EnvSchema = z.object({
 
 const env = EnvSchema.parse(process.env);
 const queueName = "pdf-tasks";
+const STARTUP_RETRY_ATTEMPTS = 15;
+const STARTUP_RETRY_DELAY_MS = 1500;
 
 const prisma = new PrismaClient();
-const redisConnection = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
+const redisConnection = (() => {
+  const url = new URL(env.REDIS_URL);
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    username: url.username || undefined,
+    password: url.password || undefined,
+    maxRetriesPerRequest: null as null
+  };
+})();
 const s3 = new S3Client({
   endpoint: env.SEAWEED_S3_ENDPOINT,
   region: env.SEAWEED_S3_REGION,
@@ -133,6 +143,37 @@ async function ensureBucket(): Promise<void> {
       })
     );
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retry<T>(
+  label: string,
+  operation: () => Promise<T>,
+  attempts: number,
+  delayMs: number
+): Promise<T> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.error(`[startup:${label}] attempt ${attempt}/${attempts} failed: ${errorMessage(error)}`);
+      if (attempt < attempts) {
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 async function uploadObject(
@@ -354,8 +395,8 @@ async function processJob(job: Job): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  await prisma.$connect();
-  await ensureBucket();
+  await retry("prisma-connect", () => prisma.$connect(), STARTUP_RETRY_ATTEMPTS, STARTUP_RETRY_DELAY_MS);
+  await retry("ensure-bucket", () => ensureBucket(), STARTUP_RETRY_ATTEMPTS, STARTUP_RETRY_DELAY_MS);
 
   const worker = new Worker(
     queueName,
@@ -390,7 +431,6 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     await worker.close();
-    await redisConnection.quit();
     await prisma.$disconnect();
     process.exit(0);
   };
