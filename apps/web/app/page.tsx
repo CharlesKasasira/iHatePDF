@@ -1,545 +1,143 @@
-"use client";
+import Link from "next/link";
+import type { Route } from "next";
+import { SiteHeader } from "./components/site-header";
 
-import { useMemo, useState } from "react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api";
-
-type TaskStatusResponse = {
-  id: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  type: string;
-  errorMessage: string | null;
-  outputDownloadUrl: string | null;
-  createdAt: string;
-  updatedAt: string;
+type ToolCard = {
+  title: string;
+  description: string;
+  href: Route;
+  icon: string;
+  iconClass: string;
+  highlight?: boolean;
+  badge?: string;
 };
 
-type UploadedFileMeta = {
-  fileId: string;
-  fileName: string;
-};
+const FILTERS = [
+  "All",
+  "Workflows",
+  "Organize PDF",
+  "Optimize PDF",
+  "Convert PDF",
+  "Edit PDF",
+  "PDF Security"
+];
 
-async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || `Request failed (${response.status})`);
+const TOOLS: ToolCard[] = [
+  {
+    title: "Merge PDF",
+    description: "Combine PDFs in the order you want with the easiest PDF merger available.",
+    href: "/merge-pdf",
+    icon: "↗↘",
+    iconClass: "icon-orange",
+    highlight: true
+  },
+  {
+    title: "Split PDF",
+    description: "Separate one page or a whole set for easy conversion into independent PDF files.",
+    href: "/split-pdf",
+    icon: "⇱⇲",
+    iconClass: "icon-orange"
+  },
+  {
+    title: "Compress PDF",
+    description: "Reduce file size while optimizing for maximal PDF quality.",
+    href: "/",
+    icon: "⤢",
+    iconClass: "icon-green"
+  },
+  {
+    title: "PDF to Word",
+    description: "Convert PDF files into easy to edit DOC and DOCX documents.",
+    href: "/",
+    icon: "W",
+    iconClass: "icon-blue"
+  },
+  {
+    title: "PDF to PowerPoint",
+    description: "Turn PDF files into easy to edit PPT and PPTX slideshows.",
+    href: "/",
+    icon: "P",
+    iconClass: "icon-orange"
+  },
+  {
+    title: "PDF to Excel",
+    description: "Pull data straight from PDFs into Excel spreadsheets in seconds.",
+    href: "/",
+    icon: "X",
+    iconClass: "icon-green"
+  },
+  {
+    title: "Word to PDF",
+    description: "Make DOC and DOCX files easy to read by converting them to PDF.",
+    href: "/",
+    icon: "W",
+    iconClass: "icon-blue"
+  },
+  {
+    title: "PowerPoint to PDF",
+    description: "Make PPT and PPTX slideshows easy to view by converting them to PDF.",
+    href: "/",
+    icon: "P",
+    iconClass: "icon-orange"
+  },
+  {
+    title: "Excel to PDF",
+    description: "Make EXCEL spreadsheets easy to read by converting them to PDF.",
+    href: "/",
+    icon: "X",
+    iconClass: "icon-green"
+  },
+  {
+    title: "Edit PDF",
+    description: "Add text, images, shapes or freehand annotations to a PDF document.",
+    href: "/",
+    icon: "✎",
+    iconClass: "icon-purple",
+    badge: "New!"
   }
-
-  return response.json() as Promise<T>;
-}
-
-async function uploadPdf(file: File): Promise<UploadedFileMeta> {
-  const dataUrl = await fileToDataUrl(file);
-  const dataBase64 = dataUrl.split(",")[1];
-  if (!dataBase64) {
-    throw new Error("Failed to encode PDF file.");
-  }
-
-  const response = await fetch(`${API_BASE_URL}/uploads`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      fileName: file.name,
-      mimeType: "application/pdf",
-      dataBase64
-    })
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Upload failed (${response.status})`);
-  }
-
-  const uploaded = (await response.json()) as { fileId: string; fileName: string };
-  return { fileId: uploaded.fileId, fileName: uploaded.fileName };
-}
-
-async function pollTask(taskId: string): Promise<TaskStatusResponse> {
-  let last: TaskStatusResponse | null = null;
-
-  for (let index = 0; index < 120; index += 1) {
-    const task = await jsonFetch<TaskStatusResponse>(`/tasks/${taskId}`);
-    last = task;
-
-    if (task.status === "completed" || task.status === "failed") {
-      return task;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-
-  if (!last) {
-    throw new Error("Task polling timed out before first response.");
-  }
-
-  return last;
-}
-
-function moveItem<T>(items: T[], from: number, to: number): T[] {
-  const next = [...items];
-  const [removed] = next.splice(from, 1);
-  next.splice(to, 0, removed);
-  return next;
-}
+];
 
 export default function HomePage(): React.JSX.Element {
-  const [mergeFiles, setMergeFiles] = useState<File[]>([]);
-  const [mergeName, setMergeName] = useState("merged.pdf");
-  const [mergeState, setMergeState] = useState<string>("");
-  const [mergeDownload, setMergeDownload] = useState<string>("");
-  const [mergeBusy, setMergeBusy] = useState(false);
-
-  const [splitFile, setSplitFile] = useState<File | null>(null);
-  const [splitRanges, setSplitRanges] = useState("1");
-  const [splitPrefix, setSplitPrefix] = useState("split");
-  const [splitState, setSplitState] = useState<string>("");
-  const [splitDownload, setSplitDownload] = useState<string>("");
-  const [splitBusy, setSplitBusy] = useState(false);
-
-  const [signFile, setSignFile] = useState<File | null>(null);
-  const [signatureImage, setSignatureImage] = useState<string>("");
-  const [signPage, setSignPage] = useState(1);
-  const [signX, setSignX] = useState(50);
-  const [signY, setSignY] = useState(50);
-  const [signWidth, setSignWidth] = useState(180);
-  const [signHeight, setSignHeight] = useState(80);
-  const [signOutputName, setSignOutputName] = useState("signed.pdf");
-  const [signState, setSignState] = useState<string>("");
-  const [signDownload, setSignDownload] = useState<string>("");
-  const [signBusy, setSignBusy] = useState(false);
-
-  const [requestFile, setRequestFile] = useState<File | null>(null);
-  const [requesterEmail, setRequesterEmail] = useState("you@example.com");
-  const [signerEmail, setSignerEmail] = useState("signer@example.com");
-  const [requestMessage, setRequestMessage] = useState("Please sign this document.");
-  const [requestState, setRequestState] = useState<string>("");
-  const [requestLink, setRequestLink] = useState<string>("");
-  const [requestBusy, setRequestBusy] = useState(false);
-
-  const canSubmitMerge = useMemo(() => mergeFiles.length >= 2 && mergeName.trim().length > 0, [mergeFiles, mergeName]);
-
-  const onMerge = async (): Promise<void> => {
-    try {
-      setMergeBusy(true);
-      setMergeState("Uploading files...");
-      setMergeDownload("");
-
-      const uploaded = await Promise.all(mergeFiles.map((file) => uploadPdf(file)));
-
-      setMergeState("Queueing merge...");
-      const { taskId } = await jsonFetch<{ taskId: string }>("/tasks/merge", {
-        method: "POST",
-        body: JSON.stringify({
-          fileIds: uploaded.map((item) => item.fileId),
-          outputName: mergeName
-        })
-      });
-
-      setMergeState(`Processing task ${taskId}...`);
-      const done = await pollTask(taskId);
-
-      if (done.status === "completed" && done.outputDownloadUrl) {
-        setMergeState("Merge completed.");
-        setMergeDownload(done.outputDownloadUrl);
-      } else {
-        setMergeState(`Merge failed: ${done.errorMessage ?? "unknown error"}`);
-      }
-    } catch (error) {
-      setMergeState(`Merge failed: ${(error as Error).message}`);
-    } finally {
-      setMergeBusy(false);
-    }
-  };
-
-  const onSplit = async (): Promise<void> => {
-    if (!splitFile) {
-      setSplitState("Choose a PDF first.");
-      return;
-    }
-
-    try {
-      setSplitBusy(true);
-      setSplitDownload("");
-      setSplitState("Uploading file...");
-      const uploaded = await uploadPdf(splitFile);
-
-      const pageRanges = splitRanges
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean);
-
-      setSplitState("Queueing split...");
-      const { taskId } = await jsonFetch<{ taskId: string }>("/tasks/split", {
-        method: "POST",
-        body: JSON.stringify({
-          fileId: uploaded.fileId,
-          pageRanges,
-          outputPrefix: splitPrefix || "split"
-        })
-      });
-
-      setSplitState(`Processing task ${taskId}...`);
-      const done = await pollTask(taskId);
-
-      if (done.status === "completed" && done.outputDownloadUrl) {
-        setSplitState("Split completed.");
-        setSplitDownload(done.outputDownloadUrl);
-      } else {
-        setSplitState(`Split failed: ${done.errorMessage ?? "unknown error"}`);
-      }
-    } catch (error) {
-      setSplitState(`Split failed: ${(error as Error).message}`);
-    } finally {
-      setSplitBusy(false);
-    }
-  };
-
-  const onSign = async (): Promise<void> => {
-    if (!signFile) {
-      setSignState("Choose a PDF first.");
-      return;
-    }
-
-    if (!signatureImage) {
-      setSignState("Upload a signature image (PNG/JPG).");
-      return;
-    }
-
-    try {
-      setSignBusy(true);
-      setSignDownload("");
-      setSignState("Uploading file...");
-      const uploaded = await uploadPdf(signFile);
-
-      setSignState("Queueing sign operation...");
-      const { taskId } = await jsonFetch<{ taskId: string }>("/tasks/sign", {
-        method: "POST",
-        body: JSON.stringify({
-          fileId: uploaded.fileId,
-          signatureDataUrl: signatureImage,
-          page: signPage,
-          x: signX,
-          y: signY,
-          width: signWidth,
-          height: signHeight,
-          outputName: signOutputName
-        })
-      });
-
-      setSignState(`Processing task ${taskId}...`);
-      const done = await pollTask(taskId);
-
-      if (done.status === "completed" && done.outputDownloadUrl) {
-        setSignState("Sign completed.");
-        setSignDownload(done.outputDownloadUrl);
-      } else {
-        setSignState(`Sign failed: ${done.errorMessage ?? "unknown error"}`);
-      }
-    } catch (error) {
-      setSignState(`Sign failed: ${(error as Error).message}`);
-    } finally {
-      setSignBusy(false);
-    }
-  };
-
-  const onCreateRequest = async (): Promise<void> => {
-    if (!requestFile) {
-      setRequestState("Choose a PDF first.");
-      return;
-    }
-
-    try {
-      setRequestBusy(true);
-      setRequestState("Uploading file...");
-      setRequestLink("");
-
-      const uploaded = await uploadPdf(requestFile);
-
-      const request = await jsonFetch<{ id: string; token: string }>("/signature-requests", {
-        method: "POST",
-        body: JSON.stringify({
-          fileId: uploaded.fileId,
-          requesterEmail,
-          signerEmail,
-          message: requestMessage
-        })
-      });
-
-      const signingUrl = `${window.location.origin}/sign-request/${request.token}`;
-      setRequestLink(signingUrl);
-      setRequestState("Signature request created and email sent.");
-    } catch (error) {
-      setRequestState(`Failed to create request: ${(error as Error).message}`);
-    } finally {
-      setRequestBusy(false);
-    }
-  };
-
   return (
-    <main>
-      <h1>iHatePDF</h1>
-      <p className="small">Self-hosted open-source PDF merge, split, and sign.</p>
+    <div className="site-shell">
+      <SiteHeader />
 
-      <div className="grid two">
-        <section className="panel">
-          <h2>Merge PDF Files</h2>
-          <p className="small">Upload multiple PDFs and combine them in your chosen order.</p>
-
-          <label htmlFor="merge-files">PDF files</label>
-          <input
-            id="merge-files"
-            type="file"
-            accept="application/pdf"
-            multiple
-            onChange={(event) => setMergeFiles(Array.from(event.target.files ?? []))}
-          />
-
-          <div className="file-list">
-            {mergeFiles.map((file, index) => (
-              <div className="file-item" key={`${file.name}-${index}`}>
-                <span>{`${index + 1}. ${file.name}`}</span>
-                <div className="actions">
-                  <button
-                    type="button"
-                    onClick={() => setMergeFiles((prev) => moveItem(prev, index, index - 1))}
-                    disabled={index === 0 || mergeBusy}
-                  >
-                    Up
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMergeFiles((prev) => moveItem(prev, index, index + 1))}
-                    disabled={index === mergeFiles.length - 1 || mergeBusy}
-                  >
-                    Down
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <label htmlFor="merge-name">Output filename</label>
-          <input
-            id="merge-name"
-            value={mergeName}
-            onChange={(event) => setMergeName(event.target.value)}
-            placeholder="merged.pdf"
-          />
-
-          <button type="button" disabled={!canSubmitMerge || mergeBusy} onClick={onMerge}>
-            {mergeBusy ? "Merging..." : "Merge PDFs"}
-          </button>
-          <p className={mergeState.includes("failed") ? "error" : "small"}>{mergeState}</p>
-          {mergeDownload ? (
-            <a className="download" href={mergeDownload} target="_blank" rel="noreferrer">
-              Download merged PDF
-            </a>
-          ) : null}
+      <main className="tools-home">
+        <section className="hero-block">
+          <h1>Every tool you need to work with PDFs in one place</h1>
+          <p>
+            Every tool you need to use PDFs, at your fingertips. Merge, split, compress, convert,
+            rotate, unlock and watermark PDFs with just a few clicks.
+          </p>
         </section>
 
-        <section className="panel">
-          <h2>Split PDF File</h2>
-          <p className="small">Extract one or more page ranges. Multiple ranges return a ZIP.</p>
-
-          <label htmlFor="split-file">PDF file</label>
-          <input
-            id="split-file"
-            type="file"
-            accept="application/pdf"
-            onChange={(event) => setSplitFile(event.target.files?.[0] ?? null)}
-          />
-
-          <label htmlFor="split-ranges">Page ranges (comma-separated)</label>
-          <input
-            id="split-ranges"
-            value={splitRanges}
-            onChange={(event) => setSplitRanges(event.target.value)}
-            placeholder="1,2-4"
-          />
-
-          <label htmlFor="split-prefix">Output prefix</label>
-          <input
-            id="split-prefix"
-            value={splitPrefix}
-            onChange={(event) => setSplitPrefix(event.target.value)}
-            placeholder="split"
-          />
-
-          <button type="button" disabled={splitBusy} onClick={onSplit}>
-            {splitBusy ? "Splitting..." : "Split PDF"}
-          </button>
-          <p className={splitState.includes("failed") ? "error" : "small"}>{splitState}</p>
-          {splitDownload ? (
-            <a className="download" href={splitDownload} target="_blank" rel="noreferrer">
-              Download split output
-            </a>
-          ) : null}
+        <section className="filter-row" aria-label="Tool categories">
+          {FILTERS.map((filter, index) => (
+            <button
+              key={filter}
+              type="button"
+              className={`filter-chip ${index === 0 ? "is-selected" : ""}`}
+            >
+              {filter}
+            </button>
+          ))}
         </section>
 
-        <section className="panel">
-          <h2>Sign PDF</h2>
-          <p className="small">Apply a signature image to the selected page and coordinates.</p>
-
-          <label htmlFor="sign-file">PDF file</label>
-          <input
-            id="sign-file"
-            type="file"
-            accept="application/pdf"
-            onChange={(event) => setSignFile(event.target.files?.[0] ?? null)}
-          />
-
-          <label htmlFor="signature-image">Signature image (PNG or JPG)</label>
-          <input
-            id="signature-image"
-            type="file"
-            accept="image/png,image/jpeg"
-            onChange={async (event) => {
-              const file = event.target.files?.[0];
-              if (!file) {
-                return;
-              }
-              const dataUrl = await fileToDataUrl(file);
-              setSignatureImage(dataUrl);
-            }}
-          />
-
-          <div className="grid two">
-            <div>
-              <label htmlFor="sign-page">Page</label>
-              <input
-                id="sign-page"
-                type="number"
-                min={1}
-                value={signPage}
-                onChange={(event) => setSignPage(Number(event.target.value))}
-              />
-            </div>
-            <div>
-              <label htmlFor="sign-x">X</label>
-              <input
-                id="sign-x"
-                type="number"
-                min={0}
-                value={signX}
-                onChange={(event) => setSignX(Number(event.target.value))}
-              />
-            </div>
-            <div>
-              <label htmlFor="sign-y">Y</label>
-              <input
-                id="sign-y"
-                type="number"
-                min={0}
-                value={signY}
-                onChange={(event) => setSignY(Number(event.target.value))}
-              />
-            </div>
-            <div>
-              <label htmlFor="sign-width">Width</label>
-              <input
-                id="sign-width"
-                type="number"
-                min={1}
-                value={signWidth}
-                onChange={(event) => setSignWidth(Number(event.target.value))}
-              />
-            </div>
-            <div>
-              <label htmlFor="sign-height">Height</label>
-              <input
-                id="sign-height"
-                type="number"
-                min={1}
-                value={signHeight}
-                onChange={(event) => setSignHeight(Number(event.target.value))}
-              />
-            </div>
-          </div>
-
-          <label htmlFor="sign-output">Output filename</label>
-          <input
-            id="sign-output"
-            value={signOutputName}
-            onChange={(event) => setSignOutputName(event.target.value)}
-            placeholder="signed.pdf"
-          />
-
-          <button type="button" disabled={signBusy} onClick={onSign}>
-            {signBusy ? "Signing..." : "Sign PDF"}
-          </button>
-          <p className={signState.includes("failed") ? "error" : "small"}>{signState}</p>
-          {signDownload ? (
-            <a className="download" href={signDownload} target="_blank" rel="noreferrer">
-              Download signed PDF
-            </a>
-          ) : null}
+        <section className="tool-grid" aria-label="PDF tools">
+          {TOOLS.map((tool) => (
+            <Link
+              href={tool.href}
+              key={tool.title}
+              className={`tool-card ${tool.highlight ? "is-highlighted" : ""}`}
+            >
+              <div className={`tool-icon ${tool.iconClass}`}>{tool.icon}</div>
+              {tool.badge ? <span className="tool-badge">{tool.badge}</span> : null}
+              <h2>{tool.title}</h2>
+              <p>{tool.description}</p>
+            </Link>
+          ))}
         </section>
-
-        <section className="panel">
-          <h2>Request Signature</h2>
-          <p className="small">Send secure link to signer. They sign in browser.</p>
-
-          <label htmlFor="request-file">PDF file</label>
-          <input
-            id="request-file"
-            type="file"
-            accept="application/pdf"
-            onChange={(event) => setRequestFile(event.target.files?.[0] ?? null)}
-          />
-
-          <label htmlFor="requester-email">Requester email</label>
-          <input
-            id="requester-email"
-            type="email"
-            value={requesterEmail}
-            onChange={(event) => setRequesterEmail(event.target.value)}
-          />
-
-          <label htmlFor="signer-email">Signer email</label>
-          <input
-            id="signer-email"
-            type="email"
-            value={signerEmail}
-            onChange={(event) => setSignerEmail(event.target.value)}
-          />
-
-          <label htmlFor="request-message">Message</label>
-          <textarea
-            id="request-message"
-            value={requestMessage}
-            onChange={(event) => setRequestMessage(event.target.value)}
-          />
-
-          <button type="button" disabled={requestBusy} onClick={onCreateRequest}>
-            {requestBusy ? "Creating request..." : "Create Signature Request"}
-          </button>
-          <p className={requestState.includes("Failed") ? "error" : "small"}>{requestState}</p>
-          {requestLink ? (
-            <p className="success">
-              Signing link: <a className="download" href={requestLink}>{requestLink}</a>
-            </p>
-          ) : null}
-        </section>
-      </div>
-    </main>
+      </main>
+    </div>
   );
-}
-
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read file."));
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsDataURL(file);
-  });
 }
