@@ -219,7 +219,7 @@ export default function HomePage(): React.JSX.Element {
     }
 
     if (!signatureImage) {
-      setSignState("Upload a signature image (PNG/JPG). ");
+      setSignState("Upload a signature image (PNG/JPG).");
       return;
     }
 
