@@ -1,0 +1,32 @@
+{
+  "name": "@ihatepdf/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ts-node --esm src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "echo 'No lint configured for worker'",
+    "test": "echo 'No tests configured for worker'",
+    "format": "echo 'No formatting step for worker'"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.701.0",
+    "@ihatepdf/shared": "workspace:*",
+    "@prisma/client": "^5.22.0",
+    "bullmq": "^5.34.10",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.1",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "uuid": "^11.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TaskType {
+  merge
+  split
+  sign
+  signature_request
+}
+
+enum TaskStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum SignatureRequestStatus {
+  pending
+  completed
+  expired
+  cancelled
+}
+
+model FileObject {
+  id         String   @id @default(cuid())
+  objectKey  String   @unique
+  fileName   String
+  mimeType   String
+  sizeBytes  BigInt
+  createdAt  DateTime @default(now())
+
+  tasksAsInput Task[]             @relation("taskInputFile")
+  tasksAsOutput Task[]            @relation("taskOutputFile")
+  signatureRequests SignatureRequest[]
+}
+
+model Task {
+  id            String     @id @default(cuid())
+  type          TaskType
+  status        TaskStatus @default(queued)
+  payload       Json
+  errorMessage  String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  inputFileId   String?
+  outputFileId  String?
+  inputFile     FileObject? @relation("taskInputFile", fields: [inputFileId], references: [id])
+  outputFile    FileObject? @relation("taskOutputFile", fields: [outputFileId], references: [id])
+}
+
+model SignatureRequest {
+  id             String                  @id @default(cuid())
+  token          String                  @unique
+  status         SignatureRequestStatus  @default(pending)
+  requesterEmail String
+  signerEmail    String
+  message        String?
+  payload        Json?
+  expiresAt      DateTime
+  signedAt       DateTime?
+  createdAt      DateTime                @default(now())
+
+  fileId         String
+  signedTaskId   String?
+  file           FileObject              @relation(fields: [fileId], references: [id])
+}

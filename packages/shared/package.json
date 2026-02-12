@@ -1,0 +1,17 @@
+{
+  "name": "@ihatepdf/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo 'No lint configured for shared'",
+    "test": "echo 'No tests configured for shared'",
+    "format": "echo 'No formatting step for shared'"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}

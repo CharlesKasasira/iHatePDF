@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ihatepdf
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8.0-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  seaweedfs-master:
+    image: chrislusf/seaweedfs:3.76
+    command: "master -ip=seaweedfs-master"
+    ports:
+      - "9333:9333"
+
+  seaweedfs-volume:
+    image: chrislusf/seaweedfs:3.76
+    command: "volume -mserver=seaweedfs-master:9333 -ip=seaweedfs-volume -port=8080 -dir=/data"
+    depends_on:
+      - seaweedfs-master
+    volumes:
+      - seaweed_volume:/data
+    ports:
+      - "8080:8080"
+
+  seaweedfs-filer:
+    image: chrislusf/seaweedfs:3.76
+    command: "filer -master=seaweedfs-master:9333"
+    depends_on:
+      - seaweedfs-master
+      - seaweedfs-volume
+    ports:
+      - "8888:8888"
+
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:3.76
+    command: "s3 -filer=seaweedfs-filer:8888 -port=8333"
+    depends_on:
+      - seaweedfs-filer
+    ports:
+      - "8333:8333"
+
+  mailpit:
+    image: axllent/mailpit:v1.21.8
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  postgres_data:
+  seaweed_volume:
