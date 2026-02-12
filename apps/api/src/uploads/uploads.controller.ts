@@ -48,6 +48,10 @@ export class UploadsController {
     @Body() dto: PresignUploadDto
   ): Promise<{ objectKey: string; uploadUrl: string }> {
     const maxBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
+    if (dto.mimeType !== "application/pdf") {
+      throw new BadRequestException("Only PDF files are supported for this endpoint.");
+    }
+
     if (dto.sizeBytes > maxBytes) {
       throw new BadRequestException(`File too large. Max allowed is ${env.MAX_UPLOAD_MB}MB.`);
     }

@@ -181,6 +181,16 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
       errorMessage: message
     }
   });
+
+  await prisma.signatureRequest.updateMany({
+    where: {
+      signedTaskId: taskId,
+      status: SignatureRequestStatus.pending
+    },
+    data: {
+      status: SignatureRequestStatus.cancelled
+    }
+  });
 }
 
 async function markCompleted(taskId: string, outputFileId: string): Promise<void> {
