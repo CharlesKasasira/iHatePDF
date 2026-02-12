@@ -14,8 +14,6 @@
     "prisma:migrate": "prisma migrate dev"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.701.0",
-    "@aws-sdk/s3-request-presigner": "^3.701.0",
     "@ihatepdf/shared": "workspace:*",
     "@nestjs/common": "^10.4.15",
     "@nestjs/config": "^3.3.0",

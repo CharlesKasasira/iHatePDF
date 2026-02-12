@@ -16,7 +16,6 @@ type TaskStatusResponse = {
 
 type UploadedFileMeta = {
   fileId: string;
-  objectKey: string;
   fileName: string;
 };
 
@@ -38,38 +37,31 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function uploadPdf(file: File): Promise<UploadedFileMeta> {
-  const presign = await jsonFetch<{ objectKey: string; uploadUrl: string }>("/uploads/presign", {
-    method: "POST",
-    body: JSON.stringify({
-      fileName: file.name,
-      mimeType: file.type || "application/pdf",
-      sizeBytes: file.size
-    })
-  });
-
-  const uploadResponse = await fetch(presign.uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": file.type || "application/pdf"
-    },
-    body: file
-  });
-
-  if (!uploadResponse.ok) {
-    throw new Error("Failed to upload file content to object storage.");
+  const dataUrl = await fileToDataUrl(file);
+  const dataBase64 = dataUrl.split(",")[1];
+  if (!dataBase64) {
+    throw new Error("Failed to encode PDF file.");
   }
 
-  const complete = await jsonFetch<{ fileId: string; objectKey: string }>("/uploads/complete", {
+  const response = await fetch(`${API_BASE_URL}/uploads`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({
-      objectKey: presign.objectKey,
       fileName: file.name,
-      mimeType: file.type || "application/pdf",
-      sizeBytes: file.size
+      mimeType: "application/pdf",
+      dataBase64
     })
   });
 
-  return { fileId: complete.fileId, objectKey: complete.objectKey, fileName: file.name };
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Upload failed (${response.status})`);
+  }
+
+  const uploaded = (await response.json()) as { fileId: string; fileName: string };
+  return { fileId: uploaded.fileId, fileName: uploaded.fileName };
 }
 
 async function pollTask(taskId: string): Promise<TaskStatusResponse> {

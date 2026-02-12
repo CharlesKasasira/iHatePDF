@@ -12,12 +12,10 @@
     "format": "echo 'No formatting step for worker'"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.701.0",
     "@ihatepdf/shared": "workspace:*",
     "@prisma/client": "^5.22.0",
     "bullmq": "^5.34.10",
     "dotenv": "^16.4.7",
-    "ioredis": "^5.4.1",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "uuid": "^11.0.4",

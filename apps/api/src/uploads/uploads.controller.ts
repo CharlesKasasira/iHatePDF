@@ -1,10 +1,10 @@
 import { BadRequestException, Body, Controller, Post } from "@nestjs/common";
-import { IsInt, IsNotEmpty, IsString, Max, Min } from "class-validator";
+import { IsNotEmpty, IsString } from "class-validator";
 import { env } from "../config/env.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 
-class PresignUploadDto {
+class UploadPdfDto {
   @IsString()
   @IsNotEmpty()
   fileName!: string;
@@ -13,27 +13,9 @@ class PresignUploadDto {
   @IsNotEmpty()
   mimeType!: string;
 
-  @IsInt()
-  @Min(1)
-  sizeBytes!: number;
-}
-
-class CompleteUploadDto {
   @IsString()
   @IsNotEmpty()
-  objectKey!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  fileName!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  mimeType!: string;
-
-  @IsInt()
-  @Min(1)
-  sizeBytes!: number;
+  dataBase64!: string;
 }
 
 @Controller("uploads")
@@ -43,38 +25,43 @@ export class UploadsController {
     private readonly prisma: PrismaService
   ) {}
 
-  @Post("presign")
-  async presignUpload(
-    @Body() dto: PresignUploadDto
-  ): Promise<{ objectKey: string; uploadUrl: string }> {
-    const maxBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
+  @Post()
+  async uploadPdf(@Body() dto: UploadPdfDto): Promise<{ fileId: string; objectKey: string; fileName: string }> {
     if (dto.mimeType !== "application/pdf") {
-      throw new BadRequestException("Only PDF files are supported for this endpoint.");
+      throw new BadRequestException("Only PDF files are supported.");
     }
 
-    if (dto.sizeBytes > maxBytes) {
+    let data: Buffer;
+    try {
+      data = Buffer.from(dto.dataBase64, "base64");
+    } catch {
+      throw new BadRequestException("Invalid base64 payload.");
+    }
+
+    const maxBytes = env.MAX_UPLOAD_MB * 1024 * 1024;
+    if (data.byteLength <= 0) {
+      throw new BadRequestException("Uploaded file content is empty.");
+    }
+
+    if (data.byteLength > maxBytes) {
       throw new BadRequestException(`File too large. Max allowed is ${env.MAX_UPLOAD_MB}MB.`);
     }
 
-    return this.storageService.createPresignedUpload(dto.fileName, dto.mimeType);
-  }
+    const stored = await this.storageService.saveFile(dto.fileName, dto.mimeType, data, "uploads");
 
-  @Post("complete")
-  async completeUpload(
-    @Body() dto: CompleteUploadDto
-  ): Promise<{ fileId: string; objectKey: string }> {
-    const file = await this.prisma.fileObject.create({
+    const dbFile = await this.prisma.fileObject.create({
       data: {
-        objectKey: dto.objectKey,
-        fileName: dto.fileName,
-        mimeType: dto.mimeType,
-        sizeBytes: BigInt(dto.sizeBytes)
+        objectKey: stored.objectKey,
+        fileName: stored.fileName,
+        mimeType: stored.mimeType,
+        sizeBytes: BigInt(stored.sizeBytes)
       }
     });
 
     return {
-      fileId: file.id,
-      objectKey: file.objectKey
+      fileId: dbFile.id,
+      objectKey: dbFile.objectKey,
+      fileName: dbFile.fileName
     };
   }
 }
