@@ -1,5 +1,7 @@
 import {
+  CreateBucketCommand,
   GetObjectCommand,
+  HeadBucketCommand,
   PutObjectCommand,
   S3Client
 } from "@aws-sdk/client-s3";
@@ -115,6 +117,22 @@ async function downloadObject(objectKey: string): Promise<Buffer> {
   }
 
   return toBuffer(response.Body as Readable);
+}
+
+async function ensureBucket(): Promise<void> {
+  try {
+    await s3.send(
+      new HeadBucketCommand({
+        Bucket: env.SEAWEED_S3_BUCKET
+      })
+    );
+  } catch {
+    await s3.send(
+      new CreateBucketCommand({
+        Bucket: env.SEAWEED_S3_BUCKET
+      })
+    );
+  }
 }
 
 async function uploadObject(
@@ -327,6 +345,7 @@ async function processJob(job: Job): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await prisma.$connect();
+  await ensureBucket();
 
   const worker = new Worker(
     queueName,
