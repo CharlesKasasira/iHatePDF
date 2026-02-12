@@ -170,7 +170,7 @@ export class TasksService {
     }
 
     const outputDownloadUrl = task.outputFile
-      ? await this.storageService.createPresignedDownload(task.outputFile.objectKey)
+      ? this.storageService.createDownloadUrl(task.outputFile.id)
       : null;
 
     return {

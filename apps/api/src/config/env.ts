@@ -2,14 +2,11 @@ import { z } from "zod";
 
 const EnvSchema = z.object({
   API_PORT: z.coerce.number().default(4000),
+  API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
   APP_BASE_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().url(),
-  SEAWEED_S3_ENDPOINT: z.string().url(),
-  SEAWEED_S3_REGION: z.string().min(1),
-  SEAWEED_S3_BUCKET: z.string().min(1),
-  SEAWEED_S3_ACCESS_KEY: z.string().min(1),
-  SEAWEED_S3_SECRET_KEY: z.string().min(1),
+  STORAGE_DIR: z.string().default("../../storage"),
   SMTP_HOST: z.string().min(1),
   SMTP_PORT: z.coerce.number().default(1025),
   SMTP_USER: z.string().optional(),

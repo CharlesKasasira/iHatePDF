@@ -7,10 +7,12 @@ import { AppModule } from "./app.module.js";
 import { env } from "./config/env.js";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter());
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({
+    bodyLimit: env.MAX_UPLOAD_MB * 1024 * 1024 * 2
+  }));
 
   app.setGlobalPrefix("api");
-  app.enableCors({ origin: env.APP_BASE_URL });
+  app.enableCors({ origin: true });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

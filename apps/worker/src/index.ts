@@ -1,52 +1,40 @@
-import {
-  CreateBucketCommand,
-  GetObjectCommand,
-  HeadBucketCommand,
-  PutObjectCommand,
-  S3Client
-} from "@aws-sdk/client-s3";
 import "dotenv/config";
-import { PrismaClient, SignatureRequestStatus, TaskStatus } from "@prisma/client";
 import { Job, Worker } from "bullmq";
-import IORedis from "ioredis";
 import JSZip from "jszip";
 import { PDFDocument } from "pdf-lib";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { Readable } from "node:stream";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 
-const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+const { PrismaClient, SignatureRequestStatus, TaskStatus } =
+  require("@prisma/client") as typeof import("@prisma/client");
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().url(),
-  SEAWEED_S3_ENDPOINT: z.string().url(),
-  SEAWEED_S3_REGION: z.string().min(1),
-  SEAWEED_S3_BUCKET: z.string().min(1),
-  SEAWEED_S3_ACCESS_KEY: z.string().min(1),
-  SEAWEED_S3_SECRET_KEY: z.string().min(1),
-  QPDF_BIN: z.string().default("qpdf")
+  STORAGE_DIR: z.string().default("../../storage")
 });
 
 const env = EnvSchema.parse(process.env);
+const storageRoot = resolve(env.STORAGE_DIR);
 const queueName = "pdf-tasks";
+const STARTUP_RETRY_ATTEMPTS = 15;
+const STARTUP_RETRY_DELAY_MS = 1500;
 
 const prisma = new PrismaClient();
-const redisConnection = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
-const s3 = new S3Client({
-  endpoint: env.SEAWEED_S3_ENDPOINT,
-  region: env.SEAWEED_S3_REGION,
-  forcePathStyle: true,
-  credentials: {
-    accessKeyId: env.SEAWEED_S3_ACCESS_KEY,
-    secretAccessKey: env.SEAWEED_S3_SECRET_KEY
-  }
-});
+const redisConnection = (() => {
+  const url = new URL(env.REDIS_URL);
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    username: url.username || undefined,
+    password: url.password || undefined,
+    maxRetriesPerRequest: null as null
+  };
+})();
 
 const MergePayloadSchema = z.object({
   taskId: z.string(),
@@ -96,43 +84,53 @@ function parseDataUrl(dataUrl: string): Buffer {
   return Buffer.from(base64, "base64");
 }
 
-async function toBuffer(stream: Readable): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+function resolveStoragePath(objectKey: string): string {
+  const absolutePath = resolve(storageRoot, objectKey);
+
+  if (absolutePath !== storageRoot && !absolutePath.startsWith(`${storageRoot}${sep}`)) {
+    throw new Error("Invalid object key path traversal attempt.");
   }
-  return Buffer.concat(chunks);
+
+  return absolutePath;
+}
+
+async function ensureStorageDir(): Promise<void> {
+  await mkdir(storageRoot, { recursive: true });
 }
 
 async function downloadObject(objectKey: string): Promise<Buffer> {
-  const response = await s3.send(
-    new GetObjectCommand({
-      Bucket: env.SEAWEED_S3_BUCKET,
-      Key: objectKey
-    })
-  );
-
-  if (!response.Body) {
-    throw new Error(`Empty object for key ${objectKey}.`);
-  }
-
-  return toBuffer(response.Body as Readable);
+  return readFile(resolveStoragePath(objectKey));
 }
 
-async function ensureBucket(): Promise<void> {
-  try {
-    await s3.send(
-      new HeadBucketCommand({
-        Bucket: env.SEAWEED_S3_BUCKET
-      })
-    );
-  } catch {
-    await s3.send(
-      new CreateBucketCommand({
-        Bucket: env.SEAWEED_S3_BUCKET
-      })
-    );
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolveFn) => setTimeout(resolveFn, ms));
+}
+
+async function retry<T>(
+  label: string,
+  operation: () => Promise<T>,
+  attempts: number,
+  delayMs: number
+): Promise<T> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.error(`[startup:${label}] attempt ${attempt}/${attempts} failed: ${errorMessage(error)}`);
+      if (attempt < attempts) {
+        await sleep(delayMs);
+      }
+    }
   }
+
+  throw lastError;
 }
 
 async function uploadObject(
@@ -141,17 +139,9 @@ async function uploadObject(
   body: Buffer,
   fileName: string
 ): Promise<string> {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: env.SEAWEED_S3_BUCKET,
-      Key: objectKey,
-      Body: body,
-      ContentType: contentType,
-      Metadata: {
-        filename: fileName
-      }
-    })
-  );
+  const path = resolveStoragePath(objectKey);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, body);
 
   const file = await prisma.fileObject.create({
     data: {
@@ -181,6 +171,16 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
       errorMessage: message
     }
   });
+
+  await prisma.signatureRequest.updateMany({
+    where: {
+      signedTaskId: taskId,
+      status: SignatureRequestStatus.pending
+    },
+    data: {
+      status: SignatureRequestStatus.cancelled
+    }
+  });
 }
 
 async function markCompleted(taskId: string, outputFileId: string): Promise<void> {
@@ -206,31 +206,20 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
 }
 
 async function runMerge(payload: MergePayload): Promise<string> {
-  const workdir = await mkdtemp(join(tmpdir(), "ihatepdf-merge-"));
+  const merged = await PDFDocument.create();
 
-  try {
-    const inputPaths: string[] = [];
-
-    for (let index = 0; index < payload.fileKeys.length; index += 1) {
-      const key = payload.fileKeys[index];
-      const data = await downloadObject(key);
-      const path = join(workdir, `input-${index + 1}.pdf`);
-      await writeFile(path, data);
-      inputPaths.push(path);
-    }
-
-    const outputPath = join(workdir, safePdfName(payload.outputName));
-    await execFileAsync(env.QPDF_BIN, ["--empty", "--pages", ...inputPaths, "--", outputPath]);
-
-    const outputBuffer = await readFile(outputPath);
-    const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${safePdfName(
-      payload.outputName
-    )}`;
-
-    return uploadObject(objectKey, "application/pdf", outputBuffer, safePdfName(payload.outputName));
-  } finally {
-    await rm(workdir, { recursive: true, force: true });
+  for (const key of payload.fileKeys) {
+    const sourceBuffer = await downloadObject(key);
+    const source = await PDFDocument.load(sourceBuffer);
+    const copiedPages = await merged.copyPages(source, source.getPageIndices());
+    copiedPages.forEach((page) => merged.addPage(page));
   }
+
+  const outputBuffer = Buffer.from(await merged.save());
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+
+  return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
 }
 
 function validatePageRanges(ranges: string[]): void {
@@ -241,47 +230,65 @@ function validatePageRanges(ranges: string[]): void {
   }
 }
 
+function parseRange(range: string, totalPages: number): number[] {
+  const [startRaw, endRaw] = range.split("-");
+  const start = Number(startRaw);
+  const end = endRaw ? Number(endRaw) : start;
+
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    start < 1 ||
+    end < 1 ||
+    start > end ||
+    end > totalPages
+  ) {
+    throw new Error(`Invalid page range: ${range}. PDF has ${totalPages} page(s).`);
+  }
+
+  const pageIndices: number[] = [];
+  for (let page = start; page <= end; page += 1) {
+    pageIndices.push(page - 1);
+  }
+
+  return pageIndices;
+}
+
 async function runSplit(payload: SplitPayload): Promise<string> {
   validatePageRanges(payload.pageRanges);
 
-  const workdir = await mkdtemp(join(tmpdir(), "ihatepdf-split-"));
+  const sourceBuffer = await downloadObject(payload.fileKey);
+  const source = await PDFDocument.load(sourceBuffer);
+  const totalPages = source.getPageCount();
+  const chunks = payload.pageRanges.map((range) => ({ range, pages: parseRange(range, totalPages) }));
 
-  try {
-    const inputPath = join(workdir, "input.pdf");
-    await writeFile(inputPath, await downloadObject(payload.fileKey));
+  if (chunks.length === 1) {
+    const only = chunks[0];
+    const splitDoc = await PDFDocument.create();
+    const copiedPages = await splitDoc.copyPages(source, only.pages);
+    copiedPages.forEach((page) => splitDoc.addPage(page));
 
-    const outputPaths: string[] = [];
-
-    for (let index = 0; index < payload.pageRanges.length; index += 1) {
-      const range = payload.pageRanges[index];
-      const outputPath = join(workdir, `${payload.outputPrefix}-${range}.pdf`);
-      await execFileAsync(env.QPDF_BIN, [inputPath, "--pages", inputPath, range, "--", outputPath]);
-      outputPaths.push(outputPath);
-    }
-
-    if (outputPaths.length === 1) {
-      const onlyPath = outputPaths[0];
-      const fileName = safePdfName(`${payload.outputPrefix}-${payload.pageRanges[0]}.pdf`);
-      const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
-      const body = await readFile(onlyPath);
-      return uploadObject(objectKey, "application/pdf", body, fileName);
-    }
-
-    const zip = new JSZip();
-    for (const path of outputPaths) {
-      const fileData = await readFile(path);
-      const name = path.split("/").at(-1) ?? `${randomUUID()}.pdf`;
-      zip.file(name, fileData);
-    }
-
-    const zipData = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-    const zipName = `${payload.outputPrefix}-split.zip`;
-    const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${zipName}`;
-
-    return uploadObject(objectKey, "application/zip", zipData, zipName);
-  } finally {
-    await rm(workdir, { recursive: true, force: true });
+    const body = Buffer.from(await splitDoc.save());
+    const fileName = safePdfName(`${payload.outputPrefix}-${only.range}.pdf`);
+    const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+    return uploadObject(objectKey, "application/pdf", body, fileName);
   }
+
+  const zip = new JSZip();
+  for (const chunk of chunks) {
+    const splitDoc = await PDFDocument.create();
+    const copiedPages = await splitDoc.copyPages(source, chunk.pages);
+    copiedPages.forEach((page) => splitDoc.addPage(page));
+    const splitBytes = Buffer.from(await splitDoc.save());
+    const fileName = safePdfName(`${payload.outputPrefix}-${chunk.range}.pdf`);
+    zip.file(fileName, splitBytes);
+  }
+
+  const zipData = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  const zipName = `${payload.outputPrefix}-split.zip`;
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${zipName}`;
+
+  return uploadObject(objectKey, "application/zip", zipData, zipName);
 }
 
 async function runSign(payload: SignPayload): Promise<string> {
@@ -344,8 +351,8 @@ async function processJob(job: Job): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  await prisma.$connect();
-  await ensureBucket();
+  await retry("prisma-connect", () => prisma.$connect(), STARTUP_RETRY_ATTEMPTS, STARTUP_RETRY_DELAY_MS);
+  await retry("ensure-storage-dir", () => ensureStorageDir(), STARTUP_RETRY_ATTEMPTS, STARTUP_RETRY_DELAY_MS);
 
   const worker = new Worker(
     queueName,
@@ -380,7 +387,6 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     await worker.close();
-    await redisConnection.quit();
     await prisma.$disconnect();
     process.exit(0);
   };

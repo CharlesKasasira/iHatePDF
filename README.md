@@ -11,10 +11,10 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 
 - Frontend: Next.js + React + TypeScript
 - API: NestJS + Fastify + Prisma
-- Worker: BullMQ + qpdf + pdf-lib
+- Worker: BullMQ + pdf-lib
 - Data: PostgreSQL
 - Queue: Valkey
-- Object storage: SeaweedFS S3 gateway
+- File storage: local filesystem (`./storage`)
 - Email (local dev): Mailpit
 
 ## Project Structure
@@ -30,7 +30,6 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 - Node.js 22+
 - pnpm 9+
 - Docker + Docker Compose
-- `qpdf` available for local worker runs
 
 ## Quick Start
 
@@ -75,8 +74,8 @@ pnpm dev
 
 ## Feature API Endpoints
 
-- `POST /api/uploads/presign`
-- `POST /api/uploads/complete`
+- `POST /api/uploads` (JSON with `fileName`, `mimeType`, `dataBase64`)
+- `GET /api/files/:id/download`
 - `POST /api/tasks/merge`
 - `POST /api/tasks/split`
 - `POST /api/tasks/sign`
@@ -91,4 +90,4 @@ pnpm dev
   - PDF when one range is requested
   - ZIP when multiple ranges are requested
 - Sign coordinates (`x`, `y`) use PDF points from bottom-left origin.
-- API and worker auto-create the configured S3 bucket if missing.
+- Uploaded and processed files are stored under `./storage` by default.

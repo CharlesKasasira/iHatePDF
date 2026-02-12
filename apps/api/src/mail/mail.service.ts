@@ -1,9 +1,10 @@
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
 
 @Injectable()
-export class MailService implements OnModuleInit {
+export class MailService {
+  private readonly logger = new Logger(MailService.name);
   private transporter = nodemailer.createTransport({
     host: env.SMTP_HOST,
     port: env.SMTP_PORT,
@@ -17,18 +18,22 @@ export class MailService implements OnModuleInit {
         : undefined
   });
 
-  async onModuleInit(): Promise<void> {
-    await this.transporter.verify();
-  }
-
   async sendSignatureRequestMail(to: string, signingLink: string, message?: string): Promise<void> {
-    await this.transporter.sendMail({
-      from: env.MAIL_FROM,
-      to,
-      subject: "Signature request",
-      text: `You have a signature request. Open this secure link: ${signingLink}${
-        message ? `\n\nMessage: ${message}` : ""
-      }`
-    });
+    try {
+      await this.transporter.sendMail({
+        from: env.MAIL_FROM,
+        to,
+        subject: "Signature request",
+        text: `You have a signature request. Open this secure link: ${signingLink}${
+          message ? `\n\nMessage: ${message}` : ""
+        }`
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to send signature request email to ${to}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 }

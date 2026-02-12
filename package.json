@@ -4,14 +4,13 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "dev": "turbo run dev --parallel",
-    "build": "turbo run build",
-    "lint": "turbo run lint",
-    "test": "turbo run test",
-    "format": "turbo run format"
+    "dev": "pnpm -r --parallel --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker dev",
+    "build": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker build",
+    "lint": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker lint",
+    "test": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker test",
+    "format": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker format"
   },
   "devDependencies": {
-    "turbo": "^2.3.4",
     "typescript": "^5.7.2"
   }
 }

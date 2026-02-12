@@ -1,28 +1,53 @@
 import { Injectable, OnModuleDestroy } from "@nestjs/common";
 import { Job, Queue } from "bullmq";
-import IORedis from "ioredis";
 import { env } from "../config/env.js";
 import { PDF_TASK_QUEUE_NAME } from "./queue.constants.js";
 
 export type PdfTaskJobName = "merge" | "split" | "sign";
 
+function redisConnectionOptions(redisUrl: string): {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  maxRetriesPerRequest: null;
+} {
+  const url = new URL(redisUrl);
+
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    username: url.username || undefined,
+    password: url.password || undefined,
+    maxRetriesPerRequest: null
+  };
+}
+
 @Injectable()
 export class QueueService implements OnModuleDestroy {
-  private readonly connection = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
-  private readonly queue = new Queue(PDF_TASK_QUEUE_NAME, {
-    connection: this.connection,
-    defaultJobOptions: {
-      removeOnComplete: 200,
-      removeOnFail: 500
+  private queue: Queue | null = null;
+
+  private getQueue(): Queue {
+    if (!this.queue) {
+      this.queue = new Queue(PDF_TASK_QUEUE_NAME, {
+        connection: redisConnectionOptions(env.REDIS_URL),
+        defaultJobOptions: {
+          removeOnComplete: 200,
+          removeOnFail: 500
+        }
+      });
     }
-  });
+
+    return this.queue;
+  }
 
   enqueue<T>(name: PdfTaskJobName, payload: T): Promise<Job<T>> {
-    return this.queue.add(name, payload);
+    return this.getQueue().add(name, payload);
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.queue.close();
-    await this.connection.quit();
+    if (this.queue) {
+      await this.queue.close();
+    }
   }
 }
