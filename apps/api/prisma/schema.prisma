@@ -11,6 +11,8 @@ enum TaskType {
   merge
   split
   sign
+  compress
+  protect
   signature_request
 }
 

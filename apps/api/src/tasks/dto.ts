@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsNumber,
   IsString,
+  MinLength,
   Max,
   Min
 } from "class-validator";
@@ -62,6 +63,31 @@ export class SignPdfDto {
   @Min(1)
   @Max(5000)
   height!: number;
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+}
+
+export class CompressPdfDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+}
+
+export class ProtectPdfDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(4)
+  password!: string;
 
   @IsString()
   @IsNotEmpty()

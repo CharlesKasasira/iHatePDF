@@ -3,7 +3,7 @@ import { TaskType } from "@prisma/client";
 import { QueueService } from "../queue/queue.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
-import { MergePdfDto, SignPdfDto, SplitPdfDto } from "./dto.js";
+import { CompressPdfDto, MergePdfDto, ProtectPdfDto, SignPdfDto, SplitPdfDto } from "./dto.js";
 
 interface MergeJobPayload {
   taskId: string;
@@ -27,6 +27,19 @@ interface SignJobPayload {
   y: number;
   width: number;
   height: number;
+  outputName: string;
+}
+
+interface CompressJobPayload {
+  taskId: string;
+  fileKey: string;
+  outputName: string;
+}
+
+interface ProtectJobPayload {
+  taskId: string;
+  fileKey: string;
+  password: string;
   outputName: string;
 }
 
@@ -148,6 +161,69 @@ export class TasksService {
     };
 
     await this.queueService.enqueue("sign", payload);
+    return { taskId: task.id };
+  }
+
+  async queueCompress(dto: CompressPdfDto): Promise<{ taskId: string }> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id: dto.fileId } });
+    if (!file) {
+      throw new NotFoundException("Input file was not found.");
+    }
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.compress,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: CompressJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("compress", payload);
+    return { taskId: task.id };
+  }
+
+  async queueProtect(dto: ProtectPdfDto): Promise<{ taskId: string }> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id: dto.fileId } });
+    if (!file) {
+      throw new NotFoundException("Input file was not found.");
+    }
+
+    const password = dto.password.trim();
+    if (!password) {
+      throw new BadRequestException("Password is required.");
+    }
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.protect,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName,
+          passwordProvided: true
+        }
+      }
+    });
+
+    const payload: ProtectJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      password,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("protect", payload);
     return { taskId: task.id };
   }
 

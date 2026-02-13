@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post } from "@nestjs/common";
-import { MergePdfDto, SignPdfDto, SplitPdfDto } from "./dto.js";
+import { CompressPdfDto, MergePdfDto, ProtectPdfDto, SignPdfDto, SplitPdfDto } from "./dto.js";
 import { TasksService } from "./tasks.service.js";
 
 @Controller("tasks")
@@ -19,6 +19,16 @@ export class TasksController {
   @Post("sign")
   queueSign(@Body() dto: SignPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queueSign(dto);
+  }
+
+  @Post("compress")
+  queueCompress(@Body() dto: CompressPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueCompress(dto);
+  }
+
+  @Post("protect")
+  queueProtect(@Body() dto: ProtectPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueProtect(dto);
   }
 
   @Get(":id")

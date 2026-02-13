@@ -2,9 +2,11 @@ import "dotenv/config";
 import { Job, Worker } from "bullmq";
 import JSZip from "jszip";
 import { PDFDocument } from "pdf-lib";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 
@@ -15,7 +17,8 @@ const { PrismaClient, SignatureRequestStatus, TaskStatus } =
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().url(),
-  STORAGE_DIR: z.string().default("../../storage")
+  STORAGE_DIR: z.string().default("../../storage"),
+  QPDF_BIN: z.string().default("qpdf")
 });
 
 const env = EnvSchema.parse(process.env);
@@ -61,9 +64,24 @@ const SignPayloadSchema = z.object({
   outputName: z.string().min(1)
 });
 
+const CompressPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  outputName: z.string().min(1)
+});
+
+const ProtectPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  password: z.string().min(1),
+  outputName: z.string().min(1)
+});
+
 type MergePayload = z.infer<typeof MergePayloadSchema>;
 type SplitPayload = z.infer<typeof SplitPayloadSchema>;
 type SignPayload = z.infer<typeof SignPayloadSchema>;
+type CompressPayload = z.infer<typeof CompressPayloadSchema>;
+type ProtectPayload = z.infer<typeof ProtectPayloadSchema>;
 
 function safePdfName(name: string): string {
   const base = name.replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -100,6 +118,48 @@ async function ensureStorageDir(): Promise<void> {
 
 async function downloadObject(objectKey: string): Promise<Buffer> {
   return readFile(resolveStoragePath(objectKey));
+}
+
+async function runCommand(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args);
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        rejectPromise(
+          new Error(
+            `Required tool "${command}" is not installed. Install qpdf (for macOS: brew install qpdf).`
+          )
+        );
+        return;
+      }
+
+      rejectPromise(error);
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+
+      rejectPromise(new Error(stderr.trim() || `${command} exited with code ${code}`));
+    });
+  });
+}
+
+async function withTempDir<T>(task: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(resolve(tmpdir(), "ihatepdf-"));
+  try {
+    return await task(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -320,6 +380,50 @@ async function runSign(payload: SignPayload): Promise<string> {
   return uploadObject(objectKey, "application/pdf", Buffer.from(signed), fileName);
 }
 
+async function runCompress(payload: CompressPayload): Promise<string> {
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const optimized = await PDFDocument.create();
+  const pages = await optimized.copyPages(source, source.getPageIndices());
+  pages.forEach((page) => optimized.addPage(page));
+
+  const optimizedBytes = await optimized.save({
+    useObjectStreams: true,
+    addDefaultPage: false,
+    objectsPerTick: 50
+  });
+  const optimizedBuffer = Buffer.from(optimizedBytes);
+  const outputBuffer =
+    optimizedBuffer.byteLength <= inputBuffer.byteLength ? optimizedBuffer : inputBuffer;
+
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+  return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
+}
+
+async function runProtect(payload: ProtectPayload): Promise<string> {
+  const inputPath = resolveStoragePath(payload.fileKey);
+
+  const outputBuffer = await withTempDir(async (dir) => {
+    const outputPath = resolve(dir, `protected-${randomUUID()}.pdf`);
+    await runCommand(env.QPDF_BIN, [
+      "--encrypt",
+      payload.password,
+      payload.password,
+      "256",
+      "--",
+      inputPath,
+      outputPath
+    ]);
+
+    return readFile(outputPath);
+  });
+
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+  return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
+}
+
 async function processJob(job: Job): Promise<void> {
   const { name, data } = job;
 
@@ -343,6 +447,22 @@ async function processJob(job: Job): Promise<void> {
     const payload = SignPayloadSchema.parse(data);
     await markProcessing(payload.taskId);
     const outputFileId = await runSign(payload);
+    await markCompleted(payload.taskId, outputFileId);
+    return;
+  }
+
+  if (name === "compress") {
+    const payload = CompressPayloadSchema.parse(data);
+    await markProcessing(payload.taskId);
+    const outputFileId = await runCompress(payload);
+    await markCompleted(payload.taskId, outputFileId);
+    return;
+  }
+
+  if (name === "protect") {
+    const payload = ProtectPayloadSchema.parse(data);
+    await markProcessing(payload.taskId);
+    const outputFileId = await runProtect(payload);
     await markCompleted(payload.taskId, outputFileId);
     return;
   }

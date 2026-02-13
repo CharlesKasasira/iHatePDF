@@ -2,13 +2,18 @@ import Link from "next/link";
 import type { Route } from "next";
 
 type SiteHeaderProps = {
-  active?: "merge" | "split" | null;
+  active?: "merge" | "split" | "compress" | "protect" | null;
 };
 
-const NAV_ITEMS: Array<{ label: string; href: Route; key?: "merge" | "split" }> = [
+const NAV_ITEMS: Array<{
+  label: string;
+  href: Route;
+  key?: "merge" | "split" | "compress" | "protect";
+}> = [
   { label: "MERGE PDF", href: "/merge-pdf", key: "merge" },
   { label: "SPLIT PDF", href: "/split-pdf", key: "split" },
-  { label: "COMPRESS PDF", href: "/" },
+  { label: "COMPRESS PDF", href: "/compress-pdf", key: "compress" },
+  { label: "PROTECT PDF", href: "/protect-pdf", key: "protect" },
   { label: "CONVERT PDF", href: "/" },
   { label: "ALL PDF TOOLS", href: "/" }
 ];

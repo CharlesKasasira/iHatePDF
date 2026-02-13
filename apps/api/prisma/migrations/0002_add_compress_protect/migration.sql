@@ -1,0 +1,2 @@
+ALTER TYPE "TaskType" ADD VALUE IF NOT EXISTS 'compress';
+ALTER TYPE "TaskType" ADD VALUE IF NOT EXISTS 'protect';

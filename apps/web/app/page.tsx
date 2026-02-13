@@ -41,9 +41,16 @@ const TOOLS: ToolCard[] = [
   {
     title: "Compress PDF",
     description: "Reduce file size while optimizing for maximal PDF quality.",
-    href: "/",
+    href: "/compress-pdf",
     icon: "⤢",
     iconClass: "icon-green"
+  },
+  {
+    title: "Protect PDF",
+    description: "Encrypt your PDF with a password to keep sensitive data confidential.",
+    href: "/protect-pdf",
+    icon: "🔒",
+    iconClass: "icon-purple"
   },
   {
     title: "PDF to Word",

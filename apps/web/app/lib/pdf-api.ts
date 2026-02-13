@@ -127,3 +127,21 @@ export async function queueSplit(
     body: JSON.stringify({ fileId, pageRanges, outputPrefix })
   });
 }
+
+export async function queueCompress(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/compress", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queueProtect(
+  fileId: string,
+  password: string,
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/protect", {
+    method: "POST",
+    body: JSON.stringify({ fileId, password, outputName })
+  });
+}

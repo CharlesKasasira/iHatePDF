@@ -4,6 +4,8 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 
 - Merge PDF files (ordered merge)
 - Split PDF files (single or multiple ranges)
+- Compress PDF files
+- Protect PDF files (password encryption)
 - Sign PDF files (image signature placement)
 - Signature requests (email link + remote sign page)
 
@@ -79,6 +81,8 @@ pnpm dev
 - `POST /api/tasks/merge`
 - `POST /api/tasks/split`
 - `POST /api/tasks/sign`
+- `POST /api/tasks/compress`
+- `POST /api/tasks/protect`
 - `GET /api/tasks/:id`
 - `POST /api/signature-requests`
 - `GET /api/signature-requests/:token`
@@ -91,3 +95,4 @@ pnpm dev
   - ZIP when multiple ranges are requested
 - Sign coordinates (`x`, `y`) use PDF points from bottom-left origin.
 - Uploaded and processed files are stored under `./storage` by default.
+- Protect PDF uses `qpdf`; install locally with `brew install qpdf` if running without Docker.

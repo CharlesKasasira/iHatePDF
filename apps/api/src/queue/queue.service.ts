@@ -3,7 +3,7 @@ import { Job, Queue } from "bullmq";
 import { env } from "../config/env.js";
 import { PDF_TASK_QUEUE_NAME } from "./queue.constants.js";
 
-export type PdfTaskJobName = "merge" | "split" | "sign";
+export type PdfTaskJobName = "merge" | "split" | "sign" | "compress" | "protect";
 
 function redisConnectionOptions(redisUrl: string): {
   host: string;
