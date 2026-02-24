@@ -1,5 +1,14 @@
 import { Body, Controller, Get, Param, Post } from "@nestjs/common";
-import { CompressPdfDto, MergePdfDto, ProtectPdfDto, SignPdfDto, SplitPdfDto } from "./dto.js";
+import {
+  CompressPdfDto,
+  ConvertPdfDto,
+  EditPdfDto,
+  MergePdfDto,
+  ProtectPdfDto,
+  SignPdfDto,
+  SplitPdfDto,
+  UnlockPdfDto
+} from "./dto.js";
 import { TasksService } from "./tasks.service.js";
 
 @Controller("tasks")
@@ -29,6 +38,31 @@ export class TasksController {
   @Post("protect")
   queueProtect(@Body() dto: ProtectPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queueProtect(dto);
+  }
+
+  @Post("unlock")
+  queueUnlock(@Body() dto: UnlockPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueUnlock(dto);
+  }
+
+  @Post("pdf-to-word")
+  queuePdfToWord(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToWord(dto);
+  }
+
+  @Post("pdf-to-powerpoint")
+  queuePdfToPowerpoint(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToPowerpoint(dto);
+  }
+
+  @Post("pdf-to-excel")
+  queuePdfToExcel(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToExcel(dto);
+  }
+
+  @Post("edit")
+  queueEditPdf(@Body() dto: EditPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueEdit(dto);
   }
 
   @Get(":id")

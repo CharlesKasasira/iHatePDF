@@ -53,23 +53,30 @@ const TOOLS: ToolCard[] = [
     iconClass: "icon-purple"
   },
   {
+    title: "Unlock PDF",
+    description: "Remove a known password from a PDF so it can be opened without prompts.",
+    href: "/unlock-pdf",
+    icon: "🔓",
+    iconClass: "icon-green"
+  },
+  {
     title: "PDF to Word",
     description: "Convert PDF files into easy to edit DOC and DOCX documents.",
-    href: "/",
+    href: "/pdf-to-word",
     icon: "W",
     iconClass: "icon-blue"
   },
   {
     title: "PDF to PowerPoint",
     description: "Turn PDF files into easy to edit PPT and PPTX slideshows.",
-    href: "/",
+    href: "/pdf-to-powerpoint",
     icon: "P",
     iconClass: "icon-orange"
   },
   {
     title: "PDF to Excel",
     description: "Pull data straight from PDFs into Excel spreadsheets in seconds.",
-    href: "/",
+    href: "/pdf-to-excel",
     icon: "X",
     iconClass: "icon-green"
   },
@@ -97,7 +104,7 @@ const TOOLS: ToolCard[] = [
   {
     title: "Edit PDF",
     description: "Add text, images, shapes or freehand annotations to a PDF document.",
-    href: "/",
+    href: "/edit-pdf",
     icon: "✎",
     iconClass: "icon-purple",
     badge: "New!"
