@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "iHatePDF",
-  description: "Open-source PDF merge, split, and sign"
+  description: "Open-source PDF merge, split, compress, protect, unlock, convert, edit, and sign"
 };
 
 export default function RootLayout({

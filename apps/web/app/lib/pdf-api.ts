@@ -127,3 +127,99 @@ export async function queueSplit(
     body: JSON.stringify({ fileId, pageRanges, outputPrefix })
   });
 }
+
+export async function queueCompress(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/compress", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queueProtect(
+  fileId: string,
+  password: string,
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/protect", {
+    method: "POST",
+    body: JSON.stringify({ fileId, password, outputName })
+  });
+}
+
+export async function queueUnlock(
+  fileId: string,
+  password: string,
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/unlock", {
+    method: "POST",
+    body: JSON.stringify({ fileId, password, outputName })
+  });
+}
+
+export async function queuePdfToWord(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/pdf-to-word", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queuePdfToPowerpoint(
+  fileId: string,
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/pdf-to-powerpoint", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queuePdfToExcel(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/pdf-to-excel", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export type EditTextInput = {
+  page: number;
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number;
+  color: string;
+};
+
+export type EditRectangleInput = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  opacity: number;
+};
+
+export type EditImageInput = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+};
+
+export async function queueEditPdf(
+  fileId: string,
+  outputName: string,
+  edits: {
+    textEdits?: EditTextInput[];
+    rectangleEdits?: EditRectangleInput[];
+    imageEdits?: EditImageInput[];
+  }
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/edit", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName, ...edits })
+  });
+}

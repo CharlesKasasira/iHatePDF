@@ -2,14 +2,31 @@ import Link from "next/link";
 import type { Route } from "next";
 
 type SiteHeaderProps = {
-  active?: "merge" | "split" | null;
+  active?:
+    | "merge"
+    | "split"
+    | "compress"
+    | "protect"
+    | "unlock"
+    | "pdf-to-word"
+    | "pdf-to-powerpoint"
+    | "pdf-to-excel"
+    | "edit"
+    | null;
 };
 
-const NAV_ITEMS: Array<{ label: string; href: Route; key?: "merge" | "split" }> = [
+const NAV_ITEMS: Array<{
+  label: string;
+  href: Route;
+  key?: SiteHeaderProps["active"];
+}> = [
   { label: "MERGE PDF", href: "/merge-pdf", key: "merge" },
   { label: "SPLIT PDF", href: "/split-pdf", key: "split" },
-  { label: "COMPRESS PDF", href: "/" },
-  { label: "CONVERT PDF", href: "/" },
+  { label: "COMPRESS PDF", href: "/compress-pdf", key: "compress" },
+  { label: "PROTECT PDF", href: "/protect-pdf", key: "protect" },
+  { label: "UNLOCK PDF", href: "/unlock-pdf", key: "unlock" },
+  { label: "PDF TO WORD", href: "/pdf-to-word", key: "pdf-to-word" },
+  { label: "EDIT PDF", href: "/edit-pdf", key: "edit" },
   { label: "ALL PDF TOOLS", href: "/" }
 ];
 

@@ -11,6 +11,13 @@ enum TaskType {
   merge
   split
   sign
+  compress
+  protect
+  unlock
+  pdf_to_word
+  pdf_to_powerpoint
+  pdf_to_excel
+  edit
   signature_request
 }
 
