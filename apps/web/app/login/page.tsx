@@ -25,7 +25,9 @@ export default function LoginPage(): React.JSX.Element {
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("next")
           : null;
-      router.push((nextPath && nextPath.startsWith("/") ? nextPath : "/account") as Route);
+      const safeNextPath =
+        nextPath && nextPath.startsWith("/") && !nextPath.startsWith("//") ? nextPath : "/account";
+      router.push(safeNextPath as Route);
     } catch (error) {
       setStatus((error as Error).message);
     } finally {

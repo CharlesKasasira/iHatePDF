@@ -25,12 +25,14 @@ export default function AccountPage(): React.JSX.Element {
     }
 
     if (!user) {
+      setActivity(null);
       setStatus("Sign in to view account activity.");
       return;
     }
 
     void (async () => {
       try {
+        setActivity(null);
         setStatus("Loading account activity...");
         setActivity(await getAccountActivity());
         setStatus("");

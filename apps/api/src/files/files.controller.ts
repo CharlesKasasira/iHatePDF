@@ -9,7 +9,7 @@ import {
   Res
 } from "@nestjs/common";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { FileObject } from "@prisma/client";
+import { SignatureEnvelopeStatus, type FileObject } from "@prisma/client";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -29,6 +29,10 @@ type PdfPageMetadata = {
 
 function safeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
+
+function isEnvelopeOpen(status: SignatureEnvelopeStatus): boolean {
+  return status === SignatureEnvelopeStatus.sent || status === SignatureEnvelopeStatus.in_progress;
 }
 
 async function runCommand(command: string, args: string[]): Promise<void> {
@@ -290,6 +294,10 @@ export class FilesController {
       throw new NotFoundException("Final signed PDF not found.");
     }
 
+    if (recipient.envelope.status === SignatureEnvelopeStatus.revoked) {
+      throw new GoneException("This signing workflow has been revoked.");
+    }
+
     await this.streamDownload(recipient.envelope.finalFile, reply);
   }
 
@@ -309,6 +317,35 @@ export class FilesController {
       throw new NotFoundException("Signing request not found.");
     }
 
+    const envelope = await this.expireSignatureEnvelopeIfNeeded(recipient.envelope);
+    if (envelope.status === SignatureEnvelopeStatus.expired) {
+      throw new GoneException("This signing workflow has expired.");
+    }
+
+    if (envelope.status === SignatureEnvelopeStatus.revoked) {
+      throw new GoneException("This signing workflow has been revoked.");
+    }
+
     return recipient.envelope.sourceFile;
+  }
+
+  private async expireSignatureEnvelopeIfNeeded<TEnvelope extends {
+    id: string;
+    status: SignatureEnvelopeStatus;
+    expiresAt: Date;
+  }>(envelope: TEnvelope): Promise<TEnvelope> {
+    if (!isEnvelopeOpen(envelope.status) || envelope.expiresAt.getTime() >= Date.now()) {
+      return envelope;
+    }
+
+    await this.prisma.signatureEnvelope.update({
+      where: { id: envelope.id },
+      data: { status: SignatureEnvelopeStatus.expired }
+    });
+
+    return {
+      ...envelope,
+      status: SignatureEnvelopeStatus.expired
+    };
   }
 }

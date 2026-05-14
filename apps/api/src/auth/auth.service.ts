@@ -18,6 +18,7 @@ const SESSION_TOKEN_BYTES = 32;
 const RESET_TOKEN_BYTES = 32;
 const PASSWORD_SALT_BYTES = 16;
 const PASSWORD_HASH_BYTES = 64;
+const SESSION_LAST_USED_THROTTLE_MS = 10 * 60 * 1000;
 
 export type SafeUser = {
   id: string;
@@ -135,12 +136,14 @@ export class AuthService {
       return null;
     }
 
-    await this.prisma.userSession
-      .update({
-        where: { id: session.id },
-        data: { lastUsedAt: new Date() }
-      })
-      .catch(() => undefined);
+    if (!session.lastUsedAt || session.lastUsedAt.getTime() <= Date.now() - SESSION_LAST_USED_THROTTLE_MS) {
+      await this.prisma.userSession
+        .update({
+          where: { id: session.id },
+          data: { lastUsedAt: new Date() }
+        })
+        .catch(() => undefined);
+    }
 
     return safeUser(session.user);
   }
