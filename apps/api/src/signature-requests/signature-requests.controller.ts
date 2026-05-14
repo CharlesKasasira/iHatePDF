@@ -18,18 +18,16 @@ class CreateSignatureRequestDto {
   @IsEmail()
   requesterEmail!: string;
 
+  @IsOptional()
+  @IsString()
+  signerName?: string;
+
   @IsEmail()
   signerEmail!: string;
 
   @IsOptional()
   @IsString()
-  message?: string;
-}
-
-class CompleteSignatureRequestDto {
-  @IsString()
-  @IsNotEmpty()
-  signatureDataUrl!: string;
+  signerRole?: string;
 
   @IsNumber()
   @Min(1)
@@ -56,6 +54,16 @@ class CompleteSignatureRequestDto {
   @IsString()
   @IsNotEmpty()
   outputName!: string;
+
+  @IsOptional()
+  @IsString()
+  message?: string;
+}
+
+class CompleteSignatureRequestDto {
+  @IsString()
+  @IsNotEmpty()
+  signatureDataUrl!: string;
 }
 
 @Controller("signature-requests")
@@ -63,7 +71,7 @@ export class SignatureRequestsController {
   constructor(private readonly service: SignatureRequestsService) {}
 
   @Post()
-  create(@Body() dto: CreateSignatureRequestDto): Promise<{ id: string; token: string }> {
+  create(@Body() dto: CreateSignatureRequestDto): Promise<{ id: string; token: string; signingUrl: string }> {
     return this.service.createRequest(dto);
   }
 
@@ -72,9 +80,18 @@ export class SignatureRequestsController {
     id: string;
     token: string;
     status: string;
+    fileId: string;
     fileName: string;
     expiresAt: Date;
     message: string | null;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    outputName: string;
+    pageWidth: number;
+    pageHeight: number;
   }> {
     return this.service.getByToken(token);
   }

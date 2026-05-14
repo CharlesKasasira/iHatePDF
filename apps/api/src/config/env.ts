@@ -14,7 +14,9 @@ const EnvSchema = z.object({
   MAIL_FROM: z.string().min(1),
   SIGN_TOKEN_TTL_HOURS: z.coerce.number().int().positive().default(72),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(50),
-  QPDF_BIN: z.string().default("qpdf")
+  QPDF_BIN: z.string().default("qpdf"),
+  PDFTOPPM_BIN: z.string().default("pdftoppm"),
+  PDF_RENDER_DPI: z.coerce.number().int().min(72).max(300).default(144)
 });
 
 export type Env = z.infer<typeof EnvSchema>;

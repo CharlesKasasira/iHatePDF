@@ -12,6 +12,26 @@ export type TaskStatusResponse = {
   updatedAt: string;
 };
 
+export type SignatureRequestResponse = {
+  id: string;
+  token: string;
+  status: "pending" | "completed" | "expired" | "cancelled";
+  fileId: string;
+  fileName: string;
+  expiresAt: string;
+  message: string | null;
+  signerName?: string;
+  signerRole?: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  outputName: string;
+  pageWidth: number;
+  pageHeight: number;
+};
+
 export type UploadedFileMeta = {
   fileId: string;
   fileName: string;
@@ -22,6 +42,11 @@ export type PdfFileMetadataResponse = {
   fileName: string;
   mimeType: string;
   pageCount: number;
+  pages: Array<{
+    pageNumber: number;
+    width: number;
+    height: number;
+  }>;
 };
 
 async function readError(response: Response): Promise<string> {
@@ -143,8 +168,42 @@ export async function getPdfMetadata(fileId: string): Promise<PdfFileMetadataRes
   return jsonFetch<PdfFileMetadataResponse>(`/files/${fileId}/metadata`);
 }
 
-export function getFileDownloadUrl(fileId: string): string {
-  return `${API_BASE_URL}/files/${fileId}/download`;
+export function getPdfPagePreviewUrl(fileId: string, pageNumber: number): string {
+  return `${API_BASE_URL}/files/${fileId}/pages/${pageNumber}/preview`;
+}
+
+export async function createSignatureRequest(input: {
+  fileId: string;
+  requesterEmail: string;
+  signerName?: string;
+  signerEmail: string;
+  signerRole?: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  outputName: string;
+  message?: string;
+}): Promise<{ id: string; token: string; signingUrl: string }> {
+  return jsonFetch<{ id: string; token: string; signingUrl: string }>("/signature-requests", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function getSignatureRequest(token: string): Promise<SignatureRequestResponse> {
+  return jsonFetch<SignatureRequestResponse>(`/signature-requests/${token}`);
+}
+
+export async function completeSignatureRequest(
+  token: string,
+  signatureDataUrl: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>(`/signature-requests/${token}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ signatureDataUrl })
+  });
 }
 
 function isTerminalTaskStatus(task: TaskStatusResponse): boolean {
