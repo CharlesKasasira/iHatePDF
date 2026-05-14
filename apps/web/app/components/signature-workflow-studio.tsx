@@ -14,6 +14,7 @@ import {
   type SignatureEnvelopeResponse,
   uploadPdfWithRetention
 } from "../lib/pdf-api";
+import { useAuth } from "./auth-provider";
 import { SiteHeader } from "./site-header";
 import styles from "./signature-workflow-studio.module.css";
 
@@ -81,6 +82,7 @@ export function SignatureWorkflowStudio({
 }: {
   initialEnvelopeId?: string | null;
 }): React.JSX.Element {
+  const { user } = useAuth();
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -134,6 +136,12 @@ export function SignatureWorkflowStudio({
       setSelectedRecipientKey(recipients[0].key);
     }
   }, [recipients, selectedRecipientKey]);
+
+  useEffect(() => {
+    if (user?.email && !requesterEmail.trim()) {
+      setRequesterEmail(user.email);
+    }
+  }, [user?.email, requesterEmail]);
 
   useEffect(() => {
     if (!envelopeId) {

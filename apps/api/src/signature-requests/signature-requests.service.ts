@@ -71,6 +71,10 @@ interface ReassignRecipientInput {
   role?: string;
 }
 
+export type SignatureRequestContext = {
+  ownerId?: string;
+};
+
 type EventMetadata = Prisma.InputJsonValue | undefined;
 
 const envelopeInclude = {
@@ -162,7 +166,7 @@ export class SignatureRequestsService {
     private readonly storageService: StorageService
   ) {}
 
-  async createRequest(input: CreateSignatureEnvelopeInput): Promise<{
+  async createRequest(input: CreateSignatureEnvelopeInput, context: SignatureRequestContext = {}): Promise<{
     id: string;
     status: SignatureEnvelopeStatus;
     routing: SignatureEnvelopeRouting;
@@ -179,6 +183,10 @@ export class SignatureRequestsService {
   }> {
     const file = await this.prisma.fileObject.findUnique({ where: { id: input.fileId } });
     if (!file) {
+      throw new NotFoundException("Input file was not found.");
+    }
+
+    if (file.ownerId && file.ownerId !== context.ownerId) {
       throw new NotFoundException("Input file was not found.");
     }
 
@@ -273,7 +281,8 @@ export class SignatureRequestsService {
           routing: input.routing,
           expiresAt,
           immutableAt: new Date(),
-          sourceFileId: file.id
+          sourceFileId: file.id,
+          ownerId: context.ownerId ?? null
         }
       });
 
@@ -348,13 +357,19 @@ export class SignatureRequestsService {
     return this.mapEnvelopeCreationResponse(envelope);
   }
 
-  async getEnvelope(id: string): Promise<ReturnType<SignatureRequestsService["mapEnvelopeView"]>> {
-    const envelope = await this.loadEnvelopeById(id);
+  async getEnvelope(
+    id: string,
+    context: SignatureRequestContext = {}
+  ): Promise<ReturnType<SignatureRequestsService["mapEnvelopeView"]>> {
+    const envelope = await this.loadEnvelopeById(id, context);
     return this.mapEnvelopeView(envelope);
   }
 
-  async retryFinalization(envelopeId: string): Promise<{ envelopeId: string; taskId: string }> {
-    const envelope = await this.loadEnvelopeById(envelopeId);
+  async retryFinalization(
+    envelopeId: string,
+    context: SignatureRequestContext = {}
+  ): Promise<{ envelopeId: string; taskId: string }> {
+    const envelope = await this.loadEnvelopeById(envelopeId, context);
     if (envelope.status !== SignatureEnvelopeStatus.finalization_failed) {
       throw new BadRequestException("Only workflows with failed finalization can be retried.");
     }
@@ -376,6 +391,7 @@ export class SignatureRequestsService {
           type: TaskType.signature_request,
           status: "queued",
           inputFileId: envelope.sourceFileId,
+          ownerId: envelope.ownerId,
           payload: ({
             envelopeId: envelope.id,
             fileKey: envelope.sourceFile.objectKey,
@@ -572,7 +588,7 @@ export class SignatureRequestsService {
         createdAt: event.createdAt
       })),
       finalDownloadUrl: refreshed.envelope.finalFileId
-        ? this.storageService.createDownloadUrl(refreshed.envelope.finalFileId)
+        ? `${env.API_PUBLIC_URL}/api/files/signature-requests/${encodeURIComponent(token)}/final-download`
         : null
     };
   }
@@ -701,6 +717,7 @@ export class SignatureRequestsService {
             type: TaskType.signature_request,
             status: "queued",
             inputFileId: session.envelope.sourceFileId,
+            ownerId: session.envelope.ownerId,
             payload: ({
               envelopeId: session.envelope.id,
               fileKey: session.envelope.sourceFile.objectKey,
@@ -794,9 +811,10 @@ export class SignatureRequestsService {
 
   async remindRecipient(
     envelopeId: string,
-    recipientId: string
+    recipientId: string,
+    context: SignatureRequestContext = {}
   ): Promise<{ ok: true }> {
-    const envelope = await this.loadEnvelopeById(envelopeId);
+    const envelope = await this.loadEnvelopeById(envelopeId, context);
     this.assertEnvelopeManageable(envelope);
 
     const recipient = envelope.recipients.find((item) => item.id === recipientId);
@@ -811,6 +829,17 @@ export class SignatureRequestsService {
     if (recipient.status === SignatureRecipientStatus.completed) {
       throw new BadRequestException("Completed signers cannot be reminded.");
     }
+
+    await this.mailService.sendSigningReminderMail({
+      to: recipient.email,
+      signerName: recipient.name ?? undefined,
+      role: recipient.role ?? undefined,
+      signingLink: this.buildSigningLink(recipient.token),
+      title: envelope.title ?? envelope.sourceFile.fileName,
+      requesterEmail: envelope.requesterEmail,
+      message: envelope.message ?? undefined,
+      expiresAt: envelope.expiresAt
+    });
 
     const remindedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -833,26 +862,16 @@ export class SignatureRequestsService {
       });
     });
 
-    await this.mailService.sendSigningReminderMail({
-      to: recipient.email,
-      signerName: recipient.name ?? undefined,
-      role: recipient.role ?? undefined,
-      signingLink: this.buildSigningLink(recipient.token),
-      title: envelope.title ?? envelope.sourceFile.fileName,
-      requesterEmail: envelope.requesterEmail,
-      message: envelope.message ?? undefined,
-      expiresAt: envelope.expiresAt
-    });
-
     return { ok: true };
   }
 
   async reassignRecipient(
     envelopeId: string,
     recipientId: string,
-    input: ReassignRecipientInput
+    input: ReassignRecipientInput,
+    context: SignatureRequestContext = {}
   ): Promise<{ ok: true; signingUrl: string }> {
-    const envelope = await this.loadEnvelopeById(envelopeId);
+    const envelope = await this.loadEnvelopeById(envelopeId, context);
     this.assertEnvelopeManageable(envelope);
 
     const recipient = envelope.recipients.find((item) => item.id === recipientId);
@@ -914,8 +933,11 @@ export class SignatureRequestsService {
     };
   }
 
-  async revokeEnvelope(envelopeId: string): Promise<{ ok: true }> {
-    const envelope = await this.loadEnvelopeById(envelopeId);
+  async revokeEnvelope(
+    envelopeId: string,
+    context: SignatureRequestContext = {}
+  ): Promise<{ ok: true }> {
+    const envelope = await this.loadEnvelopeById(envelopeId, context);
     this.assertEnvelopeManageable(envelope);
 
     const revokedAt = new Date();
@@ -1032,13 +1054,20 @@ export class SignatureRequestsService {
     }
   }
 
-  private async loadEnvelopeById(id: string): Promise<EnvelopeRecord> {
+  private async loadEnvelopeById(
+    id: string,
+    context: SignatureRequestContext = {}
+  ): Promise<EnvelopeRecord> {
     let envelope = await this.prisma.signatureEnvelope.findUnique({
       where: { id },
       include: envelopeInclude
     });
 
     if (!envelope) {
+      throw new NotFoundException("Signing workflow not found.");
+    }
+
+    if (envelope.ownerId && envelope.ownerId !== context.ownerId) {
       throw new NotFoundException("Signing workflow not found.");
     }
 
@@ -1224,35 +1253,31 @@ export class SignatureRequestsService {
     isReminder: boolean,
     recipients = this.getCurrentTurnRecipients(envelope)
   ): Promise<void> {
-    await Promise.all(
-      recipients.map((recipient) =>
-        isReminder
-          ? this.mailService.sendSigningReminderMail({
-              to: recipient.email,
-              signerName: recipient.name ?? undefined,
-              role: recipient.role ?? undefined,
-              signingLink: this.buildSigningLink(recipient.token),
-              title: envelope.title ?? envelope.sourceFile.fileName,
-              requesterEmail: envelope.requesterEmail,
-              message: envelope.message ?? undefined,
-              expiresAt: envelope.expiresAt
-            })
-          : this.mailService.sendSigningInviteMail({
-              to: recipient.email,
-              signerName: recipient.name ?? undefined,
-              role: recipient.role ?? undefined,
-              signingLink: this.buildSigningLink(recipient.token),
-              title: envelope.title ?? envelope.sourceFile.fileName,
-              requesterEmail: envelope.requesterEmail,
-              message: envelope.message ?? undefined,
-              expiresAt: envelope.expiresAt,
-              routingOrder: recipient.routingOrder
-            })
-      )
-    );
+    for (const recipient of recipients) {
+      if (isReminder) {
+        await this.mailService.sendSigningReminderMail({
+          to: recipient.email,
+          signerName: recipient.name ?? undefined,
+          role: recipient.role ?? undefined,
+          signingLink: this.buildSigningLink(recipient.token),
+          title: envelope.title ?? envelope.sourceFile.fileName,
+          requesterEmail: envelope.requesterEmail,
+          message: envelope.message ?? undefined,
+          expiresAt: envelope.expiresAt
+        });
+      } else {
+        await this.mailService.sendSigningInviteMail({
+          to: recipient.email,
+          signerName: recipient.name ?? undefined,
+          role: recipient.role ?? undefined,
+          signingLink: this.buildSigningLink(recipient.token),
+          title: envelope.title ?? envelope.sourceFile.fileName,
+          requesterEmail: envelope.requesterEmail,
+          message: envelope.message ?? undefined,
+          expiresAt: envelope.expiresAt,
+          routingOrder: recipient.routingOrder
+        });
 
-    if (!isReminder) {
-      for (const recipient of recipients) {
         await this.prisma.signatureEnvelopeEvent.create({
           data: {
             envelopeId: envelope.id,

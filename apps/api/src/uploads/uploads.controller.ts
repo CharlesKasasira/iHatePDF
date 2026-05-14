@@ -1,6 +1,7 @@
 import { BadRequestException, Controller, Post, Req } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import { env } from "../config/env.js";
+import { AuthService } from "../auth/auth.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 
@@ -45,7 +46,8 @@ function parseRetentionHours(value: string | undefined): number | null {
 export class UploadsController {
   constructor(
     private readonly storageService: StorageService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    private readonly authService: AuthService
   ) {}
 
   @Post()
@@ -111,12 +113,14 @@ export class UploadsController {
       throw new BadRequestException("Uploaded file content is empty.");
     }
 
+    const currentUser = await this.authService.currentUser(request);
     const dbFile = await this.prisma.fileObject.create({
       data: {
         objectKey: stored.objectKey,
         fileName: stored.fileName,
         mimeType: stored.mimeType,
         sizeBytes: BigInt(stored.sizeBytes),
+        ownerId: currentUser?.id ?? null,
         expiresAt: retentionHours
           ? new Date(Date.now() + retentionHours * 60 * 60 * 1000)
           : null

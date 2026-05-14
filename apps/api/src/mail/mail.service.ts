@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, ServiceUnavailableException } from "@nestjs/common";
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
 
@@ -24,6 +24,15 @@ export class MailService {
       signingLink,
       message
     });
+  }
+
+  private handleMailError(action: string, recipient: string, error: unknown): never {
+    this.logger.warn(
+      `Failed to ${action} email to ${recipient}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    throw new ServiceUnavailableException(`Failed to deliver ${action} email.`);
   }
 
   async sendSigningInviteMail(input: {
@@ -56,11 +65,7 @@ export class MailService {
           .join("\n")
       });
     } catch (error) {
-      this.logger.warn(
-        `Failed to send signature request email to ${input.to}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      this.handleMailError("signature request", input.to, error);
     }
   }
 
@@ -92,11 +97,31 @@ export class MailService {
           .join("\n")
       });
     } catch (error) {
-      this.logger.warn(
-        `Failed to send reminder email to ${input.to}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      this.handleMailError("reminder", input.to, error);
+    }
+  }
+
+  async sendPasswordResetMail(input: {
+    to: string;
+    resetLink: string;
+    name?: string;
+    expiresInMinutes: number;
+  }): Promise<void> {
+    try {
+      await this.transporter.sendMail({
+        from: env.MAIL_FROM,
+        to: input.to,
+        subject: "Reset your iHatePDF password",
+        text: [
+          input.name ? `Hello ${input.name},` : "Hello,",
+          "A password reset was requested for your iHatePDF account.",
+          `Reset your password: ${input.resetLink}`,
+          `This link expires in ${input.expiresInMinutes} minutes.`,
+          "If you did not request this, you can ignore this email."
+        ].join("\n")
+      });
+    } catch (error) {
+      this.handleMailError("password reset", input.to, error);
     }
   }
 }

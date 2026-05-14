@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Req } from "@nestjs/common";
+import type { FastifyRequest } from "fastify";
 import {
   ArrayMinSize,
   IsArray,
@@ -16,6 +17,7 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 import { SignatureEnvelopeRouting, SignatureFieldType } from "@prisma/client";
+import { AuthService } from "../auth/auth.service.js";
 import { SignatureRequestsService } from "./signature-requests.service.js";
 
 class CreateSignatureRecipientDto {
@@ -162,40 +164,49 @@ class ReassignRecipientDto {
 
 @Controller("signature-requests")
 export class SignatureRequestsController {
-  constructor(private readonly service: SignatureRequestsService) {}
+  constructor(
+    private readonly service: SignatureRequestsService,
+    private readonly authService: AuthService
+  ) {}
+
+  private async context(request: FastifyRequest): Promise<{ ownerId?: string }> {
+    const user = await this.authService.currentUser(request);
+    return user ? { ownerId: user.id } : {};
+  }
 
   @Post()
-  create(@Body() dto: CreateSignatureRequestDto) {
-    return this.service.createRequest(dto);
+  async create(@Body() dto: CreateSignatureRequestDto, @Req() request: FastifyRequest) {
+    return this.service.createRequest(dto, await this.context(request));
   }
 
   @Get("envelopes/:id")
-  getEnvelope(@Param("id") id: string) {
-    return this.service.getEnvelope(id);
+  async getEnvelope(@Param("id") id: string, @Req() request: FastifyRequest) {
+    return this.service.getEnvelope(id, await this.context(request));
   }
 
   @Post("envelopes/:id/revoke")
-  revoke(@Param("id") id: string) {
-    return this.service.revokeEnvelope(id);
+  async revoke(@Param("id") id: string, @Req() request: FastifyRequest) {
+    return this.service.revokeEnvelope(id, await this.context(request));
   }
 
   @Post("envelopes/:id/retry-finalization")
-  retryFinalization(@Param("id") id: string) {
-    return this.service.retryFinalization(id);
+  async retryFinalization(@Param("id") id: string, @Req() request: FastifyRequest) {
+    return this.service.retryFinalization(id, await this.context(request));
   }
 
   @Post("envelopes/:id/recipients/:recipientId/remind")
-  remind(@Param("id") id: string, @Param("recipientId") recipientId: string) {
-    return this.service.remindRecipient(id, recipientId);
+  async remind(@Param("id") id: string, @Param("recipientId") recipientId: string, @Req() request: FastifyRequest) {
+    return this.service.remindRecipient(id, recipientId, await this.context(request));
   }
 
   @Post("envelopes/:id/recipients/:recipientId/reassign")
-  reassign(
+  async reassign(
     @Param("id") id: string,
     @Param("recipientId") recipientId: string,
-    @Body() dto: ReassignRecipientDto
+    @Body() dto: ReassignRecipientDto,
+    @Req() request: FastifyRequest
   ) {
-    return this.service.reassignRecipient(id, recipientId, dto);
+    return this.service.reassignRecipient(id, recipientId, dto, await this.context(request));
   }
 
   @Get(":token")

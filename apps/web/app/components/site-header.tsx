@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import type { Route } from "next";
+import { useAuth } from "./auth-provider";
 
 type ActiveKey =
   | "merge"
@@ -42,6 +45,8 @@ const NAV_ITEMS: Array<{
 ];
 
 export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Element {
+  const { user, loading, logout } = useAuth();
+
   return (
     <header className="site-header">
       <div className="header-inner">
@@ -68,6 +73,26 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </nav>
 
         <div className="auth-actions">
+          {!loading && user ? (
+            <>
+              <Link href="/account" className="auth-link">
+                {user.name || user.email}
+              </Link>
+              <button className="auth-link auth-link-button" type="button" onClick={() => void logout()}>
+                Log out
+              </button>
+            </>
+          ) : null}
+          {!loading && !user ? (
+            <>
+              <Link href="/login" className="auth-link">
+                Log in
+              </Link>
+              <Link href="/signup" className="auth-link auth-link-strong">
+                Sign up
+              </Link>
+            </>
+          ) : null}
           <Link
             href="/editor-studio"
             className={`signup-btn ${active === "edit" || active === "sign-pdf" ? "is-active" : ""}`}

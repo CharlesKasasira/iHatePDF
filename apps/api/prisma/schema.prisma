@@ -96,12 +96,16 @@ model FileObject {
   sizeBytes  BigInt
   createdAt  DateTime @default(now())
   expiresAt  DateTime?
+  ownerId    String?
+  owner      User?    @relation("fileOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
   tasksAsInput Task[]             @relation("taskInputFile")
   tasksAsOutput Task[]            @relation("taskOutputFile")
   signatureRequests SignatureRequest[]
   signatureEnvelopesAsSource SignatureEnvelope[] @relation("signatureEnvelopeSource")
   signatureEnvelopesAsFinal SignatureEnvelope[]  @relation("signatureEnvelopeFinal")
+
+  @@index([ownerId, createdAt])
 }
 
 model Task {
@@ -117,8 +121,12 @@ model Task {
 
   inputFileId   String?
   outputFileId  String?
+  ownerId       String?
   inputFile     FileObject? @relation("taskInputFile", fields: [inputFileId], references: [id])
   outputFile    FileObject? @relation("taskOutputFile", fields: [outputFileId], references: [id])
+  owner         User?       @relation("taskOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, createdAt])
 }
 
 model SignatureRequest {
@@ -135,7 +143,11 @@ model SignatureRequest {
 
   fileId         String
   signedTaskId   String?
+  ownerId        String?
   file           FileObject              @relation(fields: [fileId], references: [id])
+  owner          User?                   @relation("signatureRequestOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, createdAt])
 }
 
 model SignatureEnvelope {
@@ -157,8 +169,10 @@ model SignatureEnvelope {
   sourceFileId   String
   finalFileId    String?
   finalTaskId    String?
+  ownerId        String?
   sourceFile     FileObject               @relation("signatureEnvelopeSource", fields: [sourceFileId], references: [id])
   finalFile      FileObject?              @relation("signatureEnvelopeFinal", fields: [finalFileId], references: [id])
+  owner          User?                    @relation("signatureEnvelopeOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
   recipients     SignatureEnvelopeRecipient[]
   fields         SignatureEnvelopeField[]
@@ -166,6 +180,52 @@ model SignatureEnvelope {
   events         SignatureEnvelopeEvent[]
 
   @@index([status])
+  @@index([expiresAt])
+  @@index([ownerId, createdAt])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions          UserSession[]
+  passwordResetTokens PasswordResetToken[]
+  files             FileObject[]        @relation("fileOwner")
+  tasks             Task[]              @relation("taskOwner")
+  signatureRequests SignatureRequest[]  @relation("signatureRequestOwner")
+  signatureEnvelopes SignatureEnvelope[] @relation("signatureEnvelopeOwner")
+}
+
+model UserSession {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
   @@index([expiresAt])
 }
 

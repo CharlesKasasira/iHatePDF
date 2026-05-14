@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   completeSignatureRequest,
-  getPdfMetadata,
-  getPdfPagePreviewUrl,
+  getSignaturePdfMetadata,
+  getSignaturePdfPagePreviewUrl,
   getSignatureRequest,
   pollTask,
   type PdfFileMetadataResponse,
@@ -57,7 +57,7 @@ export default function SignRequestPage(): React.JSX.Element {
         setStatus("");
         const nextRequest = await getSignatureRequest(token);
         setRequest(nextRequest);
-        const metadata = await getPdfMetadata(nextRequest.fileId);
+        const metadata = await getSignaturePdfMetadata(token);
         setPdfMeta(metadata);
 
         const initialValues: Record<string, FieldDraftValue> = {};
@@ -307,7 +307,7 @@ export default function SignRequestPage(): React.JSX.Element {
                 <div className={styles.pageSurface} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
                   <img
                     className={styles.pagePreview}
-                    src={getPdfPagePreviewUrl(request.fileId, page.pageNumber)}
+                    src={getSignaturePdfPagePreviewUrl(token, page.pageNumber)}
                     alt={`${request.fileName} page ${page.pageNumber}`}
                     draggable={false}
                   />

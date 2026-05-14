@@ -517,7 +517,7 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
 }
 
 async function markCompleted(taskId: string, outputFileId: string): Promise<void> {
-  await prisma.task.update({
+  const task = await prisma.task.update({
     where: { id: taskId },
     data: {
       status: TaskStatus.completed,
@@ -527,6 +527,13 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
       progressMessage: "Completed"
     }
   });
+
+  if (task.ownerId) {
+    await prisma.fileObject.update({
+      where: { id: outputFileId },
+      data: { ownerId: task.ownerId }
+    });
+  }
 
   await prisma.signatureRequest.updateMany({
     where: {

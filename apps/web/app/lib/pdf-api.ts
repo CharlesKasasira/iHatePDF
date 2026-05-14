@@ -1,5 +1,56 @@
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api";
 
+export type AuthUser = {
+  id: string;
+  email: string;
+  name: string | null;
+  createdAt: string;
+};
+
+export type AccountActivityResponse = {
+  files: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: string;
+    createdAt: string;
+    expiresAt: string | null;
+    downloadUrl: string | null;
+  }>;
+  tasks: Array<{
+    id: string;
+    type: string;
+    status: "queued" | "processing" | "completed" | "failed";
+    progressPercent: number;
+    errorMessage: string | null;
+    createdAt: string;
+    updatedAt: string;
+    outputFileName: string | null;
+    outputDownloadUrl: string | null;
+  }>;
+  signatureEnvelopes: Array<{
+    id: string;
+    title: string | null;
+    requesterEmail: string;
+    status:
+      | "sent"
+      | "in_progress"
+      | "finalizing"
+      | "finalization_failed"
+      | "completed"
+      | "expired"
+      | "revoked";
+    routing: "sequential" | "parallel";
+    outputName: string;
+    fileName: string;
+    createdAt: string;
+    expiresAt: string;
+    completedAt: string | null;
+    manageUrl: string;
+    finalDownloadUrl: string | null;
+  }>;
+};
+
 export type TaskStatusResponse = {
   id: string;
   status: "queued" | "processing" | "completed" | "failed";
@@ -191,6 +242,7 @@ async function readError(response: Response): Promise<string> {
 export async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {})
@@ -255,6 +307,7 @@ export async function uploadFile(
 
   const response = await fetch(`${API_BASE_URL}/uploads`, {
     method: "POST",
+    credentials: "include",
     body: formData
   });
 
@@ -287,6 +340,63 @@ export async function getPdfMetadata(fileId: string): Promise<PdfFileMetadataRes
 
 export function getPdfPagePreviewUrl(fileId: string, pageNumber: number): string {
   return `${API_BASE_URL}/files/${fileId}/pages/${pageNumber}/preview`;
+}
+
+export async function getSignaturePdfMetadata(token: string): Promise<PdfFileMetadataResponse> {
+  return jsonFetch<PdfFileMetadataResponse>(`/files/signature-requests/${token}/metadata`);
+}
+
+export function getSignaturePdfPagePreviewUrl(token: string, pageNumber: number): string {
+  return `${API_BASE_URL}/files/signature-requests/${token}/pages/${pageNumber}/preview`;
+}
+
+export async function signup(input: {
+  email: string;
+  password: string;
+  name?: string;
+}): Promise<AuthUser> {
+  return jsonFetch<AuthUser>("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function login(input: { email: string; password: string }): Promise<AuthUser> {
+  return jsonFetch<AuthUser>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function logout(): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>("/auth/logout", {
+    method: "POST"
+  });
+}
+
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  return jsonFetch<AuthUser | null>("/auth/me");
+}
+
+export async function requestPasswordReset(email: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>("/auth/password-reset/request", {
+    method: "POST",
+    body: JSON.stringify({ email })
+  });
+}
+
+export async function confirmPasswordReset(input: {
+  token: string;
+  password: string;
+}): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>("/auth/password-reset/confirm", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function getAccountActivity(): Promise<AccountActivityResponse> {
+  return jsonFetch<AccountActivityResponse>("/account/activity");
 }
 
 export async function createSignatureRequest(input: {
@@ -479,7 +589,9 @@ export async function pollTask(
   })();
 
   if (typeof window !== "undefined" && typeof window.EventSource !== "undefined") {
-    let eventSource: EventSource | null = new window.EventSource(`${API_BASE_URL}/tasks/${taskId}/events`);
+    let eventSource: EventSource | null = new window.EventSource(`${API_BASE_URL}/tasks/${taskId}/events`, {
+      withCredentials: true
+    });
     const closeEventSource = (): void => {
       if (eventSource) {
         eventSource.close();
