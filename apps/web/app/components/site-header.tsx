@@ -1,37 +1,43 @@
 import Link from "next/link";
 import type { Route } from "next";
 
+type ActiveKey =
+  | "merge"
+  | "split"
+  | "compress"
+  | "protect"
+  | "unlock"
+  | "pdf-to-word"
+  | "pdf-to-powerpoint"
+  | "pdf-to-excel"
+  | "excel-to-pdf"
+  | "powerpoint-to-pdf"
+  | "edit";
+
 type SiteHeaderProps = {
-  active?:
-    | "merge"
-    | "split"
-    | "compress"
-    | "protect"
-    | "unlock"
-    | "pdf-to-word"
-    | "pdf-to-powerpoint"
-    | "pdf-to-excel"
-    | "excel-to-pdf"
-    | "powerpoint-to-pdf"
-    | "edit"
-    | null;
+  active?: ActiveKey | null;
 };
 
 const NAV_ITEMS: Array<{
   label: string;
   href: Route;
-  key?: SiteHeaderProps["active"];
+  match?: ActiveKey[];
 }> = [
-  { label: "MERGE PDF", href: "/merge-pdf", key: "merge" },
-  { label: "SPLIT PDF", href: "/split-pdf", key: "split" },
-  { label: "COMPRESS PDF", href: "/compress-pdf", key: "compress" },
-  { label: "PROTECT PDF", href: "/protect-pdf", key: "protect" },
-  { label: "UNLOCK PDF", href: "/unlock-pdf", key: "unlock" },
-  { label: "PDF TO WORD", href: "/pdf-to-word", key: "pdf-to-word" },
-  { label: "EXCEL TO PDF", href: "/excel-to-pdf", key: "excel-to-pdf" },
-  { label: "PPT TO PDF", href: "/powerpoint-to-pdf", key: "powerpoint-to-pdf" },
-  { label: "EDITOR STUDIO", href: "/editor-studio", key: "edit" },
-  { label: "ALL PDF TOOLS", href: "/" }
+  { label: "Merge", href: "/merge-pdf", match: ["merge"] },
+  { label: "Split", href: "/split-pdf", match: ["split"] },
+  { label: "Compress", href: "/compress-pdf", match: ["compress"] },
+  {
+    label: "Convert",
+    href: "/pdf-to-word",
+    match: [
+      "pdf-to-word",
+      "pdf-to-powerpoint",
+      "pdf-to-excel",
+      "excel-to-pdf",
+      "powerpoint-to-pdf"
+    ]
+  },
+  { label: "All tools", href: "/" }
 ];
 
 export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Element {
@@ -45,23 +51,26 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </Link>
 
         <nav className="top-nav" aria-label="Primary">
-          {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.label}
-              href={item.href}
-              className={`top-nav-link ${item.key && active === item.key ? "is-active" : ""}`}
-            >
-              {item.label}
-            </Link>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const isActive = item.match ? (active !== null && item.match.includes(active)) : active === null;
+
+            return (
+              <Link
+                key={item.label}
+                href={item.href}
+                className={`top-nav-link ${isActive ? "is-active" : ""}`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="auth-actions">
-          <div className="trust-chip">
-            <strong>Self-hosted</strong>
-            <span>Auto-expiring downloads</span>
-          </div>
-          <Link href="/editor-studio" className="signup-btn">
+          <Link
+            href="/editor-studio"
+            className={`signup-btn ${active === "edit" ? "is-active" : ""}`}
+          >
             Open Studio
           </Link>
         </div>

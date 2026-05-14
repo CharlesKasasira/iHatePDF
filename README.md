@@ -165,6 +165,7 @@ mkdir -p storage
 - Set `NEXT_PUBLIC_API_BASE_URL=https://pdf.devops.renu.ac.ug/api` in `.env`
 - Set `APP_BASE_URL=https://pdf.devops.renu.ac.ug` in `.env`
 - Set `API_PUBLIC_URL=https://pdf.devops.renu.ac.ug` in `.env`
+- Set `MAIL_FROM=no-reply@pdf.devops.renu.ac.ug` or another valid sender address in `.env`
 - Replace Mailpit settings with real `SMTP_*` values in `.env`
 
 3. Build and start:
