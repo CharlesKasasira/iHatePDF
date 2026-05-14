@@ -37,7 +37,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["pnpm", "--filter", "@ihatepdf/api", "prisma", "migrate", "deploy"]
+    command: ["pnpm", "--filter", "@ihatepdf/api", "exec", "prisma", "migrate", "deploy"]
 
   api:
     build:
@@ -56,7 +56,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      MAIL_FROM: ${MAIL_FROM:-no-reply@ihatepdf.local}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@pdf.devops.renu.ac.ug}
       SIGN_TOKEN_TTL_HOURS: ${SIGN_TOKEN_TTL_HOURS:-72}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       QPDF_BIN: ${QPDF_BIN:-qpdf}

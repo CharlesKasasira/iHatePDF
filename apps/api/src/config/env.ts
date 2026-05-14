@@ -11,7 +11,7 @@ const EnvSchema = z.object({
   SMTP_PORT: z.coerce.number().default(1025),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  MAIL_FROM: z.string().email(),
+  MAIL_FROM: z.string().min(1),
   SIGN_TOKEN_TTL_HOURS: z.coerce.number().int().positive().default(72),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(50),
   QPDF_BIN: z.string().default("qpdf")
