@@ -150,7 +150,7 @@ export class FilesController {
     try {
       const inputPath = resolve(dir, "source.pdf");
       const outputPrefix = resolve(dir, "page");
-      const outputPath = `${outputPrefix}-${pageNumber}.png`;
+      const outputPath = `${outputPrefix}.png`;
 
       await writeFile(inputPath, buffer);
       await runCommand(env.PDFTOPPM_BIN, [
@@ -165,7 +165,7 @@ export class FilesController {
       ]);
 
       const availableFiles = await readdir(dir);
-      if (!availableFiles.includes(`page-${pageNumber}.png`)) {
+      if (!availableFiles.includes("page.png")) {
         throw new Error("Preview image was not generated.");
       }
 
