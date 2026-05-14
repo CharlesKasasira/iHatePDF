@@ -161,9 +161,9 @@ mkdir -p storage
 2. Update the values for your domain and infrastructure:
 
 - Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` in `.env`
-- Set `NEXT_PUBLIC_API_BASE_URL=https://your-domain/api` in `.env`
-- Set `APP_BASE_URL=https://your-domain` in `.env`
-- Set `API_PUBLIC_URL=https://your-domain` in `.env`
+- Set `NEXT_PUBLIC_API_BASE_URL=https://pdf.devops.renu.ac.ug/api` in `.env`
+- Set `APP_BASE_URL=https://pdf.devops.renu.ac.ug` in `.env`
+- Set `API_PUBLIC_URL=https://pdf.devops.renu.ac.ug` in `.env`
 - Replace Mailpit settings with real `SMTP_*` values in `.env`
 
 3. Build and start:
@@ -181,6 +181,6 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-5. Edit `/etc/nginx/sites-available/ihatepdf` and replace `pdf.example.com` with your real domain, then add TLS with Certbot.
+5. The bundled Nginx config already uses `pdf.devops.renu.ac.ug`; add TLS with Certbot after copying it into place.
 
 The production compose file automatically runs `prisma migrate deploy` before the API and worker start.
