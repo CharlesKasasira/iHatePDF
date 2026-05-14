@@ -8,5 +8,5 @@ dist
 coverage
 .DS_Store
 *.log
-storage/
+/storage/
 .turbo
