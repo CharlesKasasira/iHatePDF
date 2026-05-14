@@ -21,7 +21,8 @@ export type PdfTaskJobName =
   | "word-to-pdf"
   | "excel-to-pdf"
   | "powerpoint-to-pdf"
-  | "edit";
+  | "edit"
+  | "signature-request";
 
 function redisConnectionOptions(redisUrl: string): {
   host: string;

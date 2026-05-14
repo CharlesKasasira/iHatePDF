@@ -96,7 +96,7 @@ export default function MergePage(): React.JSX.Element {
           <p>Combine PDFs in the order you want with the easiest PDF merger available.</p>
 
           <div
-            className={`upload-center ${isDropActive ? "is-drop-active" : ""}`}
+            className={`upload-center upload-center--single ${isDropActive ? "is-drop-active" : ""}`}
             onDragOver={(event) => {
               event.preventDefault();
               setIsDropActive(true);
@@ -116,11 +116,6 @@ export default function MergePage(): React.JSX.Element {
             >
               Select PDF files
             </button>
-
-            <div className="side-cloud-buttons" aria-hidden="true">
-              <button type="button">G</button>
-              <button type="button">D</button>
-            </div>
 
             <input
               ref={fileInputRef}

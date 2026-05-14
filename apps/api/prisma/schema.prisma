@@ -43,6 +43,51 @@ enum SignatureRequestStatus {
   cancelled
 }
 
+enum SignatureEnvelopeStatus {
+  sent
+  in_progress
+  finalizing
+  finalization_failed
+  completed
+  expired
+  revoked
+}
+
+enum SignatureEnvelopeRouting {
+  sequential
+  parallel
+}
+
+enum SignatureRecipientStatus {
+  waiting
+  notified
+  viewed
+  completed
+  revoked
+}
+
+enum SignatureFieldType {
+  signature
+  initials
+  name
+  date
+  checkbox
+  text
+}
+
+enum SignatureEnvelopeEventType {
+  created
+  notification_sent
+  viewed
+  reminded
+  completed
+  finalization_failed
+  reassigned
+  revoked
+  expired
+  finalized
+}
+
 model FileObject {
   id         String   @id @default(cuid())
   objectKey  String   @unique
@@ -55,6 +100,8 @@ model FileObject {
   tasksAsInput Task[]             @relation("taskInputFile")
   tasksAsOutput Task[]            @relation("taskOutputFile")
   signatureRequests SignatureRequest[]
+  signatureEnvelopesAsSource SignatureEnvelope[] @relation("signatureEnvelopeSource")
+  signatureEnvelopesAsFinal SignatureEnvelope[]  @relation("signatureEnvelopeFinal")
 }
 
 model Task {
@@ -89,4 +136,121 @@ model SignatureRequest {
   fileId         String
   signedTaskId   String?
   file           FileObject              @relation(fields: [fileId], references: [id])
+}
+
+model SignatureEnvelope {
+  id             String                   @id @default(cuid())
+  title          String?
+  requesterEmail String
+  message        String?
+  outputName     String
+  status         SignatureEnvelopeStatus  @default(sent)
+  routing        SignatureEnvelopeRouting @default(sequential)
+  expiresAt      DateTime
+  immutableAt    DateTime
+  startedAt      DateTime?
+  completedAt    DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  sourceFileId   String
+  finalFileId    String?
+  finalTaskId    String?
+  sourceFile     FileObject               @relation("signatureEnvelopeSource", fields: [sourceFileId], references: [id])
+  finalFile      FileObject?              @relation("signatureEnvelopeFinal", fields: [finalFileId], references: [id])
+
+  recipients     SignatureEnvelopeRecipient[]
+  fields         SignatureEnvelopeField[]
+  fieldValues    SignatureEnvelopeFieldValue[]
+  events         SignatureEnvelopeEvent[]
+
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model SignatureEnvelopeRecipient {
+  id             String                  @id @default(cuid())
+  token          String                  @unique
+  name           String?
+  email          String
+  role           String?
+  routingOrder   Int
+  status         SignatureRecipientStatus @default(waiting)
+  lastViewedAt   DateTime?
+  notifiedAt     DateTime?
+  remindedAt     DateTime?
+  reminderCount  Int                     @default(0)
+  completedAt    DateTime?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  envelopeId     String
+  envelope       SignatureEnvelope       @relation(fields: [envelopeId], references: [id], onDelete: Cascade)
+
+  fields         SignatureEnvelopeField[]
+  fieldValues    SignatureEnvelopeFieldValue[]
+  events         SignatureEnvelopeEvent[]
+
+  @@index([envelopeId, routingOrder])
+  @@index([envelopeId, status])
+}
+
+model SignatureEnvelopeField {
+  id             String             @id @default(cuid())
+  type           SignatureFieldType
+  label          String?
+  placeholder    String?
+  required       Boolean            @default(true)
+  page           Int
+  x              Float
+  y              Float
+  width          Float
+  height         Float
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  envelopeId     String
+  recipientId    String
+  envelope       SignatureEnvelope  @relation(fields: [envelopeId], references: [id], onDelete: Cascade)
+  recipient      SignatureEnvelopeRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  value          SignatureEnvelopeFieldValue?
+
+  @@index([envelopeId, page])
+  @@index([recipientId])
+}
+
+model SignatureEnvelopeFieldValue {
+  id             String             @id @default(cuid())
+  valueJson      Json
+  completedAt    DateTime
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  envelopeId     String
+  fieldId        String             @unique
+  recipientId    String
+  envelope       SignatureEnvelope  @relation(fields: [envelopeId], references: [id], onDelete: Cascade)
+  field          SignatureEnvelopeField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  recipient      SignatureEnvelopeRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([envelopeId])
+  @@index([recipientId])
+}
+
+model SignatureEnvelopeEvent {
+  id             String                   @id @default(cuid())
+  type           SignatureEnvelopeEventType
+  actorEmail     String?
+  description    String
+  metadata       Json?
+  createdAt      DateTime                 @default(now())
+
+  envelopeId     String
+  recipientId    String?
+  envelope       SignatureEnvelope        @relation(fields: [envelopeId], references: [id], onDelete: Cascade)
+  recipient      SignatureEnvelopeRecipient? @relation(fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([envelopeId, createdAt])
+  @@index([recipientId])
 }

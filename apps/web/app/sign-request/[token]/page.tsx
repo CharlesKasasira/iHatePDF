@@ -4,11 +4,24 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   completeSignatureRequest,
+  getPdfMetadata,
   getPdfPagePreviewUrl,
   getSignatureRequest,
   pollTask,
+  type PdfFileMetadataResponse,
   type SignatureRequestResponse
 } from "../../lib/pdf-api";
+import styles from "../../components/signature-workflow-studio.module.css";
+
+type FieldDraftValue = {
+  textValue?: string;
+  checked?: boolean;
+  signatureDataUrl?: string;
+};
+
+function todayInputValue(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -23,12 +36,14 @@ export default function SignRequestPage(): React.JSX.Element {
   const params = useParams<{ token: string }>();
   const token = params.token;
   const [request, setRequest] = useState<SignatureRequestResponse | null>(null);
+  const [pdfMeta, setPdfMeta] = useState<PdfFileMetadataResponse | null>(null);
+  const [fieldValues, setFieldValues] = useState<Record<string, FieldDraftValue>>({});
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [signatureDataUrl, setSignatureDataUrl] = useState("");
   const [status, setStatus] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -39,7 +54,49 @@ export default function SignRequestPage(): React.JSX.Element {
       try {
         setLoading(true);
         setError("");
-        setRequest(await getSignatureRequest(token));
+        setStatus("");
+        const nextRequest = await getSignatureRequest(token);
+        setRequest(nextRequest);
+        const metadata = await getPdfMetadata(nextRequest.fileId);
+        setPdfMeta(metadata);
+
+        const initialValues: Record<string, FieldDraftValue> = {};
+        nextRequest.fields
+          .filter((field) => field.recipientId === nextRequest.recipient.id)
+          .forEach((field) => {
+            if (field.type === "checkbox") {
+              initialValues[field.id] = { checked: Boolean(field.value?.checked) };
+              return;
+            }
+            if (field.type === "signature") {
+              initialValues[field.id] = {
+                signatureDataUrl:
+                  typeof field.value?.signatureDataUrl === "string"
+                    ? String(field.value.signatureDataUrl)
+                    : ""
+              };
+              return;
+            }
+
+            const fallbackText =
+              field.type === "date"
+                ? todayInputValue()
+                : field.type === "name"
+                  ? nextRequest.recipient.name || ""
+                  : "";
+
+            initialValues[field.id] = {
+              textValue:
+                typeof field.value?.text === "string"
+                  ? String(field.value.text)
+                  : fallbackText
+            };
+          });
+
+        setFieldValues(initialValues);
+        setSelectedFieldId(
+          nextRequest.fields.find((field) => field.recipientId === nextRequest.recipient.id)?.id ?? null
+        );
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -50,154 +107,236 @@ export default function SignRequestPage(): React.JSX.Element {
     void load();
   }, [token]);
 
-  const previewUrl = useMemo(() => {
-    if (!request) {
-      return "";
-    }
+  const assignedFields = useMemo(
+    () =>
+      request
+        ? request.fields.filter((field) => field.recipientId === request.recipient.id)
+        : [],
+    [request]
+  );
 
-    return getPdfPagePreviewUrl(request.fileId, request.page);
-  }, [request]);
-
-  const signatureBoxStyle = useMemo((): React.CSSProperties | null => {
-    if (!request) {
-      return null;
-    }
-
-    return {
-      left: `${(request.x / request.pageWidth) * 100}%`,
-      top: `${((request.pageHeight - (request.y + request.height)) / request.pageHeight) * 100}%`,
-      width: `${(request.width / request.pageWidth) * 100}%`,
-      height: `${(request.height / request.pageHeight) * 100}%`
-    };
-  }, [request]);
-
-  const onSubmit = async (): Promise<void> => {
-    if (!token) {
-      setStatus("Invalid signature token.");
-      return;
-    }
-
-    if (!signatureDataUrl) {
-      setStatus("Upload signature image first.");
+  const submitFields = async (): Promise<void> => {
+    if (!token || !request) {
       return;
     }
 
     try {
       setBusy(true);
-      setStatus("Submitting signature...");
+      setStatus("Submitting your fields...");
       setDownloadUrl("");
+      const payload = assignedFields.map((field) => ({
+        fieldId: field.id,
+        textValue: fieldValues[field.id]?.textValue,
+        checked: fieldValues[field.id]?.checked,
+        signatureDataUrl: fieldValues[field.id]?.signatureDataUrl
+      }));
+      const result = await completeSignatureRequest(token, payload);
 
-      const { taskId } = await completeSignatureRequest(token, signatureDataUrl);
-
-      setStatus("Processing signed document...");
-      const task = await pollTask(taskId);
-
-      if (task.status === "completed" && task.outputDownloadUrl) {
-        setStatus("Document signed successfully.");
-        setDownloadUrl(task.outputDownloadUrl);
+      if (result.taskId) {
+        setStatus("Final signer complete. Rendering the signed document...");
+        const task = await pollTask(result.taskId);
+        if (task.status === "completed" && task.outputDownloadUrl) {
+          setDownloadUrl(task.outputDownloadUrl);
+          setStatus("All fields are complete. The final signed PDF is ready.");
+        } else {
+          setStatus(`Final rendering failed: ${task.errorMessage ?? "unknown error"}`);
+        }
       } else {
-        setStatus(`Signing failed: ${task.errorMessage ?? "unknown error"}`);
+        setStatus("Your fields were submitted. The workflow is moving to the next signer.");
       }
+
+      setRequest(await getSignatureRequest(token));
     } catch (submitError) {
-      setStatus(`Signing failed: ${(submitError as Error).message}`);
+      setStatus(`Submission failed: ${(submitError as Error).message}`);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <main className="feature-page">
-      <section className="feature-hero">
-        <h1>Complete Signature Request</h1>
-        <p>Upload your signature and place it into the marked space on the requested PDF page.</p>
+    <main className={styles.shell}>
+      <section className={styles.hero}>
+        <div>
+          <span className={styles.eyebrow}>Signer Session</span>
+          <h1>{request?.title || request?.fileName || "Open signing request"}</h1>
+          <p>
+            Complete only the fields assigned to you. Routing, reminders, expiration, and final output
+            locking are managed by the sender workflow.
+          </p>
+        </div>
+        {request ? <span className={styles.statusPill}>{request.status.replace("_", " ")}</span> : null}
       </section>
 
-      {loading ? <p className="small">Loading signature request...</p> : null}
-      {error ? <p className="error">{error}</p> : null}
+      {loading ? <p className={styles.note}>Loading signing session...</p> : null}
+      {error ? <p className={styles.note}>{error}</p> : null}
 
       {request ? (
-        <section className="studio-workspace">
-          <aside className="studio-sidebar">
-            <div className="studio-panel">
-              <div className="studio-panel__eyebrow">Request</div>
-              <h2>{request.fileName}</h2>
-              <p className="small">Status: {request.status}</p>
-              <p className="small">Expires: {new Date(request.expiresAt).toLocaleString()}</p>
-              <p className="small">Page: {request.page}</p>
-              {request.message ? <p className="small">Message: {request.message}</p> : null}
-            </div>
-
-            {request.status !== "pending" ? (
-              <div className="studio-panel">
-                <p className="error">This request is no longer pending.</p>
+        <section className={styles.builderGrid}>
+          <aside className={styles.sidebar}>
+            <article className={styles.panel}>
+              <div className={styles.panelHeader}>
+                <span className={styles.eyebrow}>Your turn</span>
+                <strong>{request.recipient.name || request.recipient.email}</strong>
               </div>
-            ) : (
-              <div className="studio-panel">
-                <div className="studio-panel__eyebrow">Your Signature</div>
-                <label htmlFor="sig-image">Signature image</label>
-                <input
-                  id="sig-image"
-                  type="file"
-                  accept="image/png,image/jpeg"
-                  onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) {
-                      return;
-                    }
+              <p className={styles.panelCopy}>
+                {request.recipient.role || "Signer"} · order {request.recipient.routingOrder}
+              </p>
+              <p className={styles.panelCopy}>Expires {new Date(request.expiresAt).toLocaleString()}</p>
+              {request.message ? <p className={styles.panelCopy}>{request.message}</p> : null}
+              {!request.canSubmit ? (
+                <p className={styles.note}>
+                  {request.status === "completed"
+                    ? "This workflow is complete."
+                    : request.status === "expired"
+                      ? "This workflow has expired."
+                      : "Your turn is not active yet, or the workflow is already locked."}
+                </p>
+              ) : null}
+            </article>
 
-                    setSignatureDataUrl(await fileToDataUrl(file));
-                  }}
-                />
-
-                {signatureDataUrl ? (
-                  <img
-                    src={signatureDataUrl}
-                    alt="Signature preview"
-                    style={{ maxWidth: "100%", marginTop: 12, borderRadius: 12 }}
-                  />
-                ) : null}
-
-                <button type="button" className="studio-primary-button studio-primary-button--full" disabled={busy} onClick={onSubmit}>
-                  {busy ? "Submitting..." : "Sign Document"}
-                </button>
-
-                <p className={status.includes("failed") ? "error" : "small"}>{status}</p>
-                {downloadUrl ? (
-                  <a className="download studio-download-link" href={downloadUrl} target="_blank" rel="noreferrer">
-                    Download signed document
-                  </a>
-                ) : null}
+            <article className={styles.panel}>
+              <div className={styles.panelHeader}>
+                <span className={styles.eyebrow}>Assigned fields</span>
+                <strong>{assignedFields.length}</strong>
               </div>
-            )}
-          </aside>
+              <div className={styles.fieldEditor}>
+                {assignedFields.map((field) => (
+                  <div key={field.id} className={styles.recipientCard}>
+                    <button type="button" className={styles.recipientSelect} onClick={() => setSelectedFieldId(field.id)}>
+                      <strong>{field.label || field.type}</strong>
+                      <span>Page {field.page}</span>
+                    </button>
 
-          <section className="studio-canvas-area">
-            <article className="studio-page-card">
-              <div className="studio-page-card__meta">
-                <span>Page {request.page}</span>
-                <span>Signature area</span>
-              </div>
-              <div className="studio-page-surface" style={{ height: "auto", cursor: "default" }}>
-                <div
-                  className="studio-page-paper"
-                  style={{
-                    aspectRatio: `${request.pageWidth} / ${request.pageHeight}`
-                  }}
-                >
-                  <img
-                    className="studio-page-paper__preview"
-                    src={previewUrl}
-                    alt={`${request.fileName} page ${request.page}`}
-                    draggable={false}
-                  />
-                  {signatureBoxStyle ? (
-                    <div className="studio-signature-request-box" style={signatureBoxStyle}>
-                      <span>Sign here</span>
-                    </div>
-                  ) : null}
-                </div>
+                    {field.type === "signature" ? (
+                      <div className={styles.fieldEditor}>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg"
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) {
+                              return;
+                            }
+                            const signatureDataUrl = await fileToDataUrl(file);
+                            setFieldValues((current) => ({
+                              ...current,
+                              [field.id]: {
+                                ...current[field.id],
+                                signatureDataUrl
+                              }
+                            }));
+                          }}
+                        />
+                        {fieldValues[field.id]?.signatureDataUrl ? (
+                          <img
+                            src={fieldValues[field.id]?.signatureDataUrl}
+                            alt="Signature preview"
+                            style={{ maxWidth: "100%", borderRadius: 12 }}
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {field.type === "checkbox" ? (
+                      <label>
+                        <span>Checked</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(fieldValues[field.id]?.checked)}
+                          onChange={(event) =>
+                            setFieldValues((current) => ({
+                              ...current,
+                              [field.id]: {
+                                ...current[field.id],
+                                checked: event.target.checked
+                              }
+                            }))
+                          }
+                        />
+                      </label>
+                    ) : null}
+
+                    {field.type !== "signature" && field.type !== "checkbox" ? (
+                      <label>
+                        <span>{field.placeholder || "Value"}</span>
+                        <input
+                          type={field.type === "date" ? "date" : "text"}
+                          value={fieldValues[field.id]?.textValue ?? ""}
+                          onChange={(event) =>
+                            setFieldValues((current) => ({
+                              ...current,
+                              [field.id]: {
+                                ...current[field.id],
+                                textValue: event.target.value
+                              }
+                            }))
+                          }
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                ))}
               </div>
             </article>
+
+            <article className={styles.panel}>
+              <button
+                className={styles.primaryButton}
+                type="button"
+                disabled={busy || !request.canSubmit}
+                onClick={() => void submitFields()}
+              >
+                {busy ? "Submitting..." : "Submit assigned fields"}
+              </button>
+              <p className={styles.note}>{status}</p>
+              {downloadUrl ? (
+                <a className={styles.primaryButton} href={downloadUrl} target="_blank" rel="noreferrer">
+                  Download final signed PDF
+                </a>
+              ) : null}
+            </article>
+          </aside>
+
+          <section className={styles.canvasStack}>
+            {pdfMeta?.pages.map((page) => (
+              <article key={page.pageNumber} className={styles.pageCard}>
+                <div className={styles.pageMeta}>
+                  <span>Page {page.pageNumber}</span>
+                  <span>Field map</span>
+                </div>
+                <div className={styles.pageSurface} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
+                  <img
+                    className={styles.pagePreview}
+                    src={getPdfPagePreviewUrl(request.fileId, page.pageNumber)}
+                    alt={`${request.fileName} page ${page.pageNumber}`}
+                    draggable={false}
+                  />
+                  {request.fields
+                    .filter((field) => field.page === page.pageNumber)
+                    .map((field) => (
+                      <button
+                        key={field.id}
+                        type="button"
+                        className={`${styles.fieldBox} ${selectedFieldId === field.id ? styles.fieldBoxActive : ""}`}
+                        style={{
+                          left: `${(field.x / page.width) * 100}%`,
+                          top: `${((page.height - (field.y + field.height)) / page.height) * 100}%`,
+                          width: `${(field.width / page.width) * 100}%`,
+                          height: `${(field.height / page.height) * 100}%`
+                        }}
+                        onClick={() => setSelectedFieldId(field.id)}
+                      >
+                        <strong>{field.label || field.type}</strong>
+                        <span>
+                          {field.recipientId === request.recipient.id
+                            ? "Assigned to you"
+                            : field.recipientName || "Other signer"}
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              </article>
+            ))}
           </section>
         </section>
       ) : null}

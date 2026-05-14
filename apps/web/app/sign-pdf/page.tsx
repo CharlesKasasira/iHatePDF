@@ -1,7 +1,12 @@
-"use client";
+import { SignatureWorkflowStudio } from "../components/signature-workflow-studio";
 
-import { PdfEditorStudio } from "../components/pdf-editor-studio";
-
-export default function SignPdfPage(): React.JSX.Element {
-  return <PdfEditorStudio mode="sign" />;
+export default async function SignPdfPage({
+  searchParams
+}: {
+  searchParams?: Promise<{
+    envelope?: string;
+  }>;
+}): Promise<React.JSX.Element> {
+  const params = await searchParams;
+  return <SignatureWorkflowStudio initialEnvelopeId={params?.envelope ?? null} />;
 }
