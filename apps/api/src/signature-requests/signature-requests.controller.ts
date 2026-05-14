@@ -1,33 +1,63 @@
 import { Body, Controller, Get, Param, Post } from "@nestjs/common";
 import {
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsDateString,
   IsEmail,
+  IsEnum,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Max,
-  Min
+  Min,
+  ValidateNested
 } from "class-validator";
+import { Type } from "class-transformer";
+import { SignatureEnvelopeRouting, SignatureFieldType } from "@prisma/client";
 import { SignatureRequestsService } from "./signature-requests.service.js";
 
-class CreateSignatureRequestDto {
+class CreateSignatureRecipientDto {
   @IsString()
   @IsNotEmpty()
-  fileId!: string;
-
-  @IsEmail()
-  requesterEmail!: string;
+  key!: string;
 
   @IsOptional()
   @IsString()
-  signerName?: string;
+  name?: string;
 
   @IsEmail()
-  signerEmail!: string;
+  email!: string;
 
   @IsOptional()
   @IsString()
-  signerRole?: string;
+  role?: string;
+
+  @IsNumber()
+  @Min(1)
+  routingOrder!: number;
+}
+
+class CreateSignatureFieldDto {
+  @IsString()
+  @IsNotEmpty()
+  recipientKey!: string;
+
+  @IsEnum(SignatureFieldType)
+  type!: SignatureFieldType;
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @IsOptional()
+  @IsString()
+  placeholder?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
 
   @IsNumber()
   @Min(1)
@@ -50,20 +80,84 @@ class CreateSignatureRequestDto {
   @Min(1)
   @Max(5000)
   height!: number;
+}
+
+class CreateSignatureRequestDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsEmail()
+  requesterEmail!: string;
+
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  message?: string;
 
   @IsString()
   @IsNotEmpty()
   outputName!: string;
 
+  @IsEnum(SignatureEnvelopeRouting)
+  routing!: SignatureEnvelopeRouting;
+
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CreateSignatureRecipientDto)
+  recipients!: CreateSignatureRecipientDto[];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CreateSignatureFieldDto)
+  fields!: CreateSignatureFieldDto[];
+}
+
+class SubmitFieldValueDto {
+  @IsString()
+  @IsNotEmpty()
+  fieldId!: string;
+
   @IsOptional()
   @IsString()
-  message?: string;
+  textValue?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  checked?: boolean;
+
+  @IsOptional()
+  @IsString()
+  signatureDataUrl?: string;
 }
 
 class CompleteSignatureRequestDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SubmitFieldValueDto)
+  fieldValues!: SubmitFieldValueDto[];
+}
+
+class ReassignRecipientDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  signatureDataUrl!: string;
+  name?: string;
+
+  @IsEmail()
+  email!: string;
+
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
 
 @Controller("signature-requests")
@@ -71,36 +165,46 @@ export class SignatureRequestsController {
   constructor(private readonly service: SignatureRequestsService) {}
 
   @Post()
-  create(@Body() dto: CreateSignatureRequestDto): Promise<{ id: string; token: string; signingUrl: string }> {
+  create(@Body() dto: CreateSignatureRequestDto) {
     return this.service.createRequest(dto);
   }
 
+  @Get("envelopes/:id")
+  getEnvelope(@Param("id") id: string) {
+    return this.service.getEnvelope(id);
+  }
+
+  @Post("envelopes/:id/revoke")
+  revoke(@Param("id") id: string) {
+    return this.service.revokeEnvelope(id);
+  }
+
+  @Post("envelopes/:id/retry-finalization")
+  retryFinalization(@Param("id") id: string) {
+    return this.service.retryFinalization(id);
+  }
+
+  @Post("envelopes/:id/recipients/:recipientId/remind")
+  remind(@Param("id") id: string, @Param("recipientId") recipientId: string) {
+    return this.service.remindRecipient(id, recipientId);
+  }
+
+  @Post("envelopes/:id/recipients/:recipientId/reassign")
+  reassign(
+    @Param("id") id: string,
+    @Param("recipientId") recipientId: string,
+    @Body() dto: ReassignRecipientDto
+  ) {
+    return this.service.reassignRecipient(id, recipientId, dto);
+  }
+
   @Get(":token")
-  getByToken(@Param("token") token: string): Promise<{
-    id: string;
-    token: string;
-    status: string;
-    fileId: string;
-    fileName: string;
-    expiresAt: Date;
-    message: string | null;
-    page: number;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    outputName: string;
-    pageWidth: number;
-    pageHeight: number;
-  }> {
+  getByToken(@Param("token") token: string) {
     return this.service.getByToken(token);
   }
 
   @Post(":token/complete")
-  complete(
-    @Param("token") token: string,
-    @Body() dto: CompleteSignatureRequestDto
-  ): Promise<{ taskId: string }> {
+  complete(@Param("token") token: string, @Body() dto: CompleteSignatureRequestDto) {
     return this.service.completeByToken(token, dto);
   }
 }

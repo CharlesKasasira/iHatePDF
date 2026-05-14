@@ -13,23 +13,140 @@ export type TaskStatusResponse = {
 };
 
 export type SignatureRequestResponse = {
-  id: string;
-  token: string;
-  status: "pending" | "completed" | "expired" | "cancelled";
+  envelopeId: string;
+  title: string | null;
+  requesterEmail: string;
+  status:
+    | "sent"
+    | "in_progress"
+    | "finalizing"
+    | "finalization_failed"
+    | "completed"
+    | "expired"
+    | "revoked";
+  routing: "sequential" | "parallel";
   fileId: string;
   fileName: string;
   expiresAt: string;
+  currentOrder: number | null;
+  canSubmit: boolean;
   message: string | null;
-  signerName?: string;
-  signerRole?: string;
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+  recipient: {
+    id: string;
+    name: string | null;
+    email: string;
+    role: string | null;
+    routingOrder: number;
+    status: "waiting" | "notified" | "viewed" | "completed" | "revoked";
+  };
+  recipients: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    role: string | null;
+    routingOrder: number;
+    status: "waiting" | "notified" | "viewed" | "completed" | "revoked";
+    completedAt: string | null;
+  }>;
+  fields: Array<{
+    id: string;
+    recipientId: string;
+    recipientName: string | null;
+    type: "signature" | "initials" | "name" | "date" | "checkbox" | "text";
+    label: string | null;
+    placeholder: string | null;
+    required: boolean;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    value: Record<string, unknown> | null;
+  }>;
+  auditTrail: Array<{
+    id: string;
+    type:
+      | "created"
+      | "notification_sent"
+      | "viewed"
+      | "reminded"
+      | "completed"
+      | "finalization_failed"
+      | "reassigned"
+      | "revoked"
+      | "expired"
+      | "finalized";
+    actorEmail: string | null;
+    description: string;
+    createdAt: string;
+  }>;
+  finalDownloadUrl: string | null;
+};
+
+export type SignatureEnvelopeResponse = {
+  id: string;
+  title: string | null;
+  requesterEmail: string;
+  status:
+    | "sent"
+    | "in_progress"
+    | "finalizing"
+    | "finalization_failed"
+    | "completed"
+    | "expired"
+    | "revoked";
+  routing: "sequential" | "parallel";
   outputName: string;
-  pageWidth: number;
-  pageHeight: number;
+  fileId: string;
+  fileName: string;
+  expiresAt: string;
+  createdAt: string;
+  completedAt: string | null;
+  revokedAt: string | null;
+  finalDownloadUrl: string | null;
+  recipients: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    role: string | null;
+    routingOrder: number;
+    status: "waiting" | "notified" | "viewed" | "completed" | "revoked";
+    reminderCount: number;
+    lastViewedAt: string | null;
+    completedAt: string | null;
+    signingUrl: string;
+  }>;
+  fields: Array<{
+    id: string;
+    recipientId: string;
+    recipientName: string | null;
+    type: "signature" | "initials" | "name" | "date" | "checkbox" | "text";
+    label: string | null;
+    required: boolean;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    value: Record<string, unknown> | null;
+  }>;
+  auditTrail: Array<{
+    id: string;
+    type:
+      | "created"
+      | "notification_sent"
+      | "viewed"
+      | "reminded"
+      | "completed"
+      | "finalization_failed"
+      | "reassigned"
+      | "revoked"
+      | "expired"
+      | "finalized";
+    actorEmail: string | null;
+    description: string;
+    createdAt: string;
+  }>;
 };
 
 export type UploadedFileMeta = {
@@ -175,6 +292,33 @@ export function getPdfPagePreviewUrl(fileId: string, pageNumber: number): string
 export async function createSignatureRequest(input: {
   fileId: string;
   requesterEmail: string;
+  title?: string;
+  message?: string;
+  outputName: string;
+  routing: "sequential" | "parallel";
+  expiresAt?: string;
+  recipients: Array<{
+    key: string;
+    name?: string;
+    email: string;
+    role?: string;
+    routingOrder: number;
+  }>;
+  fields: Array<{
+    recipientKey: string;
+    type: "signature" | "initials" | "name" | "date" | "checkbox" | "text";
+    label?: string;
+    placeholder?: string;
+    required?: boolean;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
+} | {
+  fileId: string;
+  requesterEmail: string;
   signerName?: string;
   signerEmail: string;
   signerRole?: string;
@@ -185,11 +329,83 @@ export async function createSignatureRequest(input: {
   height: number;
   outputName: string;
   message?: string;
-}): Promise<{ id: string; token: string; signingUrl: string }> {
-  return jsonFetch<{ id: string; token: string; signingUrl: string }>("/signature-requests", {
+}): Promise<{
+  id: string;
+  status:
+    | "sent"
+    | "in_progress"
+    | "finalizing"
+    | "finalization_failed"
+    | "completed"
+    | "expired"
+    | "revoked";
+  routing: "sequential" | "parallel";
+  expiresAt: string;
+  manageUrl: string;
+  signerLinks: Array<{
+    recipientId: string;
+    name: string | null;
+    email: string;
+    routingOrder: number;
+    status: "waiting" | "notified" | "viewed" | "completed" | "revoked";
+    signingUrl: string;
+  }>;
+} | {
+  id: string;
+  token: string;
+  signingUrl: string;
+}> {
+  return jsonFetch("/signature-requests", {
     method: "POST",
     body: JSON.stringify(input)
   });
+}
+
+export async function getSignatureEnvelope(envelopeId: string): Promise<SignatureEnvelopeResponse> {
+  return jsonFetch<SignatureEnvelopeResponse>(`/signature-requests/envelopes/${envelopeId}`);
+}
+
+export async function revokeSignatureEnvelope(envelopeId: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(`/signature-requests/envelopes/${envelopeId}/revoke`, {
+    method: "POST"
+  });
+}
+
+export async function retrySignatureEnvelopeFinalization(
+  envelopeId: string
+): Promise<{ envelopeId: string; taskId: string }> {
+  return jsonFetch<{ envelopeId: string; taskId: string }>(
+    `/signature-requests/envelopes/${envelopeId}/retry-finalization`,
+    {
+      method: "POST"
+    }
+  );
+}
+
+export async function remindSignatureRecipient(
+  envelopeId: string,
+  recipientId: string
+): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(
+    `/signature-requests/envelopes/${envelopeId}/recipients/${recipientId}/remind`,
+    {
+      method: "POST"
+    }
+  );
+}
+
+export async function reassignSignatureRecipient(
+  envelopeId: string,
+  recipientId: string,
+  input: { name?: string; email: string; role?: string }
+): Promise<{ ok: true; signingUrl: string }> {
+  return jsonFetch<{ ok: true; signingUrl: string }>(
+    `/signature-requests/envelopes/${envelopeId}/recipients/${recipientId}/reassign`,
+    {
+      method: "POST",
+      body: JSON.stringify(input)
+    }
+  );
 }
 
 export async function getSignatureRequest(token: string): Promise<SignatureRequestResponse> {
@@ -198,11 +414,16 @@ export async function getSignatureRequest(token: string): Promise<SignatureReque
 
 export async function completeSignatureRequest(
   token: string,
-  signatureDataUrl: string
-): Promise<{ taskId: string }> {
-  return jsonFetch<{ taskId: string }>(`/signature-requests/${token}/complete`, {
+  fieldValues: Array<{
+    fieldId: string;
+    textValue?: string;
+    checked?: boolean;
+    signatureDataUrl?: string;
+  }>
+): Promise<{ envelopeId: string; status: string; taskId?: string }> {
+  return jsonFetch<{ envelopeId: string; status: string; taskId?: string }>(`/signature-requests/${token}/complete`, {
     method: "POST",
-    body: JSON.stringify({ signatureDataUrl })
+    body: JSON.stringify({ fieldValues })
   });
 }
 

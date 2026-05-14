@@ -358,6 +358,10 @@ main {
   max-width: 560px;
 }
 
+.upload-center--single {
+  grid-template-columns: 1fr;
+}
+
 .upload-center.is-drop-active .select-files-btn {
   box-shadow:
     0 0 0 4px rgba(240, 77, 63, 0.12),
@@ -381,22 +385,6 @@ main {
 .select-files-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 14px 28px rgba(240, 77, 63, 0.22);
-}
-
-.side-cloud-buttons {
-  display: grid;
-  gap: 8px;
-}
-
-.side-cloud-buttons button {
-  width: 48px;
-  height: 48px;
-  border: 1px solid rgba(240, 77, 63, 0.18);
-  border-radius: 14px;
-  background: #fff;
-  color: var(--red);
-  font-size: 18px;
-  font-weight: 800;
 }
 
 .drop-hint {
@@ -1707,11 +1695,6 @@ a.download {
   .merge-workbench,
   .panel {
     padding: 18px;
-  }
-
-  .side-cloud-buttons {
-    grid-template-columns: repeat(2, 48px);
-    justify-self: center;
   }
 
   .grid.two {

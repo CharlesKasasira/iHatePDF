@@ -12,7 +12,7 @@ import { inflateRawSync, inflateSync } from "node:zlib";
 import { z } from "zod";
 
 const require = createRequire(import.meta.url);
-const { PrismaClient, SignatureRequestStatus, TaskStatus } =
+const { PrismaClient, SignatureEnvelopeEventType, SignatureEnvelopeStatus, SignatureRequestStatus, TaskStatus } =
   require("@prisma/client") as typeof import("@prisma/client");
 
 const EnvSchema = z.object({
@@ -101,6 +101,26 @@ const SignPayloadSchema = z.object({
   width: z.number().positive(),
   height: z.number().positive(),
   outputName: z.string().min(1)
+});
+
+const SignatureRequestFieldSchema = z.object({
+  fieldId: z.string(),
+  type: z.enum(["signature", "initials", "name", "date", "checkbox", "text"]),
+  page: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  label: z.string().optional(),
+  valueJson: z.record(z.string(), z.unknown())
+});
+
+const SignatureRequestFinalizePayloadSchema = z.object({
+  taskId: z.string(),
+  envelopeId: z.string(),
+  fileKey: z.string(),
+  outputName: z.string().min(1),
+  fields: z.array(SignatureRequestFieldSchema).min(1)
 });
 
 const CompressPayloadSchema = z.object({
@@ -224,6 +244,7 @@ type RemovePagesPayload = z.infer<typeof RemovePagesPayloadSchema>;
 type ExtractPagesPayload = z.infer<typeof ExtractPagesPayloadSchema>;
 type OrganizePdfPayload = z.infer<typeof OrganizePdfPayloadSchema>;
 type SignPayload = z.infer<typeof SignPayloadSchema>;
+type SignatureRequestFinalizePayload = z.infer<typeof SignatureRequestFinalizePayloadSchema>;
 type CompressPayload = z.infer<typeof CompressPayloadSchema>;
 type ProtectPayload = z.infer<typeof ProtectPayloadSchema>;
 type UnlockPayload = z.infer<typeof UnlockPayloadSchema>;
@@ -459,6 +480,40 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
       status: SignatureRequestStatus.cancelled
     }
   });
+
+  const envelopes = await prisma.signatureEnvelope.findMany({
+    where: {
+      finalTaskId: taskId,
+      status: SignatureEnvelopeStatus.finalizing
+    },
+    select: {
+      id: true
+    }
+  });
+
+  if (envelopes.length > 0) {
+    await prisma.signatureEnvelope.updateMany({
+      where: {
+        finalTaskId: taskId,
+        status: SignatureEnvelopeStatus.finalizing
+      },
+      data: {
+        status: SignatureEnvelopeStatus.finalization_failed
+      }
+    });
+
+    await prisma.signatureEnvelopeEvent.createMany({
+      data: envelopes.map((envelope) => ({
+        envelopeId: envelope.id,
+        type: SignatureEnvelopeEventType.finalization_failed,
+        description: "Final signed PDF rendering failed.",
+        metadata: {
+          taskId,
+          error: message
+        }
+      }))
+    });
+  }
 }
 
 async function markCompleted(taskId: string, outputFileId: string): Promise<void> {
@@ -481,6 +536,18 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
     data: {
       status: SignatureRequestStatus.completed,
       signedAt: new Date()
+    }
+  });
+
+  await prisma.signatureEnvelope.updateMany({
+    where: {
+      finalTaskId: taskId,
+      status: "finalizing"
+    },
+    data: {
+      status: "completed",
+      completedAt: new Date(),
+      finalFileId: outputFileId
     }
   });
 }
@@ -710,6 +777,93 @@ async function runSign(payload: SignPayload, reportProgress: ProgressReporter): 
 
   await reportProgress(96, "Saving signed file...");
   return uploadObject(objectKey, "application/pdf", Buffer.from(signed), fileName);
+}
+
+async function runSignatureRequestFinalize(
+  payload: SignatureRequestFinalizePayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  await reportProgress(12, "Loading source PDF...");
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const pdfDoc = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const pages = pdfDoc.getPages();
+  const embeddedFonts = new Map<StandardFonts, Awaited<ReturnType<typeof pdfDoc.embedFont>>>();
+
+  const getEmbeddedFont = async (fontName: StandardFonts) => {
+    let font = embeddedFonts.get(fontName);
+    if (!font) {
+      font = await pdfDoc.embedFont(fontName);
+      embeddedFonts.set(fontName, font);
+    }
+    return font;
+  };
+
+  const font = await getEmbeddedFont(StandardFonts.Helvetica);
+  const boldFont = await getEmbeddedFont(StandardFonts.HelveticaBold);
+
+  for (const [index, field] of payload.fields.entries()) {
+    if (field.page > pages.length) {
+      throw new Error(`Invalid page number ${field.page}. PDF has ${pages.length} page(s).`);
+    }
+
+    const page = pages[field.page - 1];
+    if (field.type === "signature") {
+      const signatureDataUrl = field.valueJson.signatureDataUrl;
+      if (typeof signatureDataUrl !== "string" || !signatureDataUrl.startsWith("data:image/")) {
+        throw new Error(`Signature field ${field.fieldId} is missing image data.`);
+      }
+
+      const imageData = parseDataUrl(signatureDataUrl);
+      const embeddedImage = isJpegDataUrl(signatureDataUrl)
+        ? await pdfDoc.embedJpg(imageData)
+        : await pdfDoc.embedPng(imageData);
+
+      page.drawImage(embeddedImage, {
+        x: field.x,
+        y: field.y,
+        width: field.width,
+        height: field.height
+      });
+    } else if (field.type === "checkbox") {
+      const checked = Boolean(field.valueJson.checked);
+      if (checked) {
+        const size = Math.max(10, Math.min(field.width, field.height) * 0.72);
+        page.drawText("X", {
+          x: field.x + Math.max(2, (field.width - size * 0.55) / 2),
+          y: field.y + Math.max(1, (field.height - size) / 2),
+          size,
+          font: boldFont,
+          color: rgb(0.09, 0.2, 0.33)
+        });
+      }
+    } else {
+      const textValue = field.valueJson.text;
+      if (typeof textValue !== "string" || !textValue.trim()) {
+        throw new Error(`Field ${field.fieldId} is missing text content.`);
+      }
+
+      const fontSize = Math.max(9, Math.min(18, field.height * 0.58));
+      page.drawText(textValue.trim(), {
+        x: field.x + 4,
+        y: field.y + Math.max(2, (field.height - fontSize) / 2),
+        size: fontSize,
+        font,
+        color: rgb(0.09, 0.2, 0.33),
+        maxWidth: Math.max(24, field.width - 8)
+      });
+    }
+
+    await reportProgress(
+      22 + Math.floor(((index + 1) / payload.fields.length) * 60),
+      `Rendering signed field ${index + 1} of ${payload.fields.length}...`
+    );
+  }
+
+  await reportProgress(88, "Saving final signed PDF...");
+  const finalizedBuffer = Buffer.from(await pdfDoc.save());
+  const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving signed output...");
+  return uploadObject(createOutputObjectKey(fileName), "application/pdf", finalizedBuffer, fileName);
 }
 
 async function runCompress(payload: CompressPayload, reportProgress: ProgressReporter): Promise<string> {
@@ -2666,6 +2820,14 @@ async function processJob(job: Job): Promise<void> {
     const payload = SignPayloadSchema.parse(data);
     await runTask(payload.taskId, "Preparing signature...", (reportProgress) =>
       runSign(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "signature-request") {
+    const payload = SignatureRequestFinalizePayloadSchema.parse(data);
+    await runTask(payload.taskId, "Finalizing signed workflow...", (reportProgress) =>
+      runSignatureRequestFinalize(payload, reportProgress)
     );
     return;
   }
