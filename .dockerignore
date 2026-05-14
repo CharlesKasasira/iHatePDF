@@ -3,7 +3,7 @@
 .pnpm-store
 .turbo
 node_modules
-storage
+/storage
 dist
 .env
 apps/api/.env
