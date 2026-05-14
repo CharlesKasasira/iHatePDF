@@ -6,12 +6,18 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 
 - Merge PDF files (ordered merge)
 - Split PDF files (single or multiple ranges)
+- Remove pages from PDF files
+- Extract selected pages into a new PDF
+- Organize PDF pages (reorder, duplicate, remove)
 - Compress PDF files
 - Protect PDF files (password encryption)
 - Unlock PDF files (password removal)
+- JPG to PDF conversion
 - PDF to Word conversion
+- PDF to JPG conversion
 - PDF to PowerPoint conversion
 - PDF to Excel conversion
+- Word to PDF conversion (`.docx`)
 - Excel to PDF conversion (`.xlsx`)
 - PowerPoint to PDF conversion (`.pptx`)
 - Edit PDF (text, image, rectangle overlays)
@@ -116,16 +122,23 @@ pnpm dev
 ## Feature API Endpoints
 
 - `POST /api/uploads` (`multipart/form-data` with a `file` field)
+- `GET /api/files/:id/metadata`
 - `GET /api/files/:id/download`
 - `POST /api/tasks/merge`
 - `POST /api/tasks/split`
+- `POST /api/tasks/remove-pages`
+- `POST /api/tasks/extract-pages`
+- `POST /api/tasks/organize-pdf`
 - `POST /api/tasks/sign`
 - `POST /api/tasks/compress`
 - `POST /api/tasks/protect`
 - `POST /api/tasks/unlock`
+- `POST /api/tasks/jpg-to-pdf`
 - `POST /api/tasks/pdf-to-word`
+- `POST /api/tasks/pdf-to-jpg`
 - `POST /api/tasks/pdf-to-powerpoint`
 - `POST /api/tasks/pdf-to-excel`
+- `POST /api/tasks/word-to-pdf`
 - `POST /api/tasks/excel-to-pdf`
 - `POST /api/tasks/powerpoint-to-pdf`
 - `POST /api/tasks/edit`
@@ -143,7 +156,10 @@ pnpm dev
 - Uploaded and processed files are stored under `./storage` by default.
 - Protect PDF uses `qpdf`; install locally with `brew install qpdf` if running without Docker.
 - Unlock PDF uses `qpdf` and requires the current document password.
+- JPG to PDF preserves the upload order and creates one PDF page per image.
 - PDF-to-Office conversions now render each PDF page into the Office document so images, tables, and complex layouts are preserved visually.
+- Word to PDF currently supports `.docx` input.
+- PDF to JPG returns one `.jpg` for single-page PDFs and a `.zip` archive for multi-page PDFs.
 - Excel to PDF currently supports `.xlsx` input.
 - PowerPoint to PDF currently supports `.pptx` input.
 - The worker requires `qpdf` and `pdftoppm` (`poppler-utils`) when running outside Docker.

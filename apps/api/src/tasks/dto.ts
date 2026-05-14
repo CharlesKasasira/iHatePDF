@@ -1,5 +1,6 @@
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsBoolean,
   IsIn,
   IsArray,
@@ -27,6 +28,16 @@ export class MergePdfDto {
   outputName!: string;
 }
 
+export class JpgToPdfDto {
+  @IsArray()
+  @IsString({ each: true })
+  fileIds!: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+}
+
 export class SplitPdfDto {
   @IsString()
   @IsNotEmpty()
@@ -39,6 +50,53 @@ export class SplitPdfDto {
   @IsString()
   @IsNotEmpty()
   outputPrefix!: string;
+}
+
+export class RemovePagesDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  pageRanges!: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+}
+
+export class ExtractPagesDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMinSize(1)
+  pageRanges!: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+}
+
+export class OrganizePdfDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(5000)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  pageOrder!: number[];
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
 }
 
 export class SignPdfDto {
@@ -228,6 +286,77 @@ export class EditImageDto {
   dataUrl!: string;
 }
 
+export class EditPageRotationDto {
+  @IsInt()
+  @Min(1)
+  page!: number;
+
+  @IsInt()
+  @IsIn([90, 180, 270])
+  degrees!: 90 | 180 | 270;
+}
+
+export class EditPageNumbersDto {
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  startAt!: number;
+
+  @IsNumber()
+  @Min(6)
+  @Max(72)
+  fontSize!: number;
+
+  @IsString()
+  @IsHexColor()
+  color!: string;
+
+  @IsString()
+  @IsIn([
+    "top-left",
+    "top-center",
+    "top-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right"
+  ])
+  position!: "top-left" | "top-center" | "top-right" | "bottom-left" | "bottom-center" | "bottom-right";
+
+  @IsNumber()
+  @Min(0)
+  @Max(144)
+  margin!: number;
+
+  @IsOptional()
+  @IsString()
+  prefix?: string;
+}
+
+export class EditWatermarkDto {
+  @IsString()
+  @IsNotEmpty()
+  text!: string;
+
+  @IsNumber()
+  @Min(18)
+  @Max(240)
+  fontSize!: number;
+
+  @IsString()
+  @IsHexColor()
+  color!: string;
+
+  @IsNumber()
+  @Min(0.05)
+  @Max(0.95)
+  opacity!: number;
+
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  rotation!: number;
+}
+
 export class EditPdfDto {
   @IsString()
   @IsNotEmpty()
@@ -253,6 +382,23 @@ export class EditPdfDto {
   @ArrayMaxSize(50)
   @IsOptional()
   imageEdits?: EditImageDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EditPageRotationDto)
+  @ArrayMaxSize(200)
+  @IsOptional()
+  pageRotations?: EditPageRotationDto[];
+
+  @ValidateNested()
+  @Type(() => EditPageNumbersDto)
+  @IsOptional()
+  pageNumbers?: EditPageNumbersDto;
+
+  @ValidateNested()
+  @Type(() => EditWatermarkDto)
+  @IsOptional()
+  watermark?: EditWatermarkDto;
 
   @IsString()
   @IsNotEmpty()

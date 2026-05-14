@@ -48,6 +48,31 @@ const TOOLS: ToolCard[] = [
     categories: ["Workflows", "Organize PDF"]
   },
   {
+    title: "Remove pages",
+    description: "Delete the pages you do not want and keep the rest of the PDF intact.",
+    href: "/remove-pages",
+    icon: "−",
+    iconClass: "icon-orange",
+    categories: ["Organize PDF"]
+  },
+  {
+    title: "Extract pages",
+    description: "Pull selected pages into a new PDF without generating a separate file per range.",
+    href: "/extract-pages",
+    icon: "⤴",
+    iconClass: "icon-blue",
+    categories: ["Organize PDF"]
+  },
+  {
+    title: "Organize PDF",
+    description: "Reorder, duplicate, and remove pages before exporting a clean final document.",
+    href: "/organize-pdf",
+    icon: "☰",
+    iconClass: "icon-green",
+    categories: ["Workflows", "Organize PDF"],
+    highlight: true
+  },
+  {
     title: "Compress PDF",
     description: "Reduce file size while optimizing for maximal PDF quality.",
     href: "/compress-pdf",
@@ -72,11 +97,28 @@ const TOOLS: ToolCard[] = [
     categories: ["PDF Security"]
   },
   {
+    title: "JPG to PDF",
+    description: "Turn JPG and JPEG images into a single ordered PDF document.",
+    href: "/jpg-to-pdf",
+    icon: "J",
+    iconClass: "icon-orange",
+    categories: ["Convert PDF"],
+    highlight: true
+  },
+  {
     title: "PDF to Word",
     description: "Convert PDF files into easy to edit DOC and DOCX documents.",
     href: "/pdf-to-word",
     icon: "W",
     iconClass: "icon-blue",
+    categories: ["Convert PDF"]
+  },
+  {
+    title: "PDF to JPG",
+    description: "Export each PDF page as a sharp JPG image, packaged for download.",
+    href: "/pdf-to-jpg",
+    icon: "J",
+    iconClass: "icon-green",
     categories: ["Convert PDF"]
   },
   {
@@ -97,8 +139,8 @@ const TOOLS: ToolCard[] = [
   },
   {
     title: "Word to PDF",
-    description: "Make DOC and DOCX files easy to read by converting them to PDF.",
-    href: "/",
+    description: "Make DOCX documents easy to read by converting them into PDF files.",
+    href: "/word-to-pdf",
     icon: "W",
     iconClass: "icon-blue",
     categories: ["Convert PDF"]

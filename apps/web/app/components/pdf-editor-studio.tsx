@@ -3,8 +3,12 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   type EditImageInput,
+  type EditPageNumbersInput,
+  type EditPageRotationInput,
   type EditRectangleInput,
   type EditTextInput,
+  type EditWatermarkInput,
+  getPdfMetadata,
   pollTask,
   queueEditPdf,
   uploadPdfWithRetention
@@ -62,6 +66,18 @@ const RETENTION_OPTIONS = [
   { value: 720, label: "30 days" }
 ] as const;
 
+const PAGE_NUMBER_POSITIONS: Array<{
+  value: EditPageNumbersInput["position"];
+  label: string;
+}> = [
+  { value: "top-left", label: "Top left" },
+  { value: "top-center", label: "Top center" },
+  { value: "top-right", label: "Top right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom-center", label: "Bottom center" },
+  { value: "bottom-right", label: "Bottom right" }
+];
+
 function nextLayerId(): string {
   return `layer-${crypto.randomUUID()}`;
 }
@@ -118,19 +134,30 @@ function normalizeNumber(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function previewPageNumber(pageNumber: number, config: EditPageNumbersInput): string {
+  return `${config.prefix ?? ""}${config.startAt + pageNumber - 1}`;
+}
+
 export function PdfEditorStudio(): React.JSX.Element {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
+  const previewLoadIdRef = useRef(0);
 
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [sourceFileId, setSourceFileId] = useState<string | null>(null);
+  const [sourceRetentionHours, setSourceRetentionHours] = useState<number | null>(null);
   const [stagePageCount, setStagePageCount] = useState(1);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   const [tool, setTool] = useState<EditorTool>("select");
   const [layers, setLayers] = useState<StudioLayer[]>([]);
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
 
-  const [status, setStatus] = useState("Upload a PDF to begin a controlled studio editing session.");
+  const [status, setStatus] = useState(
+    "Upload a PDF to begin a controlled studio editing session."
+  );
   const [busy, setBusy] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState("");
   const [outputName, setOutputName] = useState("studio-export.pdf");
@@ -156,10 +183,76 @@ export function PdfEditorStudio(): React.JSX.Element {
 
   const [imageAsset, setImageAsset] = useState<AssetState>(null);
   const [signatureAsset, setSignatureAsset] = useState<AssetState>(null);
+  const [pageRotations, setPageRotations] = useState<EditPageRotationInput[]>([]);
+  const [rotationPage, setRotationPage] = useState(1);
+  const [rotationDegrees, setRotationDegrees] = useState<EditPageRotationInput["degrees"]>(90);
+  const [pageNumbersEnabled, setPageNumbersEnabled] = useState(false);
+  const [pageNumberStartAt, setPageNumberStartAt] = useState(1);
+  const [pageNumberFontSize, setPageNumberFontSize] = useState(12);
+  const [pageNumberColor, setPageNumberColor] = useState("#19334d");
+  const [pageNumberPosition, setPageNumberPosition] =
+    useState<EditPageNumbersInput["position"]>("bottom-center");
+  const [pageNumberMargin, setPageNumberMargin] = useState(24);
+  const [pageNumberPrefix, setPageNumberPrefix] = useState("");
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkText, setWatermarkText] = useState("Confidential");
+  const [watermarkFontSize, setWatermarkFontSize] = useState(64);
+  const [watermarkColor, setWatermarkColor] = useState("#19334d");
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.14);
+  const [watermarkRotation, setWatermarkRotation] = useState(-32);
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
     [layers, selectedLayerId]
+  );
+
+  const pageRotationMap = useMemo(
+    () => new Map(pageRotations.map((item) => [item.page, item.degrees])),
+    [pageRotations]
+  );
+
+  const pageNumberConfig = useMemo<EditPageNumbersInput | null>(
+    () =>
+      pageNumbersEnabled
+        ? {
+            startAt: pageNumberStartAt,
+            fontSize: pageNumberFontSize,
+            color: pageNumberColor,
+            position: pageNumberPosition,
+            margin: pageNumberMargin,
+            prefix: pageNumberPrefix.trim() || undefined
+          }
+        : null,
+    [
+      pageNumberColor,
+      pageNumberFontSize,
+      pageNumberMargin,
+      pageNumberPosition,
+      pageNumberPrefix,
+      pageNumberStartAt,
+      pageNumbersEnabled
+    ]
+  );
+
+  const watermarkConfig = useMemo<EditWatermarkInput | null>(
+    () =>
+      watermarkEnabled
+        ? {
+            text: watermarkText.trim(),
+            fontSize: watermarkFontSize,
+            color: watermarkColor,
+            opacity: watermarkOpacity,
+            rotation: watermarkRotation
+          }
+        : null,
+    [
+      watermarkColor,
+      watermarkEnabled,
+      watermarkFontSize,
+      watermarkOpacity,
+      watermarkRotation,
+      watermarkText
+    ]
   );
 
   const pages = useMemo<StudioPageMeta[]>(
@@ -172,11 +265,84 @@ export function PdfEditorStudio(): React.JSX.Element {
     [stagePageCount]
   );
 
+  useEffect(() => {
+    if (!pdfFile) {
+      setPreviewUrl("");
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(pdfFile);
+    setPreviewUrl(objectUrl);
+
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [pdfFile]);
+
+  useEffect(() => {
+    if (!pdfFile) {
+      previewLoadIdRef.current += 1;
+      setSourceFileId(null);
+      setSourceRetentionHours(null);
+      setStagePageCount(1);
+      setIsLoadingPreview(false);
+      return;
+    }
+
+    const loadId = previewLoadIdRef.current + 1;
+    previewLoadIdRef.current = loadId;
+    setIsLoadingPreview(true);
+    setSourceFileId(null);
+    setStagePageCount(1);
+    setStatus(`Loading ${pdfFile.name} for preview...`);
+
+    void (async () => {
+      try {
+        const uploaded = await uploadPdfWithRetention(pdfFile, retentionHours);
+        const metadata = await getPdfMetadata(uploaded.fileId);
+
+        if (previewLoadIdRef.current !== loadId) {
+          return;
+        }
+
+        setSourceFileId(uploaded.fileId);
+        setSourceRetentionHours(retentionHours);
+        setStagePageCount(Math.max(1, metadata.pageCount));
+        setRotationPage((current) => Math.min(Math.max(1, current), Math.max(1, metadata.pageCount)));
+        setStatus(`${pdfFile.name} loaded. ${metadata.pageCount} page${metadata.pageCount === 1 ? "" : "s"} ready for editing.`);
+      } catch (error) {
+        if (previewLoadIdRef.current !== loadId) {
+          return;
+        }
+
+        setSourceFileId(null);
+        setSourceRetentionHours(null);
+        setStatus(`PDF preview metadata failed: ${(error as Error).message}`);
+      } finally {
+        if (previewLoadIdRef.current === loadId) {
+          setIsLoadingPreview(false);
+        }
+      }
+    })();
+  }, [pdfFile]);
+
   const applyLayerUpdate = (
     layerId: string,
     updater: (layer: StudioLayer) => StudioLayer
   ): void => {
     setLayers((current) => current.map((layer) => (layer.id === layerId ? updater(layer) : layer)));
+  };
+
+  const hasAnyEdits =
+    layers.length > 0 || pageRotations.length > 0 || pageNumberConfig !== null || watermarkConfig !== null;
+
+  const queuePageRotation = (): void => {
+    setPageRotations((current) => {
+      const next = current.filter((item) => item.page !== rotationPage);
+      next.push({ page: rotationPage, degrees: rotationDegrees });
+      return next.sort((left, right) => left.page - right.page);
+    });
+    setStatus(`Queued a ${rotationDegrees}° rotation for page ${rotationPage}.`);
   };
 
   const createLayerAt = async (pageNumber: number, x: number, y: number): Promise<void> => {
@@ -300,8 +466,13 @@ export function PdfEditorStudio(): React.JSX.Element {
       return;
     }
 
-    if (layers.length === 0) {
-      setStatus("Place at least one layer onto the PDF before exporting.");
+    if (!hasAnyEdits) {
+      setStatus("Add at least one layer or document operation before exporting.");
+      return;
+    }
+
+    if (watermarkConfig && !watermarkConfig.text) {
+      setStatus("Enter watermark text before exporting.");
       return;
     }
 
@@ -352,14 +523,22 @@ export function PdfEditorStudio(): React.JSX.Element {
     try {
       setBusy(true);
       setDownloadUrl("");
-      setStatus("Uploading the source PDF to your self-hosted workspace...");
-      const uploaded = await uploadPdfWithRetention(pdfFile, retentionHours);
+      let uploadedFileId = sourceFileId;
+      if (!uploadedFileId || sourceRetentionHours !== retentionHours) {
+        setStatus("Uploading the source PDF to your self-hosted workspace...");
+        uploadedFileId = (await uploadPdfWithRetention(pdfFile, retentionHours)).fileId;
+        setSourceFileId(uploadedFileId);
+        setSourceRetentionHours(retentionHours);
+      }
 
       setStatus("Applying studio layers to the document...");
-      const { taskId } = await queueEditPdf(uploaded.fileId, outputName.trim(), {
+      const { taskId } = await queueEditPdf(uploadedFileId, outputName.trim(), {
         textEdits,
         rectangleEdits,
         imageEdits,
+        pageRotations,
+        pageNumbers: pageNumberConfig ?? undefined,
+        watermark: watermarkConfig ?? undefined,
         retentionHours
       });
 
@@ -391,7 +570,8 @@ export function PdfEditorStudio(): React.JSX.Element {
               <h1>Precision PDF editing for self-hosted teams</h1>
               <p>
                 Layer text, highlights, signatures, and images on structured placement stages, then
-                export with an explicit retention window.
+                rotate pages, add page numbers, and stamp watermarks without leaving the same export
+                pipeline.
               </p>
             </div>
 
@@ -413,8 +593,12 @@ export function PdfEditorStudio(): React.JSX.Element {
                   const file = event.target.files?.[0] ?? null;
                   setPdfFile(file);
                   setLayers([]);
+                  setPageRotations([]);
+                  setRotationPage(1);
                   setSelectedLayerId(null);
                   setDownloadUrl("");
+                  setSourceFileId(null);
+                  setSourceRetentionHours(null);
                   setOutputName(file ? buildEditedName(file.name) : "studio-export.pdf");
                   event.target.value = "";
                 }}
@@ -540,8 +724,10 @@ export function PdfEditorStudio(): React.JSX.Element {
                 <h2>{pdfFile?.name ?? "No PDF loaded"}</h2>
                 <p>
                   {pdfFile
-                    ? `${pages.length} page${pages.length === 1 ? "" : "s"} detected. Click any page to place the current tool.`
-                    : "Open a PDF, then place layers visually on the studio placement stages."}
+                    ? isLoadingPreview
+                      ? "Inspecting the uploaded PDF and loading a live preview..."
+                      : `${pages.length} page${pages.length === 1 ? "" : "s"} detected. Click any page stage to place the current tool.`
+                    : "Open a PDF, then place layers or configure document-wide edits from the studio sidebar."}
                 </p>
 
                 <label htmlFor="studio-output">Export filename</label>
@@ -554,23 +740,7 @@ export function PdfEditorStudio(): React.JSX.Element {
 
                 <div className="studio-stage-controls">
                   <span>Placement stages</span>
-                  <div>
-                    <button
-                      type="button"
-                      className="studio-stage-button"
-                      onClick={() => setStagePageCount((current) => Math.max(1, current - 1))}
-                    >
-                      -
-                    </button>
-                    <strong>{stagePageCount}</strong>
-                    <button
-                      type="button"
-                      className="studio-stage-button"
-                      onClick={() => setStagePageCount((current) => Math.min(20, current + 1))}
-                    >
-                      +
-                    </button>
-                  </div>
+                  <strong>{isLoadingPreview ? "Loading..." : stagePageCount}</strong>
                 </div>
               </div>
 
@@ -599,6 +769,230 @@ export function PdfEditorStudio(): React.JSX.Element {
                     ))
                   )}
                 </div>
+              </div>
+
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Document operations</div>
+                <div className="studio-form-grid">
+                  <label>
+                    Rotate page
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.max(1, pages.length)}
+                      value={rotationPage}
+                      onChange={(event) =>
+                        setRotationPage(normalizeNumber(Number(event.target.value), rotationPage))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Degrees
+                    <select
+                      value={rotationDegrees}
+                      onChange={(event) =>
+                        setRotationDegrees(Number(event.target.value) as EditPageRotationInput["degrees"])
+                      }
+                    >
+                      <option value={90}>90° clockwise</option>
+                      <option value={180}>180°</option>
+                      <option value={270}>270° clockwise</option>
+                    </select>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="studio-secondary-button studio-primary-button--full"
+                  onClick={queuePageRotation}
+                >
+                  Add page rotation
+                </button>
+
+                {pageRotations.length > 0 ? (
+                  <div className="studio-layer-list">
+                    {pageRotations.map((rotation) => (
+                      <button
+                        key={`rotation-${rotation.page}`}
+                        type="button"
+                        className="studio-layer-card"
+                        onClick={() => {
+                          setRotationPage(rotation.page);
+                          setRotationDegrees(rotation.degrees);
+                        }}
+                      >
+                        <span className="studio-layer-card__index">R</span>
+                        <span className="studio-layer-card__content">
+                          <strong>Page {rotation.page}</strong>
+                          <small>{rotation.degrees}° rotation</small>
+                        </span>
+                        <span
+                          className="studio-layer-card__meta"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setPageRotations((current) =>
+                              current.filter((item) => item.page !== rotation.page)
+                            );
+                          }}
+                        >
+                          Remove
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="studio-empty-copy">No page rotations queued.</p>
+                )}
+
+                <div className="studio-toggle-row">
+                  <label className="studio-check">
+                    <input
+                      type="checkbox"
+                      checked={pageNumbersEnabled}
+                      onChange={(event) => setPageNumbersEnabled(event.target.checked)}
+                    />
+                    <span>Add page numbers</span>
+                  </label>
+                </div>
+
+                {pageNumbersEnabled ? (
+                  <div className="studio-form-grid">
+                    <label>
+                      Start at
+                      <input
+                        type="number"
+                        min={1}
+                        value={pageNumberStartAt}
+                        onChange={(event) =>
+                          setPageNumberStartAt(normalizeNumber(Number(event.target.value), 1))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Position
+                      <select
+                        value={pageNumberPosition}
+                        onChange={(event) =>
+                          setPageNumberPosition(event.target.value as EditPageNumbersInput["position"])
+                        }
+                      >
+                        {PAGE_NUMBER_POSITIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Font size
+                      <input
+                        type="number"
+                        min={6}
+                        max={72}
+                        value={pageNumberFontSize}
+                        onChange={(event) =>
+                          setPageNumberFontSize(normalizeNumber(Number(event.target.value), 12))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Margin
+                      <input
+                        type="number"
+                        min={0}
+                        max={144}
+                        value={pageNumberMargin}
+                        onChange={(event) =>
+                          setPageNumberMargin(normalizeNumber(Number(event.target.value), 24))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Prefix
+                      <input
+                        value={pageNumberPrefix}
+                        onChange={(event) => setPageNumberPrefix(event.target.value)}
+                        placeholder="Page "
+                      />
+                    </label>
+                    <label>
+                      Color
+                      <input
+                        type="color"
+                        value={pageNumberColor}
+                        onChange={(event) => setPageNumberColor(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+
+                <div className="studio-toggle-row">
+                  <label className="studio-check">
+                    <input
+                      type="checkbox"
+                      checked={watermarkEnabled}
+                      onChange={(event) => setWatermarkEnabled(event.target.checked)}
+                    />
+                    <span>Add watermark</span>
+                  </label>
+                </div>
+
+                {watermarkEnabled ? (
+                  <div className="studio-form-grid">
+                    <label>
+                      Watermark text
+                      <input
+                        value={watermarkText}
+                        onChange={(event) => setWatermarkText(event.target.value)}
+                        placeholder="Confidential"
+                      />
+                    </label>
+                    <label>
+                      Font size
+                      <input
+                        type="number"
+                        min={18}
+                        max={240}
+                        value={watermarkFontSize}
+                        onChange={(event) =>
+                          setWatermarkFontSize(normalizeNumber(Number(event.target.value), 64))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Rotation
+                      <input
+                        type="number"
+                        min={-180}
+                        max={180}
+                        value={watermarkRotation}
+                        onChange={(event) =>
+                          setWatermarkRotation(normalizeNumber(Number(event.target.value), -32))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Opacity
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={0.95}
+                        step={0.05}
+                        value={watermarkOpacity}
+                        onChange={(event) =>
+                          setWatermarkOpacity(normalizeNumber(Number(event.target.value), 0.14))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Color
+                      <input
+                        type="color"
+                        value={watermarkColor}
+                        onChange={(event) => setWatermarkColor(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                ) : null}
               </div>
 
               <div className="studio-panel">
@@ -955,6 +1349,11 @@ export function PdfEditorStudio(): React.JSX.Element {
                       Shape defaults place a <strong>{draftBoxWidth} x {draftBoxHeight}</strong> block
                       with <strong>{Math.round(draftBoxOpacity * 100)}%</strong> opacity.
                     </p>
+                    <p>
+                      Document edits: <strong>{pageRotations.length}</strong> rotations,{" "}
+                      <strong>{pageNumberConfig ? "page numbers on" : "page numbers off"}</strong>,{" "}
+                      <strong>{watermarkConfig ? "watermark on" : "watermark off"}</strong>.
+                    </p>
                   </div>
                 ) : (
                   <button
@@ -1025,27 +1424,51 @@ export function PdfEditorStudio(): React.JSX.Element {
                   <strong>Drop in a PDF to open the studio.</strong>
                   <span>
                     Once loaded, every stage becomes a clean placement surface for text, highlights,
-                    images, and signatures.
+                    images, signatures, and document-level finishing passes.
                   </span>
                 </div>
               ) : null}
 
               {pdfFile && pages.length > 0 ? (
-                <div className="studio-page-stack">
-                  {pages.map((page) => (
-                    <StudioPdfPage
-                      key={page.pageNumber}
-                      fileName={pdfFile.name}
-                      page={page}
-                      layers={layers.filter((layer) => layer.page === page.pageNumber)}
-                      selectedLayerId={selectedLayerId}
-                      onSelectLayer={setSelectedLayerId}
-                      onPlaceLayer={(x, y) => {
-                        void createLayerAt(page.pageNumber, x, y);
-                      }}
-                    />
-                  ))}
-                </div>
+                <>
+                  {previewUrl ? (
+                    <section className="studio-preview-panel">
+                      <div className="studio-preview-panel__meta">
+                        <div>
+                          <strong>Source PDF preview</strong>
+                          <span>Use this to inspect the real document while placing edits on the stages below.</span>
+                        </div>
+                        <a href={previewUrl} target="_blank" rel="noreferrer">
+                          Open full preview
+                        </a>
+                      </div>
+                      <iframe
+                        className="studio-preview-frame"
+                        src={previewUrl}
+                        title={`Preview of ${pdfFile.name}`}
+                      />
+                    </section>
+                  ) : null}
+
+                  <div className="studio-page-stack">
+                    {pages.map((page) => (
+                      <StudioPdfPage
+                        key={page.pageNumber}
+                        fileName={pdfFile.name}
+                        page={page}
+                        layers={layers.filter((layer) => layer.page === page.pageNumber)}
+                        rotationDegrees={pageRotationMap.get(page.pageNumber) ?? 0}
+                        pageNumbers={pageNumberConfig}
+                        watermark={watermarkConfig}
+                        selectedLayerId={selectedLayerId}
+                        onSelectLayer={setSelectedLayerId}
+                        onPlaceLayer={(x, y) => {
+                          void createLayerAt(page.pageNumber, x, y);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </>
               ) : null}
             </section>
           </section>
@@ -1059,6 +1482,9 @@ function StudioPdfPage({
   fileName,
   page,
   layers,
+  rotationDegrees,
+  pageNumbers,
+  watermark,
   selectedLayerId,
   onSelectLayer,
   onPlaceLayer
@@ -1066,6 +1492,9 @@ function StudioPdfPage({
   fileName: string;
   page: StudioPageMeta;
   layers: StudioLayer[];
+  rotationDegrees: number;
+  pageNumbers: EditPageNumbersInput | null;
+  watermark: EditWatermarkInput | null;
   selectedLayerId: string | null;
   onSelectLayer: (layerId: string) => void;
   onPlaceLayer: (x: number, y: number) => void;
@@ -1095,12 +1524,34 @@ function StudioPdfPage({
 
   const scale = renderWidth / page.width;
   const pageHeight = page.height * scale;
+  const pageNumberPreview = pageNumbers ? previewPageNumber(page.pageNumber, pageNumbers) : null;
+  const pageNumberStyle: React.CSSProperties | null = pageNumbers
+    ? {
+        position: "absolute",
+        color: pageNumbers.color,
+        fontSize: `${Math.max(10, pageNumbers.fontSize * scale)}px`,
+        fontWeight: 800,
+        letterSpacing: "0.01em",
+        zIndex: 1,
+        ...(pageNumbers.position.startsWith("top")
+          ? { top: `${pageNumbers.margin * scale}px` }
+          : { bottom: `${pageNumbers.margin * scale}px` }),
+        ...(pageNumbers.position.endsWith("left")
+          ? { left: `${pageNumbers.margin * scale}px` }
+          : pageNumbers.position.endsWith("right")
+            ? { right: `${pageNumbers.margin * scale}px` }
+            : { left: "50%", transform: "translateX(-50%)" })
+      }
+    : null;
 
   return (
     <article className="studio-page-card">
       <div className="studio-page-card__meta">
         <span>Page {page.pageNumber}</span>
-        <span>{Math.round(page.width)} x {Math.round(page.height)} pt</span>
+        <span>
+          {Math.round(page.width)} x {Math.round(page.height)} pt
+          {rotationDegrees ? ` • rotate ${rotationDegrees}°` : ""}
+        </span>
       </div>
 
       <div
@@ -1123,6 +1574,24 @@ function StudioPdfPage({
             <span>Studio placement surface</span>
             <small>Page {page.pageNumber}</small>
           </div>
+          {watermark ? (
+            <div
+              className="studio-page-paper__watermark-preview"
+              style={{
+                color: watermark.color,
+                opacity: watermark.opacity,
+                fontSize: `${Math.max(24, watermark.fontSize * scale)}px`,
+                transform: `translate(-50%, -50%) rotate(${watermark.rotation}deg)`
+              }}
+            >
+              {watermark.text}
+            </div>
+          ) : null}
+          {pageNumberPreview && pageNumberStyle ? (
+            <div className="studio-page-paper__page-number" style={pageNumberStyle}>
+              {pageNumberPreview}
+            </div>
+          ) : null}
         </div>
 
         <div className="studio-layer-overlay">

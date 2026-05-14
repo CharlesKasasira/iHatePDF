@@ -17,6 +17,13 @@ export type UploadedFileMeta = {
   fileName: string;
 };
 
+export type PdfFileMetadataResponse = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  pageCount: number;
+};
+
 async function readError(response: Response): Promise<string> {
   const text = await response.text();
   if (!text) {
@@ -64,6 +71,12 @@ function inferMimeType(file: File): string {
   const lower = file.name.toLowerCase();
   if (lower.endsWith(".pdf")) {
     return "application/pdf";
+  }
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (lower.endsWith(".docx")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   }
   if (lower.endsWith(".xlsx")) {
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -115,11 +128,23 @@ export async function uploadPdf(file: File): Promise<UploadedFileMeta> {
   return uploadFile(file, ["application/pdf"]);
 }
 
+export async function uploadJpg(file: File): Promise<UploadedFileMeta> {
+  return uploadFile(file, ["image/jpeg", "image/jpg"]);
+}
+
 export async function uploadPdfWithRetention(
   file: File,
   retentionHours: number
 ): Promise<UploadedFileMeta> {
   return uploadFile(file, ["application/pdf"], { retentionHours });
+}
+
+export async function getPdfMetadata(fileId: string): Promise<PdfFileMetadataResponse> {
+  return jsonFetch<PdfFileMetadataResponse>(`/files/${fileId}/metadata`);
+}
+
+export function getFileDownloadUrl(fileId: string): string {
+  return `${API_BASE_URL}/files/${fileId}/download`;
 }
 
 function isTerminalTaskStatus(task: TaskStatusResponse): boolean {
@@ -246,6 +271,39 @@ export async function queueSplit(
   });
 }
 
+export async function queueRemovePages(
+  fileId: string,
+  pageRanges: string[],
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/remove-pages", {
+    method: "POST",
+    body: JSON.stringify({ fileId, pageRanges, outputName })
+  });
+}
+
+export async function queueExtractPages(
+  fileId: string,
+  pageRanges: string[],
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/extract-pages", {
+    method: "POST",
+    body: JSON.stringify({ fileId, pageRanges, outputName })
+  });
+}
+
+export async function queueOrganizePdf(
+  fileId: string,
+  pageOrder: number[],
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/organize-pdf", {
+    method: "POST",
+    body: JSON.stringify({ fileId, pageOrder, outputName })
+  });
+}
+
 export async function queueCompress(fileId: string, outputName: string): Promise<{ taskId: string }> {
   return jsonFetch<{ taskId: string }>("/tasks/compress", {
     method: "POST",
@@ -282,6 +340,23 @@ export async function queuePdfToWord(fileId: string, outputName: string): Promis
   });
 }
 
+export async function queueJpgToPdf(
+  fileIds: string[],
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/jpg-to-pdf", {
+    method: "POST",
+    body: JSON.stringify({ fileIds, outputName })
+  });
+}
+
+export async function queuePdfToJpg(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/pdf-to-jpg", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
 export async function queuePdfToPowerpoint(
   fileId: string,
   outputName: string
@@ -294,6 +369,13 @@ export async function queuePdfToPowerpoint(
 
 export async function queuePdfToExcel(fileId: string, outputName: string): Promise<{ taskId: string }> {
   return jsonFetch<{ taskId: string }>("/tasks/pdf-to-excel", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queueWordToPdf(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/word-to-pdf", {
     method: "POST",
     body: JSON.stringify({ fileId, outputName })
   });
@@ -348,6 +430,28 @@ export type EditImageInput = {
   dataUrl: string;
 };
 
+export type EditPageRotationInput = {
+  page: number;
+  degrees: 90 | 180 | 270;
+};
+
+export type EditPageNumbersInput = {
+  startAt: number;
+  fontSize: number;
+  color: string;
+  position: "top-left" | "top-center" | "top-right" | "bottom-left" | "bottom-center" | "bottom-right";
+  margin: number;
+  prefix?: string;
+};
+
+export type EditWatermarkInput = {
+  text: string;
+  fontSize: number;
+  color: string;
+  opacity: number;
+  rotation: number;
+};
+
 export async function queueEditPdf(
   fileId: string,
   outputName: string,
@@ -355,6 +459,9 @@ export async function queueEditPdf(
     textEdits?: EditTextInput[];
     rectangleEdits?: EditRectangleInput[];
     imageEdits?: EditImageInput[];
+    pageRotations?: EditPageRotationInput[];
+    pageNumbers?: EditPageNumbersInput;
+    watermark?: EditWatermarkInput;
     retentionHours?: number;
   }
 ): Promise<{ taskId: string }> {
