@@ -1,6 +1,6 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache qpdf libc6-compat
+RUN apk add --no-cache openssl qpdf poppler-utils libc6-compat
 
 WORKDIR /app
 

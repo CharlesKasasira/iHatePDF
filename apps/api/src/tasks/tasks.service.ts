@@ -86,6 +86,18 @@ const POWERPOINT_MIME_TYPES = [
   "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ] as const;
 
+export interface TaskStatusView {
+  id: string;
+  status: string;
+  type: string;
+  progressPercent: number;
+  progressMessage: string | null;
+  errorMessage: string | null;
+  outputDownloadUrl: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 @Injectable()
 export class TasksService {
   constructor(
@@ -490,24 +502,20 @@ export class TasksService {
     return { taskId: task.id };
   }
 
-  async getTask(taskId: string): Promise<{
+  private toTaskStatusView(task: {
     id: string;
     status: string;
     type: string;
+    progressPercent: number;
+    progressMessage: string | null;
     errorMessage: string | null;
-    outputDownloadUrl: string | null;
     createdAt: Date;
     updatedAt: Date;
-  }> {
-    const task = await this.prisma.task.findUnique({
-      where: { id: taskId },
-      include: { outputFile: true }
-    });
-
-    if (!task) {
-      throw new NotFoundException("Task not found.");
-    }
-
+    outputFile: {
+      id: string;
+      expiresAt: Date | null;
+    } | null;
+  }): TaskStatusView {
     const outputDownloadUrl = task.outputFile
       ? !task.outputFile.expiresAt || task.outputFile.expiresAt.getTime() > Date.now()
         ? this.storageService.createDownloadUrl(task.outputFile.id)
@@ -518,10 +526,25 @@ export class TasksService {
       id: task.id,
       status: task.status,
       type: task.type,
+      progressPercent: task.progressPercent,
+      progressMessage: task.progressMessage,
       errorMessage: task.errorMessage,
       outputDownloadUrl,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt
     };
+  }
+
+  async getTask(taskId: string): Promise<TaskStatusView> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      include: { outputFile: true }
+    });
+
+    if (!task) {
+      throw new NotFoundException("Task not found.");
+    }
+
+    return this.toTaskStatusView(task);
   }
 }

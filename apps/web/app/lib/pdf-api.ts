@@ -4,6 +4,8 @@ export type TaskStatusResponse = {
   id: string;
   status: "queued" | "processing" | "completed" | "failed";
   type: string;
+  progressPercent: number;
+  progressMessage: string | null;
   errorMessage: string | null;
   outputDownloadUrl: string | null;
   createdAt: string;
@@ -73,6 +75,11 @@ function inferMimeType(file: File): string {
   return "application/octet-stream";
 }
 
+export function isAllowedFileType(file: File, allowedMimeTypes?: readonly string[]): boolean {
+  const mimeType = inferMimeType(file);
+  return !allowedMimeTypes || allowedMimeTypes.includes(mimeType);
+}
+
 export async function uploadFile(
   file: File,
   allowedMimeTypes?: readonly string[],
@@ -115,25 +122,110 @@ export async function uploadPdfWithRetention(
   return uploadFile(file, ["application/pdf"], { retentionHours });
 }
 
-export async function pollTask(taskId: string): Promise<TaskStatusResponse> {
+function isTerminalTaskStatus(task: TaskStatusResponse): boolean {
+  return task.status === "completed" || task.status === "failed";
+}
+
+function parseTaskStatusResponse(value: unknown): TaskStatusResponse {
+  const task = value as TaskStatusResponse;
+  return {
+    ...task,
+    progressPercent: Number.isFinite(task.progressPercent) ? task.progressPercent : 0,
+    progressMessage: task.progressMessage ?? null
+  };
+}
+
+export async function pollTask(
+  taskId: string,
+  options?: {
+    onUpdate?: (task: TaskStatusResponse) => void;
+  }
+): Promise<TaskStatusResponse> {
   let last: TaskStatusResponse | null = null;
-
-  for (let index = 0; index < 120; index += 1) {
-    const task = await jsonFetch<TaskStatusResponse>(`/tasks/${taskId}`);
+  const notifyUpdate = (task: TaskStatusResponse): void => {
     last = task;
+    options?.onUpdate?.(task);
+  };
 
-    if (task.status === "completed" || task.status === "failed") {
-      return task;
+  const firstTask = parseTaskStatusResponse(await jsonFetch<TaskStatusResponse>(`/tasks/${taskId}`));
+  notifyUpdate(firstTask);
+
+  if (isTerminalTaskStatus(firstTask)) {
+    return firstTask;
+  }
+
+  const pollingPromise = (async (): Promise<TaskStatusResponse> => {
+    for (let index = 0; index < 119; index += 1) {
+      const task = parseTaskStatusResponse(await jsonFetch<TaskStatusResponse>(`/tasks/${taskId}`));
+      notifyUpdate(task);
+
+      if (isTerminalTaskStatus(task)) {
+        return task;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (!last) {
+      throw new Error("Task polling timed out before first response.");
+    }
+
+    return last;
+  })();
+
+  if (typeof window !== "undefined" && typeof window.EventSource !== "undefined") {
+    let eventSource: EventSource | null = new window.EventSource(`${API_BASE_URL}/tasks/${taskId}/events`);
+    const closeEventSource = (): void => {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+
+    const streamedTaskPromise = new Promise<TaskStatusResponse | null>((resolve) => {
+      if (!eventSource) {
+        resolve(null);
+        return;
+      }
+
+      eventSource.onmessage = (event) => {
+        try {
+          const task = parseTaskStatusResponse(JSON.parse(event.data) as TaskStatusResponse);
+          notifyUpdate(task);
+          if (isTerminalTaskStatus(task)) {
+            closeEventSource();
+            resolve(task);
+          }
+        } catch {
+          // Ignore malformed frames and keep the fallback path available.
+        }
+      };
+
+      eventSource.onerror = () => {
+        closeEventSource();
+        resolve(null);
+      };
+    });
+
+    const result = await Promise.race([
+      streamedTaskPromise.then((task) => ({ source: "stream" as const, task })),
+      pollingPromise.then((task) => ({ source: "poll" as const, task }))
+    ]);
+
+    closeEventSource();
+
+    if (result.source === "stream") {
+      if (result.task) {
+        return result.task;
+      }
+
+      return pollingPromise;
+    }
+
+    return result.task;
   }
 
-  if (!last) {
-    throw new Error("Task polling timed out before first response.");
-  }
-
-  return last;
+  return pollingPromise;
 }
 
 export async function queueMerge(fileIds: string[], outputName: string): Promise<{ taskId: string }> {
