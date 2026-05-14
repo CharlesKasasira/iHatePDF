@@ -1,0 +1,1208 @@
+"use client";
+
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type EditImageInput,
+  type EditRectangleInput,
+  type EditTextInput,
+  pollTask,
+  queueEditPdf,
+  uploadPdfWithRetention
+} from "../lib/pdf-api";
+import { SiteHeader } from "./site-header";
+
+type EditorTool = "select" | "text" | "highlight" | "shape" | "sign" | "image";
+type FontFamily = EditTextInput["fontFamily"];
+
+type StudioPageMeta = {
+  pageNumber: number;
+  width: number;
+  height: number;
+};
+
+type StudioTextLayer = EditTextInput & {
+  id: string;
+  kind: "text";
+};
+
+type StudioRectangleLayer = EditRectangleInput & {
+  id: string;
+  kind: "rectangle";
+  variant: "highlight" | "shape";
+};
+
+type StudioImageLayer = EditImageInput & {
+  id: string;
+  kind: "image";
+  variant: "sign" | "image";
+  fileName: string;
+};
+
+type StudioLayer = StudioTextLayer | StudioRectangleLayer | StudioImageLayer;
+
+type AssetState = {
+  dataUrl: string;
+  fileName: string;
+} | null;
+
+const TOOL_ITEMS: Array<{ id: EditorTool; label: string; hint: string }> = [
+  { id: "select", label: "Select", hint: "Inspect and refine layers" },
+  { id: "text", label: "Text", hint: "Place styled type onto the page" },
+  { id: "highlight", label: "Highlight", hint: "Lay down translucent emphasis bars" },
+  { id: "shape", label: "Shapes", hint: "Frame sections with clean blocks" },
+  { id: "sign", label: "Sign", hint: "Stamp a handwritten signature image" },
+  { id: "image", label: "Image", hint: "Insert logos, seals, or graphics" }
+];
+
+const RETENTION_OPTIONS = [
+  { value: 1, label: "1 hour" },
+  { value: 24, label: "24 hours" },
+  { value: 72, label: "3 days" },
+  { value: 168, label: "7 days" },
+  { value: 720, label: "30 days" }
+] as const;
+
+function nextLayerId(): string {
+  return `layer-${crypto.randomUUID()}`;
+}
+
+function buildEditedName(fileName: string): string {
+  const stripped = fileName.toLowerCase().endsWith(".pdf") ? fileName.slice(0, -4) : fileName;
+  return `${stripped || "document"}-studio.pdf`;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read asset."));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
+}
+
+function fontFamilyLabel(fontFamily: FontFamily): string {
+  if (fontFamily === "serif") {
+    return "Editorial Serif";
+  }
+  if (fontFamily === "mono") {
+    return "Mono";
+  }
+  return "Studio Sans";
+}
+
+function cssFontFamily(fontFamily: FontFamily): string {
+  if (fontFamily === "serif") {
+    return "\"Iowan Old Style\", \"Palatino Linotype\", serif";
+  }
+  if (fontFamily === "mono") {
+    return "\"IBM Plex Mono\", \"SFMono-Regular\", monospace";
+  }
+  return "\"Avenir Next\", \"Nunito Sans\", sans-serif";
+}
+
+function layerSummary(layer: StudioLayer): string {
+  if (layer.kind === "text") {
+    return layer.text;
+  }
+  if (layer.kind === "rectangle") {
+    return layer.variant === "highlight" ? "Highlight band" : "Shape block";
+  }
+  return layer.variant === "sign" ? "Signature" : layer.fileName;
+}
+
+function retentionLabel(retentionHours: number): string {
+  return RETENTION_OPTIONS.find((option) => option.value === retentionHours)?.label ?? `${retentionHours}h`;
+}
+
+function normalizeNumber(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+export function PdfEditorStudio(): React.JSX.Element {
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const signatureInputRef = useRef<HTMLInputElement>(null);
+
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [stagePageCount, setStagePageCount] = useState(1);
+
+  const [tool, setTool] = useState<EditorTool>("select");
+  const [layers, setLayers] = useState<StudioLayer[]>([]);
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+
+  const [status, setStatus] = useState("Upload a PDF to begin a controlled studio editing session.");
+  const [busy, setBusy] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const [outputName, setOutputName] = useState("studio-export.pdf");
+  const [retentionHours, setRetentionHours] = useState<number>(24);
+
+  const [draftText, setDraftText] = useState("Approved");
+  const [draftFontFamily, setDraftFontFamily] = useState<FontFamily>("sans");
+  const [draftFontSize, setDraftFontSize] = useState(20);
+  const [draftColor, setDraftColor] = useState("#19334d");
+  const [draftBold, setDraftBold] = useState(true);
+  const [draftItalic, setDraftItalic] = useState(false);
+  const [draftUnderline, setDraftUnderline] = useState(false);
+
+  const [draftBoxWidth, setDraftBoxWidth] = useState(220);
+  const [draftBoxHeight, setDraftBoxHeight] = useState(54);
+  const [draftBoxColor, setDraftBoxColor] = useState("#ffd166");
+  const [draftBoxOpacity, setDraftBoxOpacity] = useState(0.22);
+
+  const [draftImageWidth, setDraftImageWidth] = useState(180);
+  const [draftImageHeight, setDraftImageHeight] = useState(88);
+  const [draftSignatureWidth, setDraftSignatureWidth] = useState(190);
+  const [draftSignatureHeight, setDraftSignatureHeight] = useState(72);
+
+  const [imageAsset, setImageAsset] = useState<AssetState>(null);
+  const [signatureAsset, setSignatureAsset] = useState<AssetState>(null);
+
+  const selectedLayer = useMemo(
+    () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
+    [layers, selectedLayerId]
+  );
+
+  const pages = useMemo<StudioPageMeta[]>(
+    () =>
+      Array.from({ length: stagePageCount }, (_, index) => ({
+        pageNumber: index + 1,
+        width: 612,
+        height: 792
+      })),
+    [stagePageCount]
+  );
+
+  const applyLayerUpdate = (
+    layerId: string,
+    updater: (layer: StudioLayer) => StudioLayer
+  ): void => {
+    setLayers((current) => current.map((layer) => (layer.id === layerId ? updater(layer) : layer)));
+  };
+
+  const createLayerAt = async (pageNumber: number, x: number, y: number): Promise<void> => {
+    if (tool === "select") {
+      setSelectedLayerId(null);
+      return;
+    }
+
+    if (tool === "text") {
+      const text = draftText.trim();
+      if (!text) {
+        setStatus("Add some draft text before placing a text layer.");
+        return;
+      }
+
+      const layer: StudioTextLayer = {
+        id: nextLayerId(),
+        kind: "text",
+        page: pageNumber,
+        x,
+        y,
+        text,
+        fontSize: draftFontSize,
+        fontFamily: draftFontFamily,
+        bold: draftBold,
+        italic: draftItalic,
+        underline: draftUnderline,
+        color: draftColor
+      };
+
+      setLayers((current) => [...current, layer]);
+      setSelectedLayerId(layer.id);
+      setStatus(`Placed a text layer on page ${pageNumber}.`);
+      return;
+    }
+
+    if (tool === "highlight" || tool === "shape") {
+      const layer: StudioRectangleLayer = {
+        id: nextLayerId(),
+        kind: "rectangle",
+        variant: tool,
+        page: pageNumber,
+        x,
+        y,
+        width: draftBoxWidth,
+        height: draftBoxHeight,
+        color: tool === "highlight" ? "#ffe082" : draftBoxColor,
+        opacity: tool === "highlight" ? 0.26 : draftBoxOpacity
+      };
+
+      setLayers((current) => [...current, layer]);
+      setSelectedLayerId(layer.id);
+      setStatus(`Placed a ${tool === "highlight" ? "highlight" : "shape"} layer on page ${pageNumber}.`);
+      return;
+    }
+
+    const asset = tool === "sign" ? signatureAsset : imageAsset;
+    if (!asset) {
+      setStatus(
+        tool === "sign"
+          ? "Upload a signature image first, then click the page to place it."
+          : "Upload an image asset first, then click the page to place it."
+      );
+      return;
+    }
+
+    const layer: StudioImageLayer = {
+      id: nextLayerId(),
+      kind: "image",
+      variant: tool,
+      page: pageNumber,
+      x,
+      y,
+      width: tool === "sign" ? draftSignatureWidth : draftImageWidth,
+      height: tool === "sign" ? draftSignatureHeight : draftImageHeight,
+      dataUrl: asset.dataUrl,
+      fileName: asset.fileName
+    };
+
+    setLayers((current) => [...current, layer]);
+    setSelectedLayerId(layer.id);
+    setStatus(`Placed ${tool === "sign" ? "a signature" : "an image"} on page ${pageNumber}.`);
+  };
+
+  const handleAssetSelect = async (
+    event: ChangeEvent<HTMLInputElement>,
+    kind: "image" | "sign"
+  ): Promise<void> => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const asset = { dataUrl, fileName: file.name };
+      if (kind === "image") {
+        setImageAsset(asset);
+        setTool("image");
+        setStatus(`Image asset ${file.name} is ready. Click a page to place it.`);
+      } else {
+        setSignatureAsset(asset);
+        setTool("sign");
+        setStatus(`Signature asset ${file.name} is ready. Click a page to stamp it.`);
+      }
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const processDocument = async (): Promise<void> => {
+    if (!pdfFile) {
+      setStatus("Upload a PDF document first.");
+      return;
+    }
+
+    if (!outputName.trim()) {
+      setStatus("Name the edited PDF before exporting.");
+      return;
+    }
+
+    if (layers.length === 0) {
+      setStatus("Place at least one layer onto the PDF before exporting.");
+      return;
+    }
+
+    const textEdits: EditTextInput[] = [];
+    const rectangleEdits: EditRectangleInput[] = [];
+    const imageEdits: EditImageInput[] = [];
+
+    for (const layer of layers) {
+      if (layer.kind === "text") {
+        textEdits.push({
+          page: layer.page,
+          x: layer.x,
+          y: layer.y,
+          text: layer.text,
+          fontSize: layer.fontSize,
+          fontFamily: layer.fontFamily,
+          bold: layer.bold,
+          italic: layer.italic,
+          underline: layer.underline,
+          color: layer.color
+        });
+        continue;
+      }
+
+      if (layer.kind === "rectangle") {
+        rectangleEdits.push({
+          page: layer.page,
+          x: layer.x,
+          y: layer.y,
+          width: layer.width,
+          height: layer.height,
+          color: layer.color,
+          opacity: layer.opacity
+        });
+        continue;
+      }
+
+      imageEdits.push({
+        page: layer.page,
+        x: layer.x,
+        y: layer.y,
+        width: layer.width,
+        height: layer.height,
+        dataUrl: layer.dataUrl
+      });
+    }
+
+    try {
+      setBusy(true);
+      setDownloadUrl("");
+      setStatus("Uploading the source PDF to your self-hosted workspace...");
+      const uploaded = await uploadPdfWithRetention(pdfFile, retentionHours);
+
+      setStatus("Applying studio layers to the document...");
+      const { taskId } = await queueEditPdf(uploaded.fileId, outputName.trim(), {
+        textEdits,
+        rectangleEdits,
+        imageEdits,
+        retentionHours
+      });
+
+      const completed = await pollTask(taskId);
+      if (completed.status === "completed" && completed.outputDownloadUrl) {
+        setDownloadUrl(completed.outputDownloadUrl);
+        setStatus(
+          `Studio export completed. Download remains active for ${retentionLabel(retentionHours)}.`
+        );
+      } else {
+        setStatus(`Studio export failed: ${completed.errorMessage ?? "unknown error"}`);
+      }
+    } catch (error) {
+      setStatus(`Studio export failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="site-shell">
+      <SiteHeader active="edit" />
+
+      <main className="studio-page">
+        <section className="studio-shell">
+          <div className="studio-topbar">
+            <div className="studio-topbar__identity">
+              <span className="studio-pill studio-pill--brand">PDF Editor Studio</span>
+              <h1>Precision PDF editing for self-hosted teams</h1>
+              <p>
+                Layer text, highlights, signatures, and images on structured placement stages, then
+                export with an explicit retention window.
+              </p>
+            </div>
+
+            <div className="studio-topbar__actions">
+              <button
+                type="button"
+                className="studio-primary-button"
+                onClick={() => pdfInputRef.current?.click()}
+                disabled={busy}
+              >
+                {pdfFile ? "Replace PDF" : "Open PDF"}
+              </button>
+              <input
+                ref={pdfInputRef}
+                type="file"
+                hidden
+                accept="application/pdf"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setPdfFile(file);
+                  setLayers([]);
+                  setSelectedLayerId(null);
+                  setDownloadUrl("");
+                  setOutputName(file ? buildEditedName(file.name) : "studio-export.pdf");
+                  event.target.value = "";
+                }}
+              />
+
+              <button
+                type="button"
+                className="studio-secondary-button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={busy}
+              >
+                Load image
+              </button>
+              <input
+                ref={imageInputRef}
+                type="file"
+                hidden
+                accept="image/png,image/jpeg"
+                onChange={(event) => {
+                  void handleAssetSelect(event, "image");
+                }}
+              />
+
+              <button
+                type="button"
+                className="studio-secondary-button"
+                onClick={() => signatureInputRef.current?.click()}
+                disabled={busy}
+              >
+                Load signature
+              </button>
+              <input
+                ref={signatureInputRef}
+                type="file"
+                hidden
+                accept="image/png,image/jpeg"
+                onChange={(event) => {
+                  void handleAssetSelect(event, "sign");
+                }}
+              />
+            </div>
+          </div>
+
+          <section className="studio-toolbar">
+            <div className="studio-toolbar__group">
+              {TOOL_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`studio-tool ${tool === item.id ? "is-active" : ""}`}
+                  onClick={() => setTool(item.id)}
+                >
+                  <strong>{item.label}</strong>
+                  <span>{item.hint}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="studio-toolbar__group studio-toolbar__group--compact">
+              <label className="studio-inline-control">
+                <span>Typeface</span>
+                <select
+                  value={draftFontFamily}
+                  onChange={(event) => setDraftFontFamily(event.target.value as FontFamily)}
+                >
+                  <option value="sans">Studio Sans</option>
+                  <option value="serif">Editorial Serif</option>
+                  <option value="mono">Mono</option>
+                </select>
+              </label>
+
+              <label className="studio-inline-control studio-inline-control--short">
+                <span>Size</span>
+                <input
+                  type="number"
+                  min={8}
+                  max={72}
+                  value={draftFontSize}
+                  onChange={(event) => setDraftFontSize(normalizeNumber(Number(event.target.value), 20))}
+                />
+              </label>
+
+              <label className="studio-inline-control studio-inline-control--short">
+                <span>Color</span>
+                <input
+                  type="color"
+                  value={draftColor}
+                  onChange={(event) => setDraftColor(event.target.value)}
+                />
+              </label>
+
+              <label className="studio-toggle-chip">
+                <input
+                  type="checkbox"
+                  checked={draftBold}
+                  onChange={(event) => setDraftBold(event.target.checked)}
+                />
+                <span>B</span>
+              </label>
+              <label className="studio-toggle-chip">
+                <input
+                  type="checkbox"
+                  checked={draftItalic}
+                  onChange={(event) => setDraftItalic(event.target.checked)}
+                />
+                <span>I</span>
+              </label>
+              <label className="studio-toggle-chip">
+                <input
+                  type="checkbox"
+                  checked={draftUnderline}
+                  onChange={(event) => setDraftUnderline(event.target.checked)}
+                />
+                <span>U</span>
+              </label>
+            </div>
+          </section>
+
+          <section className="studio-workspace">
+            <aside className="studio-sidebar">
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Document</div>
+                <h2>{pdfFile?.name ?? "No PDF loaded"}</h2>
+                <p>
+                  {pdfFile
+                    ? `${pages.length} page${pages.length === 1 ? "" : "s"} detected. Click any page to place the current tool.`
+                    : "Open a PDF, then place layers visually on the studio placement stages."}
+                </p>
+
+                <label htmlFor="studio-output">Export filename</label>
+                <input
+                  id="studio-output"
+                  value={outputName}
+                  onChange={(event) => setOutputName(event.target.value)}
+                  placeholder="studio-export.pdf"
+                />
+
+                <div className="studio-stage-controls">
+                  <span>Placement stages</span>
+                  <div>
+                    <button
+                      type="button"
+                      className="studio-stage-button"
+                      onClick={() => setStagePageCount((current) => Math.max(1, current - 1))}
+                    >
+                      -
+                    </button>
+                    <strong>{stagePageCount}</strong>
+                    <button
+                      type="button"
+                      className="studio-stage-button"
+                      onClick={() => setStagePageCount((current) => Math.min(20, current + 1))}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Layers</div>
+                <div className="studio-layer-list">
+                  {layers.length === 0 ? (
+                    <p className="studio-empty-copy">
+                      No layers yet. Pick a tool, then click a placement stage to drop it in.
+                    </p>
+                  ) : (
+                    layers.map((layer, index) => (
+                      <button
+                        key={layer.id}
+                        type="button"
+                        className={`studio-layer-card ${selectedLayerId === layer.id ? "is-active" : ""}`}
+                        onClick={() => setSelectedLayerId(layer.id)}
+                      >
+                        <span className="studio-layer-card__index">{index + 1}</span>
+                        <span className="studio-layer-card__content">
+                          <strong>{layer.kind === "text" ? "Text" : layer.kind === "rectangle" ? "Block" : "Asset"}</strong>
+                          <small>{layerSummary(layer)}</small>
+                        </span>
+                        <span className="studio-layer-card__meta">P{layer.page}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">
+                  {selectedLayer ? "Selected layer" : "Tool defaults"}
+                </div>
+
+                {selectedLayer?.kind === "text" ? (
+                  <div className="studio-form-grid">
+                    <label>
+                      Text
+                      <textarea
+                        value={selectedLayer.text}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text" ? { ...layer, text: event.target.value } : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Page
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, pages.length)}
+                        value={selectedLayer.page}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text"
+                              ? { ...layer, page: normalizeNumber(Number(event.target.value), layer.page) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      X
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.x}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text"
+                              ? { ...layer, x: normalizeNumber(Number(event.target.value), layer.x) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Y
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.y}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text"
+                              ? { ...layer, y: normalizeNumber(Number(event.target.value), layer.y) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Size
+                      <input
+                        type="number"
+                        min={8}
+                        max={72}
+                        value={selectedLayer.fontSize}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text"
+                              ? { ...layer, fontSize: normalizeNumber(Number(event.target.value), layer.fontSize) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Typeface
+                      <select
+                        value={selectedLayer.fontFamily}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text"
+                              ? { ...layer, fontFamily: event.target.value as FontFamily }
+                              : layer
+                          )
+                        }
+                      >
+                        <option value="sans">Studio Sans</option>
+                        <option value="serif">Editorial Serif</option>
+                        <option value="mono">Mono</option>
+                      </select>
+                    </label>
+                    <label>
+                      Color
+                      <input
+                        type="color"
+                        value={selectedLayer.color}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "text" ? { ...layer, color: event.target.value } : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <div className="studio-toggle-row">
+                      <label className="studio-check">
+                        <input
+                          type="checkbox"
+                          checked={selectedLayer.bold}
+                          onChange={(event) =>
+                            applyLayerUpdate(selectedLayer.id, (layer) =>
+                              layer.kind === "text" ? { ...layer, bold: event.target.checked } : layer
+                            )
+                          }
+                        />
+                        <span>Bold</span>
+                      </label>
+                      <label className="studio-check">
+                        <input
+                          type="checkbox"
+                          checked={selectedLayer.italic}
+                          onChange={(event) =>
+                            applyLayerUpdate(selectedLayer.id, (layer) =>
+                              layer.kind === "text" ? { ...layer, italic: event.target.checked } : layer
+                            )
+                          }
+                        />
+                        <span>Italic</span>
+                      </label>
+                      <label className="studio-check">
+                        <input
+                          type="checkbox"
+                          checked={selectedLayer.underline}
+                          onChange={(event) =>
+                            applyLayerUpdate(selectedLayer.id, (layer) =>
+                              layer.kind === "text" ? { ...layer, underline: event.target.checked } : layer
+                            )
+                          }
+                        />
+                        <span>Underline</span>
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
+
+                {selectedLayer?.kind === "rectangle" ? (
+                  <div className="studio-form-grid">
+                    <label>
+                      Page
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, pages.length)}
+                        value={selectedLayer.page}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, page: normalizeNumber(Number(event.target.value), layer.page) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      X
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.x}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, x: normalizeNumber(Number(event.target.value), layer.x) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Y
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.y}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, y: normalizeNumber(Number(event.target.value), layer.y) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Width
+                      <input
+                        type="number"
+                        min={24}
+                        value={selectedLayer.width}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, width: normalizeNumber(Number(event.target.value), layer.width) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Height
+                      <input
+                        type="number"
+                        min={18}
+                        value={selectedLayer.height}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, height: normalizeNumber(Number(event.target.value), layer.height) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Color
+                      <input
+                        type="color"
+                        value={selectedLayer.color}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle" ? { ...layer, color: event.target.value } : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Opacity
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        value={selectedLayer.opacity}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "rectangle"
+                              ? { ...layer, opacity: normalizeNumber(Number(event.target.value), layer.opacity) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : null}
+
+                {selectedLayer?.kind === "image" ? (
+                  <div className="studio-form-grid">
+                    <label>
+                      Page
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, pages.length)}
+                        value={selectedLayer.page}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "image"
+                              ? { ...layer, page: normalizeNumber(Number(event.target.value), layer.page) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      X
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.x}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "image"
+                              ? { ...layer, x: normalizeNumber(Number(event.target.value), layer.x) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Y
+                      <input
+                        type="number"
+                        min={0}
+                        value={selectedLayer.y}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "image"
+                              ? { ...layer, y: normalizeNumber(Number(event.target.value), layer.y) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Width
+                      <input
+                        type="number"
+                        min={24}
+                        value={selectedLayer.width}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "image"
+                              ? { ...layer, width: normalizeNumber(Number(event.target.value), layer.width) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Height
+                      <input
+                        type="number"
+                        min={24}
+                        value={selectedLayer.height}
+                        onChange={(event) =>
+                          applyLayerUpdate(selectedLayer.id, (layer) =>
+                            layer.kind === "image"
+                              ? { ...layer, height: normalizeNumber(Number(event.target.value), layer.height) }
+                              : layer
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : null}
+
+                {!selectedLayer ? (
+                  <div className="studio-defaults">
+                    <p>
+                      Current tool: <strong>{TOOL_ITEMS.find((item) => item.id === tool)?.label}</strong>
+                    </p>
+                    <p>
+                      Text defaults use <strong>{fontFamilyLabel(draftFontFamily)}</strong> at{" "}
+                      <strong>{draftFontSize}px</strong>.
+                    </p>
+                    <p>
+                      Shape defaults place a <strong>{draftBoxWidth} x {draftBoxHeight}</strong> block
+                      with <strong>{Math.round(draftBoxOpacity * 100)}%</strong> opacity.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="studio-danger-button"
+                    onClick={() => {
+                      setLayers((current) => current.filter((layer) => layer.id !== selectedLayer.id));
+                      setSelectedLayerId(null);
+                    }}
+                  >
+                    Remove selected layer
+                  </button>
+                )}
+              </div>
+
+              <div className="studio-panel studio-panel--privacy">
+                <div className="studio-panel__eyebrow">Privacy & retention</div>
+                <h2>Retention window</h2>
+                <p>
+                  Files from this studio are processed on your self-hosted server and stored in{" "}
+                  <code>./storage</code>. The selected window controls when download access expires.
+                </p>
+
+                <label htmlFor="retention-hours">Auto-expire downloads after</label>
+                <select
+                  id="retention-hours"
+                  value={retentionHours}
+                  onChange={(event) => setRetentionHours(Number(event.target.value))}
+                >
+                  {RETENTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="studio-privacy-note">
+                  <strong>Trust note</strong>
+                  <span>
+                    This is not a browser-only editor. The file leaves the device, is written to your
+                    server, and auto-expires from download after {retentionLabel(retentionHours)}.
+                  </span>
+                </div>
+              </div>
+
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Export</div>
+                <button
+                  type="button"
+                  className="studio-primary-button studio-primary-button--full"
+                  onClick={() => void processDocument()}
+                  disabled={busy}
+                >
+                  {busy ? "Rendering studio export..." : "Save PDF"}
+                </button>
+                <p className={status.toLowerCase().includes("failed") ? "error" : "small"}>{status}</p>
+                {downloadUrl ? (
+                  <a className="download studio-download-link" href={downloadUrl} target="_blank" rel="noreferrer">
+                    Download edited PDF
+                  </a>
+                ) : null}
+              </div>
+            </aside>
+
+            <section className="studio-canvas-area">
+              {!pdfFile ? (
+                <div className="studio-placeholder">
+                  <strong>Drop in a PDF to open the studio.</strong>
+                  <span>
+                    Once loaded, every stage becomes a clean placement surface for text, highlights,
+                    images, and signatures.
+                  </span>
+                </div>
+              ) : null}
+
+              {pdfFile && pages.length > 0 ? (
+                <div className="studio-page-stack">
+                  {pages.map((page) => (
+                    <StudioPdfPage
+                      key={page.pageNumber}
+                      fileName={pdfFile.name}
+                      page={page}
+                      layers={layers.filter((layer) => layer.page === page.pageNumber)}
+                      selectedLayerId={selectedLayerId}
+                      onSelectLayer={setSelectedLayerId}
+                      onPlaceLayer={(x, y) => {
+                        void createLayerAt(page.pageNumber, x, y);
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          </section>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function StudioPdfPage({
+  fileName,
+  page,
+  layers,
+  selectedLayerId,
+  onSelectLayer,
+  onPlaceLayer
+}: {
+  fileName: string;
+  page: StudioPageMeta;
+  layers: StudioLayer[];
+  selectedLayerId: string | null;
+  onSelectLayer: (layerId: string) => void;
+  onPlaceLayer: (x: number, y: number) => void;
+}): React.JSX.Element {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [renderWidth, setRenderWidth] = useState<number>(page.width);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) {
+      return;
+    }
+
+    const updateWidth = (): void => {
+      setRenderWidth(wrapper.clientWidth || page.width);
+    };
+
+    updateWidth();
+
+    const observer = new ResizeObserver(() => {
+      updateWidth();
+    });
+    observer.observe(wrapper);
+
+    return () => observer.disconnect();
+  }, [page.width]);
+
+  const scale = renderWidth / page.width;
+  const pageHeight = page.height * scale;
+
+  return (
+    <article className="studio-page-card">
+      <div className="studio-page-card__meta">
+        <span>Page {page.pageNumber}</span>
+        <span>{Math.round(page.width)} x {Math.round(page.height)} pt</span>
+      </div>
+
+      <div
+        ref={wrapperRef}
+        className="studio-page-surface"
+        style={{ height: `${pageHeight}px` }}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const relativeX = event.clientX - rect.left;
+          const relativeY = event.clientY - rect.top;
+          const x = (relativeX / rect.width) * page.width;
+          const y = (1 - relativeY / rect.height) * page.height;
+          onPlaceLayer(x, y);
+        }}
+        >
+        <div className="studio-page-paper">
+          <div className="studio-page-paper__watermark">{fileName}</div>
+          <div className="studio-page-paper__grid" />
+          <div className="studio-page-paper__header">
+            <span>Studio placement surface</span>
+            <small>Page {page.pageNumber}</small>
+          </div>
+        </div>
+
+        <div className="studio-layer-overlay">
+          {layers.map((layer) => {
+            if (layer.kind === "text") {
+              return (
+                <button
+                  key={layer.id}
+                  type="button"
+                  className={`studio-layer-ghost studio-layer-ghost--text ${
+                    selectedLayerId === layer.id ? "is-active" : ""
+                  }`}
+                  style={{
+                    left: `${layer.x * scale}px`,
+                    top: `${pageHeight - layer.y * scale}px`,
+                    color: layer.color,
+                    fontSize: `${Math.max(12, layer.fontSize * scale)}px`,
+                    fontFamily: cssFontFamily(layer.fontFamily),
+                    fontWeight: layer.bold ? 800 : 600,
+                    fontStyle: layer.italic ? "italic" : "normal",
+                    textDecoration: layer.underline ? "underline" : "none"
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectLayer(layer.id);
+                  }}
+                >
+                  {layer.text}
+                </button>
+              );
+            }
+
+            if (layer.kind === "rectangle") {
+              return (
+                <button
+                  key={layer.id}
+                  type="button"
+                  className={`studio-layer-ghost studio-layer-ghost--rectangle ${
+                    selectedLayerId === layer.id ? "is-active" : ""
+                  }`}
+                  style={{
+                    left: `${layer.x * scale}px`,
+                    top: `${pageHeight - (layer.y + layer.height) * scale}px`,
+                    width: `${layer.width * scale}px`,
+                    height: `${layer.height * scale}px`,
+                    background: layer.color,
+                    opacity: layer.opacity
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectLayer(layer.id);
+                  }}
+                />
+              );
+            }
+
+            return (
+              <button
+                key={layer.id}
+                type="button"
+                className={`studio-layer-ghost studio-layer-ghost--image ${
+                  selectedLayerId === layer.id ? "is-active" : ""
+                }`}
+                style={{
+                  left: `${layer.x * scale}px`,
+                  top: `${pageHeight - (layer.y + layer.height) * scale}px`,
+                  width: `${layer.width * scale}px`,
+                  height: `${layer.height * scale}px`
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelectLayer(layer.id);
+                }}
+              >
+                <img src={layer.dataUrl} alt={layer.fileName} />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </article>
+  );
+}

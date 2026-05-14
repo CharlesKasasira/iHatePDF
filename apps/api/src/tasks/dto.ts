@@ -1,5 +1,7 @@
 import {
   ArrayMaxSize,
+  IsBoolean,
+  IsIn,
   IsArray,
   IsHexColor,
   IsInt,
@@ -147,6 +149,19 @@ export class EditTextDto {
   fontSize!: number;
 
   @IsString()
+  @IsIn(["sans", "serif", "mono"])
+  fontFamily!: "sans" | "serif" | "mono";
+
+  @IsBoolean()
+  bold!: boolean;
+
+  @IsBoolean()
+  italic!: boolean;
+
+  @IsBoolean()
+  underline!: boolean;
+
+  @IsString()
   @IsHexColor()
   color!: string;
 }
@@ -242,4 +257,10 @@ export class EditPdfDto {
   @IsString()
   @IsNotEmpty()
   outputName!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(24 * 365)
+  retentionHours?: number;
 }

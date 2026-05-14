@@ -1,0 +1,151 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - link "iHatePDF home" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e6]: I
+          - generic [ref=e7]: ❤
+          - generic [ref=e8]: PDF
+        - navigation "Primary" [ref=e9]:
+          - link "MERGE PDF" [ref=e10] [cursor=pointer]:
+            - /url: /merge-pdf
+          - link "SPLIT PDF" [ref=e11] [cursor=pointer]:
+            - /url: /split-pdf
+          - link "COMPRESS PDF" [ref=e12] [cursor=pointer]:
+            - /url: /compress-pdf
+          - link "PROTECT PDF" [ref=e13] [cursor=pointer]:
+            - /url: /protect-pdf
+          - link "UNLOCK PDF" [ref=e14] [cursor=pointer]:
+            - /url: /unlock-pdf
+          - link "PDF TO WORD" [ref=e15] [cursor=pointer]:
+            - /url: /pdf-to-word
+          - link "EXCEL TO PDF" [ref=e16] [cursor=pointer]:
+            - /url: /excel-to-pdf
+          - link "PPT TO PDF" [ref=e17] [cursor=pointer]:
+            - /url: /powerpoint-to-pdf
+          - link "EDITOR STUDIO" [ref=e18] [cursor=pointer]:
+            - /url: /editor-studio
+          - link "ALL PDF TOOLS" [ref=e19] [cursor=pointer]:
+            - /url: /
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - strong [ref=e22]: Self-hosted
+            - generic [ref=e23]: Auto-expiring downloads
+          - link "Open Studio" [ref=e24] [cursor=pointer]:
+            - /url: /editor-studio
+    - main [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - generic [ref=e29]: PDF Editor Studio
+            - heading "Precision PDF editing for self-hosted teams" [level=1] [ref=e30]
+            - paragraph [ref=e31]: Layer text, highlights, signatures, and images on top of live PDF previews, then export with an explicit retention window.
+          - generic [ref=e32]:
+            - button "Open PDF" [ref=e33] [cursor=pointer]
+            - button "Load image" [ref=e34] [cursor=pointer]
+            - button "Load signature" [ref=e35] [cursor=pointer]
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - button "Select Inspect and refine layers" [ref=e38] [cursor=pointer]:
+              - strong [ref=e39]: Select
+              - generic [ref=e40]: Inspect and refine layers
+            - button "Text Place styled type onto the page" [ref=e41] [cursor=pointer]:
+              - strong [ref=e42]: Text
+              - generic [ref=e43]: Place styled type onto the page
+            - button "Highlight Lay down translucent emphasis bars" [ref=e44] [cursor=pointer]:
+              - strong [ref=e45]: Highlight
+              - generic [ref=e46]: Lay down translucent emphasis bars
+            - button "Shapes Frame sections with clean blocks" [ref=e47] [cursor=pointer]:
+              - strong [ref=e48]: Shapes
+              - generic [ref=e49]: Frame sections with clean blocks
+            - button "Sign Stamp a handwritten signature image" [ref=e50] [cursor=pointer]:
+              - strong [ref=e51]: Sign
+              - generic [ref=e52]: Stamp a handwritten signature image
+            - button "Image Insert logos, seals, or graphics" [ref=e53] [cursor=pointer]:
+              - strong [ref=e54]: Image
+              - generic [ref=e55]: Insert logos, seals, or graphics
+          - generic [ref=e56]:
+            - generic [ref=e57]:
+              - generic [ref=e58]: Typeface
+              - combobox "Typeface" [ref=e59]:
+                - option "Studio Sans" [selected]
+                - option "Editorial Serif"
+                - option "Mono"
+            - generic [ref=e60]:
+              - generic [ref=e61]: Size
+              - spinbutton "Size" [ref=e62]: "20"
+            - generic [ref=e63]:
+              - generic [ref=e64]: Color
+              - textbox "Color" [ref=e65]: "#19334d"
+            - generic [ref=e66]:
+              - checkbox "B" [checked] [ref=e67]
+              - generic [ref=e68] [cursor=pointer]: B
+            - generic [ref=e69]:
+              - checkbox "I" [ref=e70]
+              - generic [ref=e71] [cursor=pointer]: I
+            - generic [ref=e72]:
+              - checkbox "U" [ref=e73]
+              - generic [ref=e74] [cursor=pointer]: U
+        - generic [ref=e75]:
+          - complementary [ref=e76]:
+            - generic [ref=e77]:
+              - generic [ref=e78]: Document
+              - heading "No PDF loaded" [level=2] [ref=e79]
+              - paragraph [ref=e80]: Open a PDF, then place layers visually on the studio placement stages.
+              - generic [ref=e81]: Export filename
+              - textbox "Export filename" [ref=e82]:
+                - /placeholder: studio-export.pdf
+                - text: studio-export.pdf
+              - generic [ref=e83]:
+                - generic [ref=e84]: Placement stages
+                - generic [ref=e85]:
+                  - button "-" [ref=e86] [cursor=pointer]
+                  - strong [ref=e87]: "1"
+                  - button "+" [ref=e88] [cursor=pointer]
+            - generic [ref=e89]:
+              - generic [ref=e90]: Layers
+              - paragraph [ref=e92]: No layers yet. Pick a tool, then click the PDF preview to place it.
+            - generic [ref=e93]:
+              - generic [ref=e94]: Tool defaults
+              - generic [ref=e95]:
+                - paragraph [ref=e96]:
+                  - text: "Current tool:"
+                  - strong [ref=e97]: Select
+                - paragraph [ref=e98]:
+                  - text: Text defaults use
+                  - strong [ref=e99]: Studio Sans
+                  - text: at
+                  - strong [ref=e100]: 20px
+                  - text: .
+                - paragraph [ref=e101]:
+                  - text: Shape defaults place a
+                  - strong [ref=e102]: 220 x 54
+                  - text: block with
+                  - strong [ref=e103]: 22%
+                  - text: opacity.
+            - generic [ref=e104]:
+              - generic [ref=e105]: Privacy & retention
+              - heading "Retention window" [level=2] [ref=e106]
+              - paragraph [ref=e107]:
+                - text: Files from this studio are processed on your self-hosted server and stored in
+                - code [ref=e108]: ./storage
+                - text: . The selected window controls when download access expires.
+              - generic [ref=e109]: Auto-expire downloads after
+              - combobox "Auto-expire downloads after" [ref=e110]:
+                - option "1 hour"
+                - option "24 hours" [selected]
+                - option "3 days"
+                - option "7 days"
+                - option "30 days"
+              - generic [ref=e111]:
+                - strong [ref=e112]: Trust note
+                - generic [ref=e113]: This is not a browser-only editor. The file leaves the device, is written to your server, and auto-expires from download after 24 hours.
+            - generic [ref=e114]:
+              - generic [ref=e115]: Export
+              - button "Save PDF" [ref=e116] [cursor=pointer]
+              - paragraph [ref=e117]: Upload a PDF to begin a controlled studio editing session.
+          - generic [ref=e119]:
+            - strong [ref=e120]: Drop in a PDF to open the studio.
+            - generic [ref=e121]: Once loaded, every stage becomes a clean placement surface for text, highlights, images, and signatures.
+  - alert [ref=e122]

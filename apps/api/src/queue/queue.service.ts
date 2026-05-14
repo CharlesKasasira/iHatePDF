@@ -13,6 +13,8 @@ export type PdfTaskJobName =
   | "pdf-to-word"
   | "pdf-to-powerpoint"
   | "pdf-to-excel"
+  | "excel-to-pdf"
+  | "powerpoint-to-pdf"
   | "edit";
 
 function redisConnectionOptions(redisUrl: string): {

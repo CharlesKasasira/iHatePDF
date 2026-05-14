@@ -106,7 +106,7 @@ const TOOLS: ToolCard[] = [
   {
     title: "PowerPoint to PDF",
     description: "Make PPT and PPTX slideshows easy to view by converting them to PDF.",
-    href: "/",
+    href: "/powerpoint-to-pdf",
     icon: "P",
     iconClass: "icon-orange",
     categories: ["Convert PDF"]
@@ -114,19 +114,19 @@ const TOOLS: ToolCard[] = [
   {
     title: "Excel to PDF",
     description: "Make EXCEL spreadsheets easy to read by converting them to PDF.",
-    href: "/",
+    href: "/excel-to-pdf",
     icon: "X",
     iconClass: "icon-green",
     categories: ["Convert PDF"]
   },
   {
-    title: "Edit PDF",
-    description: "Add text, images, shapes or freehand annotations to a PDF document.",
-    href: "/edit-pdf",
+    title: "PDF Editor Studio",
+    description: "Place styled text, signatures, highlights, and image layers on multi-page placement stages.",
+    href: "/editor-studio",
     icon: "✎",
     iconClass: "icon-purple",
     categories: ["Edit PDF"],
-    badge: "New!"
+    badge: "Studio"
   }
 ];
 
@@ -149,9 +149,24 @@ export default function HomePage(): React.JSX.Element {
         <section className="hero-block">
           <h1>Every tool you need to work with PDFs in one place</h1>
           <p>
-            Every tool you need to use PDFs, at your fingertips. Merge, split, compress, convert,
-            rotate, unlock and watermark PDFs with just a few clicks.
+            Self-hosted PDF workflows with deliberate retention controls. Merge, split, compress,
+            convert, secure, and edit documents in a workspace you actually control.
           </p>
+        </section>
+
+        <section className="trust-banner" aria-label="Trust and privacy">
+          <article>
+            <strong>Private by deployment</strong>
+            <span>Your files stay on your infrastructure, not a random third-party SaaS.</span>
+          </article>
+          <article>
+            <strong>Explicit retention</strong>
+            <span>Studio exports can auto-expire instead of lingering indefinitely.</span>
+          </article>
+          <article>
+            <strong>Serious editor</strong>
+            <span>Use the new Editor Studio for layered text, signatures, highlights, and images.</span>
+          </article>
         </section>
 
         <section className="filter-row" aria-label="Tool categories">

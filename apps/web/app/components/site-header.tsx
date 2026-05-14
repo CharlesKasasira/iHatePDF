@@ -11,6 +11,8 @@ type SiteHeaderProps = {
     | "pdf-to-word"
     | "pdf-to-powerpoint"
     | "pdf-to-excel"
+    | "excel-to-pdf"
+    | "powerpoint-to-pdf"
     | "edit"
     | null;
 };
@@ -26,7 +28,9 @@ const NAV_ITEMS: Array<{
   { label: "PROTECT PDF", href: "/protect-pdf", key: "protect" },
   { label: "UNLOCK PDF", href: "/unlock-pdf", key: "unlock" },
   { label: "PDF TO WORD", href: "/pdf-to-word", key: "pdf-to-word" },
-  { label: "EDIT PDF", href: "/edit-pdf", key: "edit" },
+  { label: "EXCEL TO PDF", href: "/excel-to-pdf", key: "excel-to-pdf" },
+  { label: "PPT TO PDF", href: "/powerpoint-to-pdf", key: "powerpoint-to-pdf" },
+  { label: "EDITOR STUDIO", href: "/editor-studio", key: "edit" },
   { label: "ALL PDF TOOLS", href: "/" }
 ];
 
@@ -53,11 +57,13 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </nav>
 
         <div className="auth-actions">
-          <button type="button" className="login-link">Login</button>
-          <button type="button" className="signup-btn">Sign up</button>
-          <button type="button" className="menu-dot-btn" aria-label="Open menu">
-            ⋮
-          </button>
+          <div className="trust-chip">
+            <strong>Self-hosted</strong>
+            <span>Auto-expiring downloads</span>
+          </div>
+          <Link href="/editor-studio" className="signup-btn">
+            Open Studio
+          </Link>
         </div>
       </div>
     </header>

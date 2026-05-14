@@ -1,0 +1,12 @@
+.git
+.playwright-cli
+.pnpm-store
+.turbo
+node_modules
+storage
+dist
+.env
+apps/api/.env
+apps/worker/.env
+apps/web/.env.local
+apps/web/.env.production
