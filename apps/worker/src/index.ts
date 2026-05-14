@@ -97,6 +97,10 @@ const EditTextSchema = z.object({
   y: z.number().min(0),
   text: z.string().min(1),
   fontSize: z.number().min(4).max(400),
+  fontFamily: z.enum(["sans", "serif", "mono"]),
+  bold: z.boolean(),
+  italic: z.boolean(),
+  underline: z.boolean(),
   color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/)
 });
 
@@ -126,7 +130,8 @@ const EditPayloadSchema = z
     textEdits: z.array(EditTextSchema).default([]),
     rectangleEdits: z.array(EditRectangleSchema).default([]),
     imageEdits: z.array(EditImageSchema).default([]),
-    outputName: z.string().min(1)
+    outputName: z.string().min(1),
+    expiresAtIso: z.string().datetime().optional()
   })
   .refine(
     (value) => value.textEdits.length + value.rectangleEdits.length + value.imageEdits.length > 0,
@@ -267,7 +272,8 @@ async function uploadObject(
   objectKey: string,
   contentType: string,
   body: Buffer,
-  fileName: string
+  fileName: string,
+  expiresAt?: Date
 ): Promise<string> {
   const path = resolveStoragePath(objectKey);
   await mkdir(dirname(path), { recursive: true });
@@ -278,7 +284,8 @@ async function uploadObject(
       objectKey,
       fileName,
       mimeType: contentType,
-      sizeBytes: BigInt(body.byteLength)
+      sizeBytes: BigInt(body.byteLength),
+      expiresAt
     }
   });
 
@@ -759,6 +766,15 @@ function xmlEscape(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function xmlUnescape(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -1121,6 +1137,259 @@ async function createPptxBuffer(textLines: string[]): Promise<Buffer> {
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
+async function loadOpenXmlZip(inputBuffer: Buffer, label: string): Promise<JSZip> {
+  try {
+    return await JSZip.loadAsync(inputBuffer);
+  } catch {
+    throw new Error(`Unsupported file format. Upload a valid ${label} file.`);
+  }
+}
+
+function extractXmlTextTokens(content: string, tagName: string): string[] {
+  const regex = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, "g");
+  const output: string[] = [];
+  let match: RegExpExecArray | null = regex.exec(content);
+  while (match) {
+    const normalized = xmlUnescape(match[1]).replace(/\s+/g, " ").trim();
+    if (normalized) {
+      output.push(normalized);
+    }
+    match = regex.exec(content);
+  }
+  return output;
+}
+
+function excelColumnToIndex(column: string): number {
+  let value = 0;
+  for (const char of column.toUpperCase()) {
+    if (char < "A" || char > "Z") {
+      continue;
+    }
+    value = value * 26 + (char.charCodeAt(0) - 64);
+  }
+  return Math.max(0, value - 1);
+}
+
+async function readXlsxSharedStrings(zip: JSZip): Promise<string[]> {
+  const sharedStringsFile = zip.file("xl/sharedStrings.xml");
+  if (!sharedStringsFile) {
+    return [];
+  }
+
+  const sharedStringsXml = await sharedStringsFile.async("string");
+  const stringItems = sharedStringsXml.match(/<si\b[\s\S]*?<\/si>/g) ?? [];
+  return stringItems.map((item) => extractXmlTextTokens(item, "t").join(" ").trim());
+}
+
+function extractXlsxCellValue(cellAttributes: string, cellBody: string, sharedStrings: string[]): string {
+  const type = cellAttributes.match(/\bt="([^"]+)"/)?.[1] ?? "";
+
+  if (type === "inlineStr") {
+    return extractXmlTextTokens(cellBody, "t").join(" ").trim();
+  }
+
+  if (type === "s") {
+    const sharedIndex = Number(cellBody.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "-1");
+    if (Number.isInteger(sharedIndex) && sharedIndex >= 0 && sharedIndex < sharedStrings.length) {
+      return sharedStrings[sharedIndex];
+    }
+    return "";
+  }
+
+  const scalarValue = cellBody.match(/<v>([\s\S]*?)<\/v>/)?.[1];
+  if (scalarValue) {
+    return xmlUnescape(scalarValue).replace(/\s+/g, " ").trim();
+  }
+
+  return extractXmlTextTokens(cellBody, "t").join(" ").trim();
+}
+
+function extractXlsxRowValues(rowXml: string, sharedStrings: string[]): string[] {
+  const valuesByColumn = new Map<number, string>();
+  const cellRegex = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g;
+  let nextColumn = 0;
+  let cellMatch: RegExpExecArray | null = cellRegex.exec(rowXml);
+
+  while (cellMatch) {
+    const attributes = cellMatch[1] ?? cellMatch[3] ?? "";
+    const cellBody = cellMatch[2] ?? "";
+    const ref = attributes.match(/\br="([A-Z]+)\d+"/i)?.[1];
+    const column = ref ? excelColumnToIndex(ref) : nextColumn;
+    nextColumn = Math.max(nextColumn, column + 1);
+
+    const value = extractXlsxCellValue(attributes, cellBody, sharedStrings);
+    if (value) {
+      valuesByColumn.set(column, value);
+    }
+
+    cellMatch = cellRegex.exec(rowXml);
+  }
+
+  if (valuesByColumn.size === 0) {
+    return [];
+  }
+
+  const maxColumn = Math.max(...Array.from(valuesByColumn.keys()));
+  const row = Array.from({ length: maxColumn + 1 }, (_, index) => valuesByColumn.get(index) ?? "");
+  while (row.length > 0 && row[row.length - 1] === "") {
+    row.pop();
+  }
+  return row.filter(Boolean);
+}
+
+async function extractXlsxTextLines(inputBuffer: Buffer): Promise<string[]> {
+  const zip = await loadOpenXmlZip(inputBuffer, "Excel (.xlsx)");
+  const sharedStrings = await readXlsxSharedStrings(zip);
+  const worksheetPaths = Object.keys(zip.files)
+    .filter((path) => /^xl\/worksheets\/[^/]+\.xml$/.test(path))
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+
+  const rows: string[] = [];
+
+  for (const worksheetPath of worksheetPaths) {
+    const worksheet = zip.file(worksheetPath);
+    if (!worksheet) {
+      continue;
+    }
+
+    const worksheetXml = await worksheet.async("string");
+    const rowMatches = worksheetXml.match(/<row\b[^>]*>[\s\S]*?<\/row>/g) ?? [];
+
+    for (const rowXml of rowMatches) {
+      const rowValues = extractXlsxRowValues(rowXml, sharedStrings);
+      if (rowValues.length > 0) {
+        rows.push(rowValues.join("\t"));
+      }
+
+      if (rows.length >= 2200) {
+        return uniqueCleanText(rows);
+      }
+    }
+  }
+
+  return uniqueCleanText(rows);
+}
+
+async function extractPptxTextLines(inputBuffer: Buffer): Promise<string[]> {
+  const zip = await loadOpenXmlZip(inputBuffer, "PowerPoint (.pptx)");
+  const slidePaths = Object.keys(zip.files)
+    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+
+  const lines: string[] = [];
+
+  for (let index = 0; index < slidePaths.length; index += 1) {
+    const slide = zip.file(slidePaths[index]);
+    if (!slide) {
+      continue;
+    }
+
+    const slideXml = await slide.async("string");
+    const paragraphs = slideXml.match(/<a:p\b[\s\S]*?<\/a:p>/g) ?? [];
+    const paragraphLines = paragraphs
+      .map((paragraph) => extractXmlTextTokens(paragraph, "a:t").join(" ").trim())
+      .filter((paragraph) => paragraph.length > 0);
+
+    if (paragraphLines.length === 0) {
+      continue;
+    }
+
+    lines.push(`Slide ${index + 1}`);
+    lines.push(...paragraphLines);
+    if (lines.length >= 2200) {
+      return uniqueCleanText(lines);
+    }
+  }
+
+  return uniqueCleanText(lines);
+}
+
+function wrapTextLine(value: string, maxLength: number): string[] {
+  if (value.length <= maxLength) {
+    return [value];
+  }
+
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length === 0) {
+    return [value.slice(0, maxLength)];
+  }
+
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+    }
+
+    if (word.length > maxLength) {
+      lines.push(word.slice(0, maxLength));
+      current = word.slice(maxLength);
+      continue;
+    }
+
+    current = word;
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  return lines.length > 0 ? lines : [value.slice(0, maxLength)];
+}
+
+async function createTextPdfBuffer(textLines: string[]): Promise<Buffer> {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const margin = 48;
+  const fontSize = 11;
+  const lineHeight = 15;
+  const maxWidth = pageWidth - margin * 2;
+  const lines = textLines.length > 0 ? textLines.slice(0, 2400) : ["No extractable text was found."];
+
+  let page = pdfDoc.addPage([pageWidth, pageHeight]);
+  let y = pageHeight - margin;
+
+  for (const rawLine of lines) {
+    const normalizedLine = rawLine.replace(/\s+/g, " ").trim();
+    if (!normalizedLine) {
+      continue;
+    }
+
+    const wrappedLines = wrapTextLine(normalizedLine, 100);
+    for (const line of wrappedLines) {
+      let output = line;
+      while (font.widthOfTextAtSize(output, fontSize) > maxWidth && output.length > 1) {
+        output = output.slice(0, -1);
+      }
+
+      if (y < margin + lineHeight) {
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        y = pageHeight - margin;
+      }
+
+      page.drawText(output, {
+        x: margin,
+        y,
+        size: fontSize,
+        font,
+        color: rgb(0, 0, 0)
+      });
+      y -= lineHeight;
+    }
+  }
+
+  return Buffer.from(await pdfDoc.save());
+}
+
 function parseHexColor(value: string): { red: number; green: number; blue: number } {
   const raw = value.replace("#", "");
   const hex =
@@ -1133,6 +1402,45 @@ function parseHexColor(value: string): { red: number; green: number; blue: numbe
     green: parseInt(hex.slice(2, 4), 16),
     blue: parseInt(hex.slice(4, 6), 16)
   };
+}
+
+function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): StandardFonts {
+  if (textEdit.fontFamily === "serif") {
+    if (textEdit.bold && textEdit.italic) {
+      return StandardFonts.TimesRomanBoldItalic;
+    }
+    if (textEdit.bold) {
+      return StandardFonts.TimesRomanBold;
+    }
+    if (textEdit.italic) {
+      return StandardFonts.TimesRomanItalic;
+    }
+    return StandardFonts.TimesRoman;
+  }
+
+  if (textEdit.fontFamily === "mono") {
+    if (textEdit.bold && textEdit.italic) {
+      return StandardFonts.CourierBoldOblique;
+    }
+    if (textEdit.bold) {
+      return StandardFonts.CourierBold;
+    }
+    if (textEdit.italic) {
+      return StandardFonts.CourierOblique;
+    }
+    return StandardFonts.Courier;
+  }
+
+  if (textEdit.bold && textEdit.italic) {
+    return StandardFonts.HelveticaBoldOblique;
+  }
+  if (textEdit.bold) {
+    return StandardFonts.HelveticaBold;
+  }
+  if (textEdit.italic) {
+    return StandardFonts.HelveticaOblique;
+  }
+  return StandardFonts.Helvetica;
 }
 
 async function runPdfToWord(payload: ConvertPayload): Promise<string> {
@@ -1168,11 +1476,25 @@ async function runPdfToExcel(payload: ConvertPayload): Promise<string> {
   );
 }
 
+async function runExcelToPdf(payload: ConvertPayload): Promise<string> {
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const pdfBuffer = await createTextPdfBuffer(await extractXlsxTextLines(inputBuffer));
+  const fileName = safePdfName(payload.outputName);
+  return saveOutputFile(fileName, "application/pdf", pdfBuffer);
+}
+
+async function runPowerpointToPdf(payload: ConvertPayload): Promise<string> {
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const pdfBuffer = await createTextPdfBuffer(await extractPptxTextLines(inputBuffer));
+  const fileName = safePdfName(payload.outputName);
+  return saveOutputFile(fileName, "application/pdf", pdfBuffer);
+}
+
 async function runEdit(payload: EditPayload): Promise<string> {
   const inputBuffer = await downloadObject(payload.fileKey);
   const pdfDoc = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
   const pages = pdfDoc.getPages();
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const embeddedFonts = new Map<StandardFonts, Awaited<ReturnType<typeof pdfDoc.embedFont>>>();
 
   const pageAt = (pageNumber: number) => {
     if (pageNumber > pages.length) {
@@ -1184,6 +1506,13 @@ async function runEdit(payload: EditPayload): Promise<string> {
   for (const item of payload.textEdits) {
     const page = pageAt(item.page);
     const color = parseHexColor(item.color);
+    const fontName = resolveStandardFont(item);
+    let font = embeddedFonts.get(fontName);
+    if (!font) {
+      font = await pdfDoc.embedFont(fontName);
+      embeddedFonts.set(fontName, font);
+    }
+
     page.drawText(item.text, {
       x: item.x,
       y: item.y,
@@ -1191,6 +1520,17 @@ async function runEdit(payload: EditPayload): Promise<string> {
       font,
       color: rgb(color.red / 255, color.green / 255, color.blue / 255)
     });
+
+    if (item.underline) {
+      const width = font.widthOfTextAtSize(item.text, item.fontSize);
+      const thickness = Math.max(0.75, item.fontSize * 0.06);
+      page.drawLine({
+        start: { x: item.x, y: item.y - thickness * 2.2 },
+        end: { x: item.x + width, y: item.y - thickness * 2.2 },
+        thickness,
+        color: rgb(color.red / 255, color.green / 255, color.blue / 255)
+      });
+    }
   }
 
   for (const item of payload.rectangleEdits) {
@@ -1222,7 +1562,13 @@ async function runEdit(payload: EditPayload): Promise<string> {
 
   const editedBuffer = Buffer.from(await pdfDoc.save());
   const fileName = safePdfName(payload.outputName);
-  return saveOutputFile(fileName, "application/pdf", editedBuffer);
+  return uploadObject(
+    createOutputObjectKey(fileName),
+    "application/pdf",
+    editedBuffer,
+    fileName,
+    payload.expiresAtIso ? new Date(payload.expiresAtIso) : undefined
+  );
 }
 
 async function processJob(job: Job): Promise<void> {
@@ -1296,6 +1642,22 @@ async function processJob(job: Job): Promise<void> {
     const payload = ConvertPayloadSchema.parse(data);
     await markProcessing(payload.taskId);
     const outputFileId = await runPdfToExcel(payload);
+    await markCompleted(payload.taskId, outputFileId);
+    return;
+  }
+
+  if (name === "excel-to-pdf") {
+    const payload = ConvertPayloadSchema.parse(data);
+    await markProcessing(payload.taskId);
+    const outputFileId = await runExcelToPdf(payload);
+    await markCompleted(payload.taskId, outputFileId);
+    return;
+  }
+
+  if (name === "powerpoint-to-pdf") {
+    const payload = ConvertPayloadSchema.parse(data);
+    await markProcessing(payload.taskId);
+    const outputFileId = await runPowerpointToPdf(payload);
     await markCompleted(payload.taskId, outputFileId);
     return;
   }

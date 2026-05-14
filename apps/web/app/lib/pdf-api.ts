@@ -53,32 +53,47 @@ export async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T>
   return response.json() as Promise<T>;
 }
 
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read file."));
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsDataURL(file);
-  });
+function inferMimeType(file: File): string {
+  const reportedMime = file.type.trim();
+  if (reportedMime && reportedMime !== "application/octet-stream") {
+    return reportedMime;
+  }
+
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".pdf")) {
+    return "application/pdf";
+  }
+  if (lower.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (lower.endsWith(".pptx")) {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+
+  return "application/octet-stream";
 }
 
-export async function uploadPdf(file: File): Promise<UploadedFileMeta> {
-  const dataUrl = await fileToDataUrl(file);
-  const dataBase64 = dataUrl.split(",")[1];
-  if (!dataBase64) {
-    throw new Error("Failed to encode PDF file.");
+export async function uploadFile(
+  file: File,
+  allowedMimeTypes?: readonly string[],
+  options?: {
+    retentionHours?: number;
+  }
+): Promise<UploadedFileMeta> {
+  const mimeType = inferMimeType(file);
+  if (allowedMimeTypes && !allowedMimeTypes.includes(mimeType)) {
+    throw new Error(`Unsupported file type "${mimeType}".`);
+  }
+
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  if (options?.retentionHours) {
+    formData.append("retentionHours", String(options.retentionHours));
   }
 
   const response = await fetch(`${API_BASE_URL}/uploads`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      fileName: file.name,
-      mimeType: "application/pdf",
-      dataBase64
-    })
+    body: formData
   });
 
   if (!response.ok) {
@@ -87,6 +102,17 @@ export async function uploadPdf(file: File): Promise<UploadedFileMeta> {
 
   const uploaded = (await response.json()) as { fileId: string; fileName: string };
   return { fileId: uploaded.fileId, fileName: uploaded.fileName };
+}
+
+export async function uploadPdf(file: File): Promise<UploadedFileMeta> {
+  return uploadFile(file, ["application/pdf"]);
+}
+
+export async function uploadPdfWithRetention(
+  file: File,
+  retentionHours: number
+): Promise<UploadedFileMeta> {
+  return uploadFile(file, ["application/pdf"], { retentionHours });
 }
 
 export async function pollTask(taskId: string): Promise<TaskStatusResponse> {
@@ -181,12 +207,33 @@ export async function queuePdfToExcel(fileId: string, outputName: string): Promi
   });
 }
 
+export async function queueExcelToPdf(fileId: string, outputName: string): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/excel-to-pdf", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queuePowerpointToPdf(
+  fileId: string,
+  outputName: string
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/powerpoint-to-pdf", {
+    method: "POST",
+    body: JSON.stringify({ fileId, outputName })
+  });
+}
+
 export type EditTextInput = {
   page: number;
   x: number;
   y: number;
   text: string;
   fontSize: number;
+  fontFamily: "sans" | "serif" | "mono";
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
   color: string;
 };
 
@@ -216,6 +263,7 @@ export async function queueEditPdf(
     textEdits?: EditTextInput[];
     rectangleEdits?: EditRectangleInput[];
     imageEdits?: EditImageInput[];
+    retentionHours?: number;
   }
 ): Promise<{ taskId: string }> {
   return jsonFetch<{ taskId: string }>("/tasks/edit", {

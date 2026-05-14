@@ -1,0 +1,2 @@
+ALTER TABLE "FileObject"
+ADD COLUMN "expiresAt" TIMESTAMP(3);

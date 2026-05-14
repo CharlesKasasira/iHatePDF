@@ -60,6 +60,16 @@ export class TasksController {
     return this.tasksService.queuePdfToExcel(dto);
   }
 
+  @Post("excel-to-pdf")
+  queueExcelToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueExcelToPdf(dto);
+  }
+
+  @Post("powerpoint-to-pdf")
+  queuePowerpointToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queuePowerpointToPdf(dto);
+  }
+
   @Post("edit")
   queueEditPdf(@Body() dto: EditPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queueEdit(dto);

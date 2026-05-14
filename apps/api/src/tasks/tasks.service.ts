@@ -75,7 +75,16 @@ interface EditJobPayload {
   rectangleEdits: EditRectangleDto[];
   imageEdits: EditImageDto[];
   outputName: string;
+  expiresAtIso?: string;
 }
+
+const PDF_MIME_TYPES = ["application/pdf"] as const;
+const EXCEL_MIME_TYPES = [
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+] as const;
+const POWERPOINT_MIME_TYPES = [
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+] as const;
 
 @Injectable()
 export class TasksService {
@@ -85,10 +94,20 @@ export class TasksService {
     private readonly storageService: StorageService
   ) {}
 
-  private async requireInputFile(fileId: string): Promise<{ id: string; objectKey: string }> {
+  private async requireInputFile(
+    fileId: string,
+    allowedMimeTypes?: readonly string[],
+    expectedFileTypeLabel = "a supported file format"
+  ): Promise<{ id: string; objectKey: string; mimeType: string }> {
     const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
     if (!file) {
       throw new NotFoundException("Input file was not found.");
+    }
+
+    if (allowedMimeTypes && !allowedMimeTypes.includes(file.mimeType)) {
+      throw new BadRequestException(
+        `Unsupported input file type "${file.mimeType}". Expected ${expectedFileTypeLabel}.`
+      );
     }
 
     return file;
@@ -112,6 +131,9 @@ export class TasksService {
       const item = fileMap.get(id);
       if (!item) {
         throw new NotFoundException(`Input file ${id} not found.`);
+      }
+      if (item.mimeType !== "application/pdf") {
+        throw new BadRequestException("Merge requires PDF input files.");
       }
       return item.objectKey;
     });
@@ -138,7 +160,7 @@ export class TasksService {
   }
 
   async queueSplit(dto: SplitPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -165,7 +187,7 @@ export class TasksService {
   }
 
   async queueSign(dto: SignPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -202,7 +224,7 @@ export class TasksService {
   }
 
   async queueCompress(dto: CompressPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -227,7 +249,7 @@ export class TasksService {
   }
 
   async queueProtect(dto: ProtectPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const password = dto.password.trim();
     if (!password) {
@@ -259,7 +281,7 @@ export class TasksService {
   }
 
   async queueUnlock(dto: UnlockPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const password = dto.password.trim();
     if (!password) {
@@ -291,7 +313,7 @@ export class TasksService {
   }
 
   async queuePdfToWord(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -316,7 +338,7 @@ export class TasksService {
   }
 
   async queuePdfToPowerpoint(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -341,7 +363,7 @@ export class TasksService {
   }
 
   async queuePdfToExcel(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const task = await this.prisma.task.create({
       data: {
@@ -365,8 +387,66 @@ export class TasksService {
     return { taskId: task.id };
   }
 
+  async queueExcelToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(
+      dto.fileId,
+      EXCEL_MIME_TYPES,
+      "an Excel file (.xlsx)"
+    );
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.excel_to_pdf,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: ConvertJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("excel-to-pdf", payload);
+    return { taskId: task.id };
+  }
+
+  async queuePowerpointToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(
+      dto.fileId,
+      POWERPOINT_MIME_TYPES,
+      "a PowerPoint file (.pptx)"
+    );
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.powerpoint_to_pdf,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: ConvertJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("powerpoint-to-pdf", payload);
+    return { taskId: task.id };
+  }
+
   async queueEdit(dto: EditPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId);
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
     const textEdits = dto.textEdits ?? [];
     const rectangleEdits = dto.rectangleEdits ?? [];
@@ -384,6 +464,7 @@ export class TasksService {
         payload: {
           fileKey: file.objectKey,
           outputName: dto.outputName,
+          retentionHours: dto.retentionHours ?? null,
           editCounts: {
             text: textEdits.length,
             rectangles: rectangleEdits.length,
@@ -399,7 +480,10 @@ export class TasksService {
       textEdits,
       rectangleEdits,
       imageEdits,
-      outputName: dto.outputName
+      outputName: dto.outputName,
+      expiresAtIso: dto.retentionHours
+        ? new Date(Date.now() + dto.retentionHours * 60 * 60 * 1000).toISOString()
+        : undefined
     };
 
     await this.queueService.enqueue("edit", payload);
@@ -425,7 +509,9 @@ export class TasksService {
     }
 
     const outputDownloadUrl = task.outputFile
-      ? this.storageService.createDownloadUrl(task.outputFile.id)
+      ? !task.outputFile.expiresAt || task.outputFile.expiresAt.getTime() > Date.now()
+        ? this.storageService.createDownloadUrl(task.outputFile.id)
+        : null
       : null;
 
     return {

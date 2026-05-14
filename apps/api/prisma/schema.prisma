@@ -17,6 +17,8 @@ enum TaskType {
   pdf_to_word
   pdf_to_powerpoint
   pdf_to_excel
+  excel_to_pdf
+  powerpoint_to_pdf
   edit
   signature_request
 }
@@ -42,6 +44,7 @@ model FileObject {
   mimeType   String
   sizeBytes  BigInt
   createdAt  DateTime @default(now())
+  expiresAt  DateTime?
 
   tasksAsInput Task[]             @relation("taskInputFile")
   tasksAsOutput Task[]            @relation("taskOutputFile")

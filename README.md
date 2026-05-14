@@ -12,6 +12,8 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 - PDF to Word conversion
 - PDF to PowerPoint conversion
 - PDF to Excel conversion
+- Excel to PDF conversion (`.xlsx`)
+- PowerPoint to PDF conversion (`.pptx`)
 - Edit PDF (text, image, rectangle overlays)
 - Sign PDF files (image signature placement)
 - Signature requests (email link + remote sign page)
@@ -113,7 +115,7 @@ pnpm dev
 
 ## Feature API Endpoints
 
-- `POST /api/uploads` (JSON with `fileName`, `mimeType`, `dataBase64`)
+- `POST /api/uploads` (`multipart/form-data` with a `file` field)
 - `GET /api/files/:id/download`
 - `POST /api/tasks/merge`
 - `POST /api/tasks/split`
@@ -124,6 +126,8 @@ pnpm dev
 - `POST /api/tasks/pdf-to-word`
 - `POST /api/tasks/pdf-to-powerpoint`
 - `POST /api/tasks/pdf-to-excel`
+- `POST /api/tasks/excel-to-pdf`
+- `POST /api/tasks/powerpoint-to-pdf`
 - `POST /api/tasks/edit`
 - `GET /api/tasks/:id`
 - `POST /api/signature-requests`
@@ -140,3 +144,43 @@ pnpm dev
 - Protect PDF uses `qpdf`; install locally with `brew install qpdf` if running without Docker.
 - Unlock PDF uses `qpdf` and requires the current document password.
 - Conversion outputs are generated as Office Open XML files (`.docx`, `.pptx`, `.xlsx`) from extracted PDF text.
+- Excel to PDF currently supports `.xlsx` input.
+- PowerPoint to PDF currently supports `.pptx` input.
+
+## Production Deployment
+
+This repo includes a production compose file at `docker-compose.prod.yml` and an Nginx vhost at `deploy/nginx/ihatepdf.conf`.
+
+1. Prepare server env files:
+
+```bash
+cp .env.example .env
+mkdir -p storage
+```
+
+2. Update the values for your domain and infrastructure:
+
+- Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` in `.env`
+- Set `NEXT_PUBLIC_API_BASE_URL=https://your-domain/api` in `.env`
+- Set `APP_BASE_URL=https://your-domain` in `.env`
+- Set `API_PUBLIC_URL=https://your-domain` in `.env`
+- Replace Mailpit settings with real `SMTP_*` values in `.env`
+
+3. Build and start:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+4. Install the Nginx config:
+
+```bash
+sudo cp deploy/nginx/ihatepdf.conf /etc/nginx/sites-available/ihatepdf
+sudo ln -s /etc/nginx/sites-available/ihatepdf /etc/nginx/sites-enabled/ihatepdf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+5. Edit `/etc/nginx/sites-available/ihatepdf` and replace `pdf.example.com` with your real domain, then add TLS with Certbot.
+
+The production compose file automatically runs `prisma migrate deploy` before the API and worker start.
