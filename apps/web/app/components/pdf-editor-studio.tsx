@@ -142,6 +142,10 @@ function normalizeNumber(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
 function previewPageNumber(pageNumber: number, config: EditPageNumbersInput): string {
   return `${config.prefix ?? ""}${config.startAt + pageNumber - 1}`;
 }
@@ -379,6 +383,36 @@ export function PdfEditorStudio({
       return next.sort((left, right) => left.page - right.page);
     });
     setStatus(`Queued a ${rotationDegrees}° rotation for page ${rotationPage}.`);
+  };
+
+  const handleToolSelect = (nextTool: EditorTool): void => {
+    setTool(nextTool);
+    setSelectedLayerId(null);
+
+    if (nextTool === "sign" && !signatureAsset) {
+      setStatus("Choose a signature image, then click the PDF page to stamp it.");
+      signatureInputRef.current?.click();
+      return;
+    }
+
+    if (nextTool === "image" && !imageAsset) {
+      setStatus("Choose an image, then click the PDF page to place it.");
+      imageInputRef.current?.click();
+      return;
+    }
+
+    if (nextTool === "text") {
+      setStatus("Edit the text draft in the sidebar, then click the PDF page to place it.");
+      return;
+    }
+
+    if (nextTool === "select") {
+      setStatus("Select a layer to edit it, or drag it directly on the page to reposition it.");
+    }
+  };
+
+  const moveLayer = (layerId: string, x: number, y: number): void => {
+    applyLayerUpdate(layerId, (layer) => ({ ...layer, x, y }));
   };
 
   const createLayerAt = async (pageNumber: number, x: number, y: number): Promise<void> => {
@@ -762,7 +796,7 @@ export function PdfEditorStudio({
                   key={item.id}
                   type="button"
                   className={`studio-tool ${tool === item.id ? "is-active" : ""}`}
-                  onClick={() => setTool(item.id)}
+                  onClick={() => handleToolSelect(item.id)}
                 >
                   <strong>{item.label}</strong>
                   <span>{item.hint}</span>
@@ -1454,14 +1488,163 @@ export function PdfEditorStudio({
                     <p>
                       Current tool: <strong>{TOOL_ITEMS.find((item) => item.id === tool)?.label}</strong>
                     </p>
-                    <p>
-                      Text defaults use <strong>{fontFamilyLabel(draftFontFamily)}</strong> at{" "}
-                      <strong>{draftFontSize}px</strong>.
-                    </p>
-                    <p>
-                      Shape defaults place a <strong>{draftBoxWidth} x {draftBoxHeight}</strong> block
-                      with <strong>{Math.round(draftBoxOpacity * 100)}%</strong> opacity.
-                    </p>
+
+                    {tool === "text" ? (
+                      <div className="studio-form-grid">
+                        <label>
+                          Text to place
+                          <textarea
+                            value={draftText}
+                            onChange={(event) => setDraftText(event.target.value)}
+                            placeholder="Type the text you want to place on the PDF."
+                          />
+                        </label>
+                        <p>
+                          Text defaults use <strong>{fontFamilyLabel(draftFontFamily)}</strong> at{" "}
+                          <strong>{draftFontSize}px</strong>.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {tool === "highlight" || tool === "shape" ? (
+                      <div className="studio-form-grid">
+                        <label>
+                          Width
+                          <input
+                            type="number"
+                            min={24}
+                            value={draftBoxWidth}
+                            onChange={(event) =>
+                              setDraftBoxWidth(normalizeNumber(Number(event.target.value), 220))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Height
+                          <input
+                            type="number"
+                            min={18}
+                            value={draftBoxHeight}
+                            onChange={(event) =>
+                              setDraftBoxHeight(normalizeNumber(Number(event.target.value), 54))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Color
+                          <input
+                            type="color"
+                            value={draftBoxColor}
+                            onChange={(event) => setDraftBoxColor(event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Opacity
+                          <input
+                            type="number"
+                            min={0.05}
+                            max={1}
+                            step={0.05}
+                            value={draftBoxOpacity}
+                            onChange={(event) =>
+                              setDraftBoxOpacity(normalizeNumber(Number(event.target.value), 0.22))
+                            }
+                          />
+                        </label>
+                        <p>
+                          Shape defaults place a <strong>{draftBoxWidth} x {draftBoxHeight}</strong>{" "}
+                          block with <strong>{Math.round(draftBoxOpacity * 100)}%</strong> opacity.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {tool === "image" ? (
+                      <div className="studio-form-grid">
+                        <label>
+                          Width
+                          <input
+                            type="number"
+                            min={24}
+                            value={draftImageWidth}
+                            onChange={(event) =>
+                              setDraftImageWidth(normalizeNumber(Number(event.target.value), 180))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Height
+                          <input
+                            type="number"
+                            min={24}
+                            value={draftImageHeight}
+                            onChange={(event) =>
+                              setDraftImageHeight(normalizeNumber(Number(event.target.value), 88))
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="studio-secondary-button studio-primary-button--full"
+                          onClick={() => imageInputRef.current?.click()}
+                        >
+                          {imageAsset ? `Replace image (${imageAsset.fileName})` : "Choose image"}
+                        </button>
+                        <p>
+                          {imageAsset
+                            ? "Image ready. Click any PDF page to place it."
+                            : "Load an image first, then click a PDF page to place it."}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {tool === "sign" ? (
+                      <div className="studio-form-grid">
+                        <label>
+                          Width
+                          <input
+                            type="number"
+                            min={24}
+                            value={draftSignatureWidth}
+                            onChange={(event) =>
+                              setDraftSignatureWidth(normalizeNumber(Number(event.target.value), 190))
+                            }
+                          />
+                        </label>
+                        <label>
+                          Height
+                          <input
+                            type="number"
+                            min={24}
+                            value={draftSignatureHeight}
+                            onChange={(event) =>
+                              setDraftSignatureHeight(normalizeNumber(Number(event.target.value), 72))
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="studio-secondary-button studio-primary-button--full"
+                          onClick={() => signatureInputRef.current?.click()}
+                        >
+                          {signatureAsset
+                            ? `Replace signature (${signatureAsset.fileName})`
+                            : "Choose signature image"}
+                        </button>
+                        <p>
+                          {signatureAsset
+                            ? "Signature ready. Click any PDF page to stamp it."
+                            : "Load a signature image first, then click a PDF page to stamp it."}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {tool === "select" ? (
+                      <p>
+                        Drag placed layers directly on the PDF to reposition them, or click one to edit
+                        its exact values here.
+                      </p>
+                    ) : null}
+
                     <p>
                       Document edits: <strong>{pageRotations.length}</strong> rotations,{" "}
                       <strong>{pageNumberConfig ? "page numbers on" : "page numbers off"}</strong>,{" "}
@@ -1591,8 +1774,10 @@ export function PdfEditorStudio({
                       rotationDegrees={pageRotationMap.get(page.pageNumber) ?? 0}
                       pageNumbers={pageNumberConfig}
                       watermark={watermarkConfig}
+                      activeTool={tool}
                       selectedLayerId={selectedLayerId}
                       onSelectLayer={setSelectedLayerId}
+                      onMoveLayer={moveLayer}
                       onPlaceLayer={(x, y) => {
                         void createLayerAt(page.pageNumber, x, y);
                       }}
@@ -1633,8 +1818,7 @@ export function PdfEditorStudio({
                         className="studio-sign-choice"
                         onClick={() => {
                           setSignatureFlowStep("closed");
-                          setTool("sign");
-                          setStatus("Load a signature image, then click the PDF page to place it yourself.");
+                          handleToolSelect("sign");
                         }}
                       >
                         <strong>Only me</strong>
@@ -1801,8 +1985,10 @@ function StudioPdfPage({
   rotationDegrees,
   pageNumbers,
   watermark,
+  activeTool,
   selectedLayerId,
   onSelectLayer,
+  onMoveLayer,
   onPlaceLayer
 }: {
   fileName: string;
@@ -1812,12 +1998,15 @@ function StudioPdfPage({
   rotationDegrees: number;
   pageNumbers: EditPageNumbersInput | null;
   watermark: EditWatermarkInput | null;
+  activeTool: EditorTool;
   selectedLayerId: string | null;
   onSelectLayer: (layerId: string) => void;
+  onMoveLayer: (layerId: string, x: number, y: number) => void;
   onPlaceLayer: (x: number, y: number) => void;
 }): React.JSX.Element {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [renderWidth, setRenderWidth] = useState<number>(page.width);
+  const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -1861,6 +2050,89 @@ function StudioPdfPage({
       }
     : null;
 
+  useEffect(() => {
+    if (!draggingLayerId) {
+      return;
+    }
+
+    const stopDragging = (): void => {
+      setDraggingLayerId(null);
+    };
+
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+
+    return () => {
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+  }, [draggingLayerId]);
+
+  const beginLayerDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    layer: StudioLayer
+  ): void => {
+    if (activeTool !== "select") {
+      onSelectLayer(layer.id);
+      return;
+    }
+
+    const surface = wrapperRef.current;
+    if (!surface) {
+      return;
+    }
+
+    const surfaceRect = surface.getBoundingClientRect();
+    const layerRect = event.currentTarget.getBoundingClientRect();
+    const offsetX = event.clientX - layerRect.left;
+    const offsetBottom = layerRect.bottom - event.clientY;
+    const layerWidth = layerRect.width / scale;
+    const layerHeight = layerRect.height / scale;
+
+    const updatePosition = (clientX: number, clientY: number): void => {
+      const visualLeft = clamp(
+        clientX - surfaceRect.left - offsetX,
+        0,
+        Math.max(0, surfaceRect.width - layerRect.width)
+      );
+      const visualBottom = clamp(
+        clientY - surfaceRect.top + offsetBottom,
+        layerRect.height,
+        surfaceRect.height
+      );
+      const x = clamp(visualLeft / scale, 0, Math.max(0, page.width - layerWidth));
+      const y = clamp(
+        (surfaceRect.height - visualBottom) / scale,
+        0,
+        Math.max(0, page.height - layerHeight)
+      );
+
+      onMoveLayer(layer.id, x, y);
+    };
+
+    onSelectLayer(layer.id);
+    setDraggingLayerId(layer.id);
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updatePosition(event.clientX, event.clientY);
+
+    const handlePointerMove = (moveEvent: PointerEvent): void => {
+      updatePosition(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const handlePointerUp = (): void => {
+      setDraggingLayerId((current) => (current === layer.id ? null : current));
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
+
   return (
     <article className="studio-page-card">
       <div className="studio-page-card__meta">
@@ -1874,7 +2146,7 @@ function StudioPdfPage({
       <div
         ref={wrapperRef}
         className="studio-page-surface"
-        style={{ height: `${pageHeight}px` }}
+        style={{ height: `${pageHeight}px`, cursor: activeTool === "select" ? "default" : "crosshair" }}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           const relativeX = event.clientX - rect.left;
@@ -1940,12 +2212,19 @@ function StudioPdfPage({
                     fontFamily: cssFontFamily(layer.fontFamily),
                     fontWeight: layer.bold ? 800 : 600,
                     fontStyle: layer.italic ? "italic" : "normal",
-                    textDecoration: layer.underline ? "underline" : "none"
+                    textDecoration: layer.underline ? "underline" : "none",
+                    cursor:
+                      activeTool === "select"
+                        ? draggingLayerId === layer.id
+                          ? "grabbing"
+                          : "grab"
+                        : "pointer"
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
                     onSelectLayer(layer.id);
                   }}
+                  onPointerDown={(event) => beginLayerDrag(event, layer)}
                 >
                   {layer.text}
                 </button>
@@ -1966,12 +2245,19 @@ function StudioPdfPage({
                     width: `${layer.width * scale}px`,
                     height: `${layer.height * scale}px`,
                     background: layer.color,
-                    opacity: layer.opacity
+                    opacity: layer.opacity,
+                    cursor:
+                      activeTool === "select"
+                        ? draggingLayerId === layer.id
+                          ? "grabbing"
+                          : "grab"
+                        : "pointer"
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
                     onSelectLayer(layer.id);
                   }}
+                  onPointerDown={(event) => beginLayerDrag(event, layer)}
                 />
               );
             }
@@ -1987,12 +2273,19 @@ function StudioPdfPage({
                   left: `${layer.x * scale}px`,
                   top: `${pageHeight - (layer.y + layer.height) * scale}px`,
                   width: `${layer.width * scale}px`,
-                  height: `${layer.height * scale}px`
+                  height: `${layer.height * scale}px`,
+                  cursor:
+                    activeTool === "select"
+                      ? draggingLayerId === layer.id
+                        ? "grabbing"
+                        : "grab"
+                      : "pointer"
                 }}
                 onClick={(event) => {
                   event.stopPropagation();
                   onSelectLayer(layer.id);
                 }}
+                onPointerDown={(event) => beginLayerDrag(event, layer)}
               >
                 <img src={layer.dataUrl} alt={layer.fileName} />
               </button>
