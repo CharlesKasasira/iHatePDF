@@ -397,6 +397,40 @@ main {
   font-size: 24px;
 }
 
+.batch-workbench {
+  display: grid;
+  gap: 16px;
+}
+
+.batch-workbench-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.batch-summary {
+  min-width: 180px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(58, 106, 216, 0.08), rgba(14, 143, 144, 0.1));
+  border: 1px solid rgba(58, 106, 216, 0.12);
+}
+
+.batch-summary strong {
+  display: block;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.batch-summary span {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4d6270;
+}
+
 .picked-files {
   display: grid;
   gap: 10px;
@@ -425,6 +459,18 @@ main {
   color: #2d2e3a;
   border-radius: 10px;
   padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.row-link-btn {
+  width: auto;
+  border: 1px solid #d3dbe5;
+  background: #fff;
+  color: #355566;
+  border-radius: 10px;
+  padding: 8px 12px;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
@@ -471,6 +517,26 @@ textarea {
   cursor: pointer;
 }
 
+.task-progress-rail {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #e5edf4;
+  overflow: hidden;
+}
+
+.task-progress-rail span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--teal), var(--blue));
+  transition: width 220ms ease;
+}
+
+.task-progress-rail.overall {
+  height: 12px;
+}
+
 button:disabled {
   opacity: 0.65;
   cursor: default;
@@ -496,6 +562,53 @@ button:disabled {
 a.download {
   font-weight: 700;
   color: var(--red);
+}
+
+.batch-task-list {
+  display: grid;
+  gap: 12px;
+}
+
+.batch-task-card {
+  border: 1px solid #d7e0e8;
+  border-radius: 16px;
+  padding: 16px;
+  background: linear-gradient(180deg, #ffffff, #f8fbfd);
+  box-shadow: 0 8px 24px rgba(18, 36, 46, 0.05);
+}
+
+.batch-task-card.is-success {
+  border-color: rgba(28, 124, 56, 0.24);
+}
+
+.batch-task-card.is-error {
+  border-color: rgba(186, 32, 32, 0.24);
+}
+
+.batch-task-topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.batch-task-topline strong {
+  display: block;
+}
+
+.batch-task-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.batch-task-progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #30505d;
 }
 
 .grid {
@@ -1131,6 +1244,10 @@ a.download {
     grid-template-columns: 1fr;
   }
 
+  .batch-workbench-header {
+    flex-direction: column;
+  }
+
   .studio-sidebar {
     position: static;
   }
@@ -1175,6 +1292,16 @@ a.download {
   .picked-file-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .batch-task-topline,
+  .batch-task-progress-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .batch-summary {
+    width: 100%;
   }
 
   .trust-chip {

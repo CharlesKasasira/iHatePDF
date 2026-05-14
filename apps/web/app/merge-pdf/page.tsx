@@ -25,6 +25,7 @@ export default function MergePage(): React.JSX.Element {
   const [outputName, setOutputName] = useState("merged.pdf");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [progressPercent, setProgressPercent] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState("");
   const [isDropActive, setIsDropActive] = useState(false);
 
@@ -52,20 +53,28 @@ export default function MergePage(): React.JSX.Element {
     try {
       setBusy(true);
       setDownloadUrl("");
+      setProgressPercent(4);
       setStatus("Uploading files...");
       const uploaded = await Promise.all(files.map((file) => uploadPdf(file)));
 
+      setProgressPercent(10);
       setStatus("Queueing merge...");
       const { taskId } = await queueMerge(
         uploaded.map((item) => item.fileId),
         outputName
       );
 
-      setStatus("Merging your files...");
-      const done = await pollTask(taskId);
+      setStatus("Waiting for the merge worker...");
+      const done = await pollTask(taskId, {
+        onUpdate: (task) => {
+          setProgressPercent(task.progressPercent);
+          setStatus(task.progressMessage ?? "Processing...");
+        }
+      });
 
       if (done.status === "completed" && done.outputDownloadUrl) {
         setDownloadUrl(done.outputDownloadUrl);
+        setProgressPercent(100);
         setStatus("Merge completed.");
       } else {
         setStatus(`Merge failed: ${done.errorMessage ?? "unknown error"}`);
@@ -178,6 +187,18 @@ export default function MergePage(): React.JSX.Element {
             >
               {busy ? "Merging..." : "Merge PDF"}
             </button>
+
+            {busy || progressPercent > 0 ? (
+              <div className="batch-task-progress">
+                <div className="batch-task-progress-row">
+                  <span>{status}</span>
+                  <strong>{progressPercent}%</strong>
+                </div>
+                <div className="task-progress-rail">
+                  <span style={{ width: `${progressPercent}%` }} />
+                </div>
+              </div>
+            ) : null}
 
             <p className={status.toLowerCase().includes("failed") ? "error" : "small"}>{status}</p>
             {downloadUrl ? (

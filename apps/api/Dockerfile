@@ -1,10 +1,10 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache qpdf libc6-compat
+RUN apk add --no-cache openssl qpdf libc6-compat
 
 WORKDIR /app
 
-COPY package.json pnpm-workspace.yaml turbo.json tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared/package.json packages/shared/package.json
 

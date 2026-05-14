@@ -25,7 +25,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "dotenv": "^16.4.7",
-    "fastify": "^4.28.1",
+    "fastify": "4.29.1",
     "ioredis": "^5.4.1",
     "nodemailer": "^6.9.16",
     "reflect-metadata": "^0.2.2",

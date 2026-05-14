@@ -143,9 +143,10 @@ pnpm dev
 - Uploaded and processed files are stored under `./storage` by default.
 - Protect PDF uses `qpdf`; install locally with `brew install qpdf` if running without Docker.
 - Unlock PDF uses `qpdf` and requires the current document password.
-- Conversion outputs are generated as Office Open XML files (`.docx`, `.pptx`, `.xlsx`) from extracted PDF text.
+- PDF-to-Office conversions now render each PDF page into the Office document so images, tables, and complex layouts are preserved visually.
 - Excel to PDF currently supports `.xlsx` input.
 - PowerPoint to PDF currently supports `.pptx` input.
+- The worker requires `qpdf` and `pdftoppm` (`poppler-utils`) when running outside Docker.
 
 ## Production Deployment
 

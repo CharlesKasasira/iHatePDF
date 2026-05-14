@@ -55,6 +55,8 @@ model Task {
   id            String     @id @default(cuid())
   type          TaskType
   status        TaskStatus @default(queued)
+  progressPercent Int      @default(0)
+  progressMessage String?
   payload       Json
   errorMessage  String?
   createdAt     DateTime   @default(now())

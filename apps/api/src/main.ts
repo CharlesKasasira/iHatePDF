@@ -9,8 +9,9 @@ import { env } from "./config/env.js";
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter());
+  const multipartPlugin = multipart as unknown as Parameters<NestFastifyApplication["register"]>[0];
 
-  await app.register(multipart, {
+  await app.register(multipartPlugin, {
     limits: {
       files: 1,
       fileSize: env.MAX_UPLOAD_MB * 1024 * 1024

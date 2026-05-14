@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, MessageEvent, Param, Post, Sse } from "@nestjs/common";
 import {
   CompressPdfDto,
   ConvertPdfDto,
@@ -9,7 +9,9 @@ import {
   SplitPdfDto,
   UnlockPdfDto
 } from "./dto.js";
-import { TasksService } from "./tasks.service.js";
+import { TaskStatusView, TasksService } from "./tasks.service.js";
+import { Observable, concat, from, interval, of } from "rxjs";
+import { distinctUntilChanged, map, switchMap } from "rxjs/operators";
 
 @Controller("tasks")
 export class TasksController {
@@ -75,16 +77,26 @@ export class TasksController {
     return this.tasksService.queueEdit(dto);
   }
 
+  @Sse(":id/events")
+  streamTask(@Param("id") id: string): Observable<MessageEvent> {
+    return concat(of(0), interval(1000)).pipe(
+      switchMap(() => from(this.tasksService.getTask(id))),
+      distinctUntilChanged((previous, current) => {
+        return (
+          previous.status === current.status &&
+          previous.progressPercent === current.progressPercent &&
+          previous.progressMessage === current.progressMessage &&
+          previous.errorMessage === current.errorMessage &&
+          previous.outputDownloadUrl === current.outputDownloadUrl &&
+          previous.updatedAt.getTime() === current.updatedAt.getTime()
+        );
+      }),
+      map((task) => ({ data: task }))
+    );
+  }
+
   @Get(":id")
-  getTask(@Param("id") id: string): Promise<{
-    id: string;
-    status: string;
-    type: string;
-    errorMessage: string | null;
-    outputDownloadUrl: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  }> {
+  getTask(@Param("id") id: string): Promise<TaskStatusView> {
     return this.tasksService.getTask(id);
   }
 }

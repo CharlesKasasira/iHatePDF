@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
@@ -19,7 +19,9 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().url(),
   STORAGE_DIR: z.string().default("../../storage"),
-  QPDF_BIN: z.string().default("qpdf")
+  QPDF_BIN: z.string().default("qpdf"),
+  PDFTOPPM_BIN: z.string().default("pdftoppm"),
+  PDF_RENDER_DPI: z.coerce.number().int().min(72).max(300).default(144)
 });
 
 const env = EnvSchema.parse(process.env);
@@ -27,6 +29,14 @@ const storageRoot = resolve(env.STORAGE_DIR);
 const queueName = "pdf-tasks";
 const STARTUP_RETRY_ATTEMPTS = 15;
 const STARTUP_RETRY_DELAY_MS = 1500;
+const WORD_MIME_TYPE =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const POWERPOINT_MIME_TYPE =
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const EXCEL_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PNG_MIME_TYPE = "image/png";
+const EMUS_PER_POINT = 12700;
+const TWIPS_PER_POINT = 20;
 
 const prisma = new PrismaClient();
 const redisConnection = (() => {
@@ -148,6 +158,18 @@ type ProtectPayload = z.infer<typeof ProtectPayloadSchema>;
 type UnlockPayload = z.infer<typeof UnlockPayloadSchema>;
 type ConvertPayload = z.infer<typeof ConvertPayloadSchema>;
 type EditPayload = z.infer<typeof EditPayloadSchema>;
+type ProgressReporter = (percent: number, message: string) => Promise<void>;
+
+function clampProgress(percent: number): number {
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+type RenderedPdfPage = {
+  pageNumber: number;
+  widthPt: number;
+  heightPt: number;
+  imageBuffer: Buffer;
+  imageFileName: string;
+};
 
 function sanitizeFileName(name: string): string {
   const base = name.replace(/[^a-zA-Z0-9_.-]/g, "_").trim();
@@ -206,11 +228,13 @@ async function runCommand(command: string, args: string[]): Promise<void> {
 
     child.on("error", (error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        rejectPromise(
-          new Error(
-            `Required tool "${command}" is not installed. Install qpdf (for macOS: brew install qpdf).`
-          )
-        );
+        const installHint =
+          command === env.QPDF_BIN
+            ? 'Install qpdf (for macOS: brew install qpdf).'
+            : command === env.PDFTOPPM_BIN
+              ? 'Install poppler-utils or poppler so "pdftoppm" is available.'
+              : `Install the required tool "${command}".`;
+        rejectPromise(new Error(`Required tool "${command}" is not installed. ${installHint}`));
         return;
       }
 
@@ -300,10 +324,28 @@ async function saveOutputFile(fileName: string, contentType: string, body: Buffe
   return uploadObject(createOutputObjectKey(fileName), contentType, body, fileName);
 }
 
-async function markProcessing(taskId: string): Promise<void> {
+async function updateTaskProgress(
+  taskId: string,
+  progressPercent: number,
+  progressMessage: string
+): Promise<void> {
   await prisma.task.update({
     where: { id: taskId },
-    data: { status: TaskStatus.processing }
+    data: {
+      progressPercent: clampProgress(progressPercent),
+      progressMessage
+    }
+  });
+}
+
+async function markProcessing(taskId: string, progressMessage = "Preparing task..."): Promise<void> {
+  await prisma.task.update({
+    where: { id: taskId },
+    data: {
+      status: TaskStatus.processing,
+      progressPercent: 5,
+      progressMessage
+    }
   });
 }
 
@@ -313,7 +355,8 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
     where: { id: taskId },
     data: {
       status: TaskStatus.failed,
-      errorMessage: message
+      errorMessage: message,
+      progressMessage: message
     }
   });
 
@@ -334,7 +377,9 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
     data: {
       status: TaskStatus.completed,
       outputFileId,
-      errorMessage: null
+      errorMessage: null,
+      progressPercent: 100,
+      progressMessage: "Completed"
     }
   });
 
@@ -350,20 +395,26 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
   });
 }
 
-async function runMerge(payload: MergePayload): Promise<string> {
+async function runMerge(payload: MergePayload, reportProgress: ProgressReporter): Promise<string> {
   const merged = await PDFDocument.create();
 
-  for (const key of payload.fileKeys) {
+  for (const [index, key] of payload.fileKeys.entries()) {
+    await reportProgress(
+      12 + Math.floor((index / payload.fileKeys.length) * 58),
+      `Merging file ${index + 1} of ${payload.fileKeys.length}...`
+    );
     const sourceBuffer = await downloadObject(key);
     const source = await PDFDocument.load(sourceBuffer);
     const copiedPages = await merged.copyPages(source, source.getPageIndices());
     copiedPages.forEach((page) => merged.addPage(page));
   }
 
+  await reportProgress(82, "Building merged PDF...");
   const outputBuffer = Buffer.from(await merged.save());
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
 
+  await reportProgress(96, "Saving merged file...");
   return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
 }
 
@@ -399,9 +450,10 @@ function parseRange(range: string, totalPages: number): number[] {
   return pageIndices;
 }
 
-async function runSplit(payload: SplitPayload): Promise<string> {
+async function runSplit(payload: SplitPayload, reportProgress: ProgressReporter): Promise<string> {
   validatePageRanges(payload.pageRanges);
 
+  await reportProgress(12, "Loading source PDF...");
   const sourceBuffer = await downloadObject(payload.fileKey);
   const source = await PDFDocument.load(sourceBuffer);
   const totalPages = source.getPageCount();
@@ -409,10 +461,12 @@ async function runSplit(payload: SplitPayload): Promise<string> {
 
   if (chunks.length === 1) {
     const only = chunks[0];
+    await reportProgress(45, `Extracting pages ${only.range}...`);
     const splitDoc = await PDFDocument.create();
     const copiedPages = await splitDoc.copyPages(source, only.pages);
     copiedPages.forEach((page) => splitDoc.addPage(page));
 
+    await reportProgress(86, "Saving split PDF...");
     const body = Buffer.from(await splitDoc.save());
     const fileName = safePdfName(`${payload.outputPrefix}-${only.range}.pdf`);
     const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
@@ -420,7 +474,11 @@ async function runSplit(payload: SplitPayload): Promise<string> {
   }
 
   const zip = new JSZip();
-  for (const chunk of chunks) {
+  for (const [index, chunk] of chunks.entries()) {
+    await reportProgress(
+      25 + Math.floor((index / chunks.length) * 50),
+      `Creating split ${index + 1} of ${chunks.length}...`
+    );
     const splitDoc = await PDFDocument.create();
     const copiedPages = await splitDoc.copyPages(source, chunk.pages);
     copiedPages.forEach((page) => splitDoc.addPage(page));
@@ -429,14 +487,17 @@ async function runSplit(payload: SplitPayload): Promise<string> {
     zip.file(fileName, splitBytes);
   }
 
+  await reportProgress(84, "Packaging split files...");
   const zipData = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   const zipName = `${payload.outputPrefix}-split.zip`;
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${zipName}`;
 
+  await reportProgress(96, "Saving split archive...");
   return uploadObject(objectKey, "application/zip", zipData, zipName);
 }
 
-async function runSign(payload: SignPayload): Promise<string> {
+async function runSign(payload: SignPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
   const pdfDoc = await PDFDocument.load(inputBuffer);
 
@@ -451,6 +512,7 @@ async function runSign(payload: SignPayload): Promise<string> {
     : await pdfDoc.embedPng(signatureImage);
 
   const page = pages[payload.page - 1];
+  await reportProgress(58, `Placing signature on page ${payload.page}...`);
   page.drawImage(embeddedImage, {
     x: payload.x,
     y: payload.y,
@@ -458,20 +520,27 @@ async function runSign(payload: SignPayload): Promise<string> {
     height: payload.height
   });
 
+  await reportProgress(86, "Saving signed PDF...");
   const signed = await pdfDoc.save();
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
 
+  await reportProgress(96, "Saving signed file...");
   return uploadObject(objectKey, "application/pdf", Buffer.from(signed), fileName);
 }
 
-async function runCompress(payload: CompressPayload): Promise<string> {
+async function runCompress(payload: CompressPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
   const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
   const optimized = await PDFDocument.create();
-  const pages = await optimized.copyPages(source, source.getPageIndices());
+  const pageIndices = source.getPageIndices();
+
+  await reportProgress(34, `Copying ${pageIndices.length} page(s)...`);
+  const pages = await optimized.copyPages(source, pageIndices);
   pages.forEach((page) => optimized.addPage(page));
 
+  await reportProgress(82, "Finalizing compressed PDF...");
   const optimizedBytes = await optimized.save({
     useObjectStreams: true,
     addDefaultPage: false,
@@ -483,14 +552,17 @@ async function runCompress(payload: CompressPayload): Promise<string> {
 
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+  await reportProgress(96, "Saving compressed PDF...");
   return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
 }
 
-async function runProtect(payload: ProtectPayload): Promise<string> {
+async function runProtect(payload: ProtectPayload, reportProgress: ProgressReporter): Promise<string> {
   const inputPath = resolveStoragePath(payload.fileKey);
 
+  await reportProgress(18, "Preparing encrypted output...");
   const outputBuffer = await withTempDir(async (dir) => {
     const outputPath = resolve(dir, `protected-${randomUUID()}.pdf`);
+    await reportProgress(52, "Encrypting PDF...");
     await runCommand(env.QPDF_BIN, [
       "--encrypt",
       payload.password,
@@ -506,14 +578,17 @@ async function runProtect(payload: ProtectPayload): Promise<string> {
 
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+  await reportProgress(96, "Saving protected PDF...");
   return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
 }
 
-async function runUnlock(payload: UnlockPayload): Promise<string> {
+async function runUnlock(payload: UnlockPayload, reportProgress: ProgressReporter): Promise<string> {
   const inputPath = resolveStoragePath(payload.fileKey);
 
+  await reportProgress(18, "Preparing decrypted output...");
   const outputBuffer = await withTempDir(async (dir) => {
     const outputPath = resolve(dir, `unlocked-${randomUUID()}.pdf`);
+    await reportProgress(52, "Removing PDF password...");
     await runCommand(env.QPDF_BIN, [
       `--password=${payload.password}`,
       "--decrypt",
@@ -526,6 +601,7 @@ async function runUnlock(payload: UnlockPayload): Promise<string> {
 
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+  await reportProgress(96, "Saving unlocked PDF...");
   return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
 }
 
@@ -800,6 +876,513 @@ function buildAppPropsXml(application: string): string {
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>${xmlEscape(application)}</Application>
 </Properties>`;
+}
+
+function pointsToEmu(value: number): number {
+  return Math.max(1, Math.round(value * EMUS_PER_POINT));
+}
+
+function pointsToTwips(value: number): number {
+  return Math.max(1, Math.round(value * TWIPS_PER_POINT));
+}
+
+function scaleToFit(
+  widthPt: number,
+  heightPt: number,
+  maxWidthPt: number,
+  maxHeightPt: number
+): { widthPt: number; heightPt: number } {
+  const safeWidth = Math.max(widthPt, 1);
+  const safeHeight = Math.max(heightPt, 1);
+  const scale = Math.min(maxWidthPt / safeWidth, maxHeightPt / safeHeight, 1);
+  return {
+    widthPt: safeWidth * scale,
+    heightPt: safeHeight * scale
+  };
+}
+
+function sanitizeSheetName(value: string): string {
+  const normalized = value.replace(/[\\/*?:[\]]/g, " ").replace(/\s+/g, " ").trim();
+  return (normalized || "Page").slice(0, 31);
+}
+
+async function renderPdfPages(inputBuffer: Buffer): Promise<RenderedPdfPage[]> {
+  const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const pageSizes = source.getPages().map((page, index) => ({
+    pageNumber: index + 1,
+    widthPt: page.getWidth(),
+    heightPt: page.getHeight()
+  }));
+
+  if (pageSizes.length === 0) {
+    throw new Error("The uploaded PDF does not contain any pages.");
+  }
+
+  return withTempDir(async (dir) => {
+    const inputPath = resolve(dir, "source.pdf");
+    const outputPrefix = resolve(dir, "page");
+    await writeFile(inputPath, inputBuffer);
+    await runCommand(env.PDFTOPPM_BIN, ["-png", "-r", String(env.PDF_RENDER_DPI), inputPath, outputPrefix]);
+
+    const pageFiles = (await readdir(dir))
+      .map((fileName) => {
+        const match = /^page-(\d+)\.png$/i.exec(fileName);
+        return match ? { fileName, pageNumber: Number(match[1]) } : null;
+      })
+      .filter((value): value is { fileName: string; pageNumber: number } => value !== null)
+      .sort((left, right) => left.pageNumber - right.pageNumber);
+
+    if (pageFiles.length !== pageSizes.length) {
+      throw new Error(
+        `PDF rendering produced ${pageFiles.length} page image(s) for a ${pageSizes.length}-page PDF.`
+      );
+    }
+
+    return Promise.all(
+      pageFiles.map(async ({ fileName, pageNumber }) => {
+        const page = pageSizes[pageNumber - 1];
+        return {
+          pageNumber,
+          widthPt: page.widthPt,
+          heightPt: page.heightPt,
+          imageBuffer: await readFile(resolve(dir, fileName)),
+          imageFileName: `page-${pageNumber}.png`
+        };
+      })
+    );
+  });
+}
+
+function wordImageParagraphXml(
+  relId: string,
+  docPrId: number,
+  imageName: string,
+  widthEmu: number,
+  heightEmu: number
+): string {
+  return `<w:p>
+  <w:r>
+    <w:drawing>
+      <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+        <wp:extent cx="${widthEmu}" cy="${heightEmu}"/>
+        <wp:docPr id="${docPrId}" name="${xmlEscape(imageName)}"/>
+        <wp:cNvGraphicFramePr>
+          <a:graphicFrameLocks noChangeAspect="1"/>
+        </wp:cNvGraphicFramePr>
+        <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+              <pic:nvPicPr>
+                <pic:cNvPr id="${docPrId}" name="${xmlEscape(imageName)}"/>
+                <pic:cNvPicPr/>
+              </pic:nvPicPr>
+              <pic:blipFill>
+                <a:blip r:embed="${relId}"/>
+                <a:stretch>
+                  <a:fillRect/>
+                </a:stretch>
+              </pic:blipFill>
+              <pic:spPr>
+                <a:xfrm>
+                  <a:off x="0" y="0"/>
+                  <a:ext cx="${widthEmu}" cy="${heightEmu}"/>
+                </a:xfrm>
+                <a:prstGeom prst="rect">
+                  <a:avLst/>
+                </a:prstGeom>
+              </pic:spPr>
+            </pic:pic>
+          </a:graphicData>
+        </a:graphic>
+      </wp:inline>
+    </w:drawing>
+  </w:r>
+</w:p>`;
+}
+
+async function createDocxFromRenderedPages(pages: RenderedPdfPage[]): Promise<Buffer> {
+  const zip = new JSZip();
+  const maxWidthPt = Math.max(...pages.map((page) => page.widthPt));
+  const maxHeightPt = Math.max(...pages.map((page) => page.heightPt));
+  const pageBodyXml = pages
+    .map((page, index) => {
+      const scaled = scaleToFit(page.widthPt, page.heightPt, maxWidthPt, maxHeightPt);
+      const imageParagraph = wordImageParagraphXml(
+        `rId${index + 1}`,
+        index + 1,
+        page.imageFileName,
+        pointsToEmu(scaled.widthPt),
+        pointsToEmu(scaled.heightPt)
+      );
+      const pageBreak = index < pages.length - 1 ? `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` : "";
+      return `${imageParagraph}${pageBreak}`;
+    })
+    .join("");
+
+  const imageRelationships = pages
+    .map(
+      (page, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${page.imageFileName}"/>`
+    )
+    .join("");
+
+  zip.file(
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="${PNG_MIME_TYPE}"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`
+  );
+
+  zip.file(
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`
+  );
+
+  zip.file(
+    "word/document.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>
+    ${pageBodyXml}
+    <w:sectPr>
+      <w:pgSz w:w="${pointsToTwips(maxWidthPt)}" w:h="${pointsToTwips(maxHeightPt)}"/>
+      <w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`
+  );
+
+  zip.file(
+    "word/_rels/document.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${imageRelationships}
+</Relationships>`
+  );
+
+  for (const page of pages) {
+    zip.file(`word/media/${page.imageFileName}`, page.imageBuffer);
+  }
+
+  zip.file("docProps/core.xml", buildCorePropsXml());
+  zip.file("docProps/app.xml", buildAppPropsXml("iHatePDF Word Export"));
+
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+function slideImageXml(
+  relId: string,
+  imageName: string,
+  pageNumber: number,
+  xEmu: number,
+  yEmu: number,
+  widthEmu: number,
+  heightEmu: number
+): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:pic>
+        <p:nvPicPr>
+          <p:cNvPr id="2" name="${xmlEscape(`Page ${pageNumber}`)}"/>
+          <p:cNvPicPr/>
+          <p:nvPr/>
+        </p:nvPicPr>
+        <p:blipFill>
+          <a:blip r:embed="${relId}"/>
+          <a:stretch>
+            <a:fillRect/>
+          </a:stretch>
+        </p:blipFill>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="${xEmu}" y="${yEmu}"/>
+            <a:ext cx="${widthEmu}" cy="${heightEmu}"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+        </p:spPr>
+      </p:pic>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr>
+    <a:masterClrMapping/>
+  </p:clrMapOvr>
+</p:sld>`;
+}
+
+async function createPptxFromRenderedPages(pages: RenderedPdfPage[]): Promise<Buffer> {
+  const zip = new JSZip();
+  const maxWidthPt = Math.max(...pages.map((page) => page.widthPt));
+  const maxHeightPt = Math.max(...pages.map((page) => page.heightPt));
+  const slideOverrides = pages
+    .map(
+      (page) =>
+        `<Override PartName="/ppt/slides/slide${page.pageNumber}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`
+    )
+    .join("");
+
+  const slideIdXml = pages
+    .map(
+      (page, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`
+    )
+    .join("");
+
+  const slideRelXml = pages
+    .map(
+      (page, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${page.pageNumber}.xml"/>`
+    )
+    .join("");
+
+  zip.file(
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="${PNG_MIME_TYPE}"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  ${slideOverrides}
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`
+  );
+
+  zip.file(
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`
+  );
+
+  zip.file(
+    "ppt/presentation.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldIdLst>
+    ${slideIdXml}
+  </p:sldIdLst>
+  <p:sldSz cx="${pointsToEmu(maxWidthPt)}" cy="${pointsToEmu(maxHeightPt)}"/>
+  <p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`
+  );
+
+  zip.file(
+    "ppt/_rels/presentation.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${slideRelXml}
+</Relationships>`
+  );
+
+  for (const page of pages) {
+    const scaled = scaleToFit(page.widthPt, page.heightPt, maxWidthPt, maxHeightPt);
+    const xPt = (maxWidthPt - scaled.widthPt) / 2;
+    const yPt = (maxHeightPt - scaled.heightPt) / 2;
+    zip.file(
+      `ppt/slides/slide${page.pageNumber}.xml`,
+      slideImageXml(
+        "rId1",
+        page.imageFileName,
+        page.pageNumber,
+        pointsToEmu(xPt),
+        pointsToEmu(yPt),
+        pointsToEmu(scaled.widthPt),
+        pointsToEmu(scaled.heightPt)
+      )
+    );
+    zip.file(
+      `ppt/slides/_rels/slide${page.pageNumber}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${page.imageFileName}"/>
+</Relationships>`
+    );
+    zip.file(`ppt/media/${page.imageFileName}`, page.imageBuffer);
+  }
+
+  zip.file("docProps/core.xml", buildCorePropsXml());
+  zip.file("docProps/app.xml", buildAppPropsXml("iHatePDF PowerPoint Export"));
+
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+async function createXlsxFromRenderedPages(pages: RenderedPdfPage[]): Promise<Buffer> {
+  const zip = new JSZip();
+  const worksheetOverrides = pages
+    .map(
+      (page) =>
+        `<Override PartName="/xl/worksheets/sheet${page.pageNumber}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    )
+    .join("");
+  const drawingOverrides = pages
+    .map(
+      (page) =>
+        `<Override PartName="/xl/drawings/drawing${page.pageNumber}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`
+    )
+    .join("");
+  const sheetsXml = pages
+    .map(
+      (page) =>
+        `<sheet name="${xmlEscape(sanitizeSheetName(`Page ${page.pageNumber}`))}" sheetId="${page.pageNumber}" r:id="rId${page.pageNumber}"/>`
+    )
+    .join("");
+  const workbookRelsXml = pages
+    .map(
+      (page) =>
+        `<Relationship Id="rId${page.pageNumber}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${page.pageNumber}.xml"/>`
+    )
+    .join("");
+
+  zip.file(
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="${PNG_MIME_TYPE}"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  ${worksheetOverrides}
+  ${drawingOverrides}
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`
+  );
+
+  zip.file(
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`
+  );
+
+  zip.file(
+    "xl/workbook.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <bookViews>
+    <workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="15000"/>
+  </bookViews>
+  <sheets>
+    ${sheetsXml}
+  </sheets>
+</workbook>`
+  );
+
+  zip.file(
+    "xl/_rels/workbook.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${workbookRelsXml}
+</Relationships>`
+  );
+
+  for (const page of pages) {
+    zip.file(
+      `xl/worksheets/sheet${page.pageNumber}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <dimension ref="A1"/>
+  <sheetViews>
+    <sheetView workbookViewId="0"/>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="15"/>
+  <sheetData/>
+  <pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0"/>
+  <drawing r:id="rId1"/>
+</worksheet>`
+    );
+    zip.file(
+      `xl/worksheets/_rels/sheet${page.pageNumber}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${page.pageNumber}.xml"/>
+</Relationships>`
+    );
+    zip.file(
+      `xl/drawings/drawing${page.pageNumber}.xml`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <xdr:oneCellAnchor>
+    <xdr:from>
+      <xdr:col>0</xdr:col>
+      <xdr:colOff>0</xdr:colOff>
+      <xdr:row>0</xdr:row>
+      <xdr:rowOff>0</xdr:rowOff>
+    </xdr:from>
+    <xdr:ext cx="${pointsToEmu(page.widthPt)}" cy="${pointsToEmu(page.heightPt)}"/>
+    <xdr:pic>
+      <xdr:nvPicPr>
+        <xdr:cNvPr id="${page.pageNumber}" name="${xmlEscape(page.imageFileName)}"/>
+        <xdr:cNvPicPr/>
+      </xdr:nvPicPr>
+      <xdr:blipFill>
+        <a:blip r:embed="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+        <a:stretch>
+          <a:fillRect/>
+        </a:stretch>
+      </xdr:blipFill>
+      <xdr:spPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="${pointsToEmu(page.widthPt)}" cy="${pointsToEmu(page.heightPt)}"/>
+        </a:xfrm>
+        <a:prstGeom prst="rect">
+          <a:avLst/>
+        </a:prstGeom>
+      </xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:oneCellAnchor>
+</xdr:wsDr>`
+    );
+    zip.file(
+      `xl/drawings/_rels/drawing${page.pageNumber}.xml.rels`,
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${page.imageFileName}"/>
+</Relationships>`
+    );
+    zip.file(`xl/media/${page.imageFileName}`, page.imageBuffer);
+  }
+
+  zip.file("docProps/core.xml", buildCorePropsXml());
+  zip.file("docProps/app.xml", buildAppPropsXml("iHatePDF Excel Export"));
+
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
 async function createDocxBuffer(textLines: string[]): Promise<Buffer> {
@@ -1443,58 +2026,84 @@ function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): Standa
   return StandardFonts.Helvetica;
 }
 
-async function runPdfToWord(payload: ConvertPayload): Promise<string> {
+async function runPdfToWord(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(14, "Rendering PDF pages...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const docxBuffer = await createDocxBuffer(extractPdfTextLines(inputBuffer));
+  const renderedPages = await renderPdfPages(inputBuffer);
+  await reportProgress(64, `Building Word document from ${renderedPages.length} page(s)...`);
+  const docxBuffer = await createDocxFromRenderedPages(renderedPages);
   const fileName = safeNameWithExtension(payload.outputName, ".docx");
-  return saveOutputFile(
-    fileName,
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    docxBuffer
-  );
+  await reportProgress(96, "Saving Word document...");
+  return saveOutputFile(fileName, WORD_MIME_TYPE, docxBuffer);
 }
 
-async function runPdfToPowerpoint(payload: ConvertPayload): Promise<string> {
+async function runPdfToPowerpoint(
+  payload: ConvertPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  await reportProgress(14, "Rendering PDF pages...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const pptxBuffer = await createPptxBuffer(extractPdfTextLines(inputBuffer));
+  const renderedPages = await renderPdfPages(inputBuffer);
+  await reportProgress(64, `Building PowerPoint deck from ${renderedPages.length} page(s)...`);
+  const pptxBuffer = await createPptxFromRenderedPages(renderedPages);
   const fileName = safeNameWithExtension(payload.outputName, ".pptx");
-  return saveOutputFile(
-    fileName,
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    pptxBuffer
-  );
+  await reportProgress(96, "Saving PowerPoint file...");
+  return saveOutputFile(fileName, POWERPOINT_MIME_TYPE, pptxBuffer);
 }
 
-async function runPdfToExcel(payload: ConvertPayload): Promise<string> {
+async function runPdfToExcel(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(14, "Rendering PDF pages...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const xlsxBuffer = await createXlsxBuffer(extractPdfTextLines(inputBuffer));
+  const renderedPages = await renderPdfPages(inputBuffer);
+  await reportProgress(64, `Building Excel workbook from ${renderedPages.length} page(s)...`);
+  const xlsxBuffer = await createXlsxFromRenderedPages(renderedPages);
   const fileName = safeNameWithExtension(payload.outputName, ".xlsx");
-  return saveOutputFile(
-    fileName,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    xlsxBuffer
-  );
+  await reportProgress(96, "Saving Excel workbook...");
+  return saveOutputFile(fileName, EXCEL_MIME_TYPE, xlsxBuffer);
 }
 
-async function runExcelToPdf(payload: ConvertPayload): Promise<string> {
+async function runExcelToPdf(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(14, "Reading workbook...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const pdfBuffer = await createTextPdfBuffer(await extractXlsxTextLines(inputBuffer));
+  const lines = await extractXlsxTextLines(inputBuffer);
+  await reportProgress(62, `Formatting ${lines.length} extracted row(s)...`);
+  const pdfBuffer = await createTextPdfBuffer(lines);
   const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving PDF...");
   return saveOutputFile(fileName, "application/pdf", pdfBuffer);
 }
 
-async function runPowerpointToPdf(payload: ConvertPayload): Promise<string> {
+async function runPowerpointToPdf(
+  payload: ConvertPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  await reportProgress(14, "Reading presentation...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const pdfBuffer = await createTextPdfBuffer(await extractPptxTextLines(inputBuffer));
+  const lines = await extractPptxTextLines(inputBuffer);
+  await reportProgress(62, `Formatting ${lines.length} extracted text line(s)...`);
+  const pdfBuffer = await createTextPdfBuffer(lines);
   const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving PDF...");
   return saveOutputFile(fileName, "application/pdf", pdfBuffer);
 }
 
-async function runEdit(payload: EditPayload): Promise<string> {
+async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
   const pdfDoc = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
   const pages = pdfDoc.getPages();
   const embeddedFonts = new Map<StandardFonts, Awaited<ReturnType<typeof pdfDoc.embedFont>>>();
+  const totalEdits =
+    payload.textEdits.length + payload.rectangleEdits.length + payload.imageEdits.length;
+  let completedEdits = 0;
+
+  const advanceEditProgress = async (message: string): Promise<void> => {
+    completedEdits += 1;
+    await reportProgress(
+      22 + Math.floor((completedEdits / Math.max(1, totalEdits)) * 56),
+      message
+    );
+  };
 
   const pageAt = (pageNumber: number) => {
     if (pageNumber > pages.length) {
@@ -1531,6 +2140,8 @@ async function runEdit(payload: EditPayload): Promise<string> {
         color: rgb(color.red / 255, color.green / 255, color.blue / 255)
       });
     }
+
+    await advanceEditProgress(`Applying text edit ${completedEdits + 1} of ${totalEdits}...`);
   }
 
   for (const item of payload.rectangleEdits) {
@@ -1544,6 +2155,8 @@ async function runEdit(payload: EditPayload): Promise<string> {
       color: rgb(color.red / 255, color.green / 255, color.blue / 255),
       opacity: item.opacity
     });
+
+    await advanceEditProgress(`Applying shape edit ${completedEdits + 1} of ${totalEdits}...`);
   }
 
   for (const item of payload.imageEdits) {
@@ -1558,10 +2171,14 @@ async function runEdit(payload: EditPayload): Promise<string> {
       width: item.width,
       height: item.height
     });
+
+    await advanceEditProgress(`Applying image edit ${completedEdits + 1} of ${totalEdits}...`);
   }
 
+  await reportProgress(86, "Saving edited PDF...");
   const editedBuffer = Buffer.from(await pdfDoc.save());
   const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving edited file...");
   return uploadObject(
     createOutputObjectKey(fileName),
     "application/pdf",
@@ -1574,99 +2191,111 @@ async function runEdit(payload: EditPayload): Promise<string> {
 async function processJob(job: Job): Promise<void> {
   const { name, data } = job;
 
+  const runTask = async <TPayload>(
+    taskId: string,
+    initialMessage: string,
+    task: (reportProgress: ProgressReporter) => Promise<string>
+  ): Promise<void> => {
+    await markProcessing(taskId, initialMessage);
+    const reportProgress: ProgressReporter = (percent, message) =>
+      updateTaskProgress(taskId, percent, message);
+    const outputFileId = await task(reportProgress);
+    await markCompleted(taskId, outputFileId);
+  };
+
   if (name === "merge") {
     const payload = MergePayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runMerge(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing merge...", (reportProgress) =>
+      runMerge(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "split") {
     const payload = SplitPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runSplit(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing split...", (reportProgress) =>
+      runSplit(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "sign") {
     const payload = SignPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runSign(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing signature...", (reportProgress) =>
+      runSign(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "compress") {
     const payload = CompressPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runCompress(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing compression...", (reportProgress) =>
+      runCompress(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "protect") {
     const payload = ProtectPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runProtect(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing protection...", (reportProgress) =>
+      runProtect(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "unlock") {
     const payload = UnlockPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runUnlock(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing unlock...", (reportProgress) =>
+      runUnlock(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "pdf-to-word") {
     const payload = ConvertPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runPdfToWord(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing Word conversion...", (reportProgress) =>
+      runPdfToWord(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "pdf-to-powerpoint") {
     const payload = ConvertPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runPdfToPowerpoint(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing PowerPoint conversion...", (reportProgress) =>
+      runPdfToPowerpoint(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "pdf-to-excel") {
     const payload = ConvertPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runPdfToExcel(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing Excel conversion...", (reportProgress) =>
+      runPdfToExcel(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "excel-to-pdf") {
     const payload = ConvertPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runExcelToPdf(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing PDF conversion...", (reportProgress) =>
+      runExcelToPdf(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "powerpoint-to-pdf") {
     const payload = ConvertPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runPowerpointToPdf(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing PDF conversion...", (reportProgress) =>
+      runPowerpointToPdf(payload, reportProgress)
+    );
     return;
   }
 
   if (name === "edit") {
     const payload = EditPayloadSchema.parse(data);
-    await markProcessing(payload.taskId);
-    const outputFileId = await runEdit(payload);
-    await markCompleted(payload.taskId, outputFileId);
+    await runTask(payload.taskId, "Preparing editor changes...", (reportProgress) =>
+      runEdit(payload, reportProgress)
+    );
     return;
   }
 
