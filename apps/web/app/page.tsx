@@ -162,6 +162,15 @@ const TOOLS: ToolCard[] = [
     categories: ["Convert PDF"]
   },
   {
+    title: "Sign PDF",
+    description: "Upload a PDF, place signature areas, sign it yourself, or send a secure signature request.",
+    href: "/sign-pdf",
+    icon: "✍",
+    iconClass: "icon-blue",
+    categories: ["Workflows", "Edit PDF"],
+    highlight: true
+  },
+  {
     title: "PDF Editor Studio",
     description: "Place styled text, signatures, highlights, and image layers on multi-page placement stages.",
     href: "/editor-studio",

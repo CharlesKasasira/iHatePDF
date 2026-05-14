@@ -8,6 +8,7 @@ type ActiveKey =
   | "extract-pages"
   | "organize-pdf"
   | "compress"
+  | "sign-pdf"
   | "protect"
   | "unlock"
   | "jpg-to-pdf"
@@ -37,20 +38,6 @@ const NAV_ITEMS: Array<{
     match: ["remove-pages", "extract-pages", "organize-pdf"]
   },
   { label: "Compress", href: "/compress-pdf", match: ["compress"] },
-  {
-    label: "Convert",
-    href: "/jpg-to-pdf",
-    match: [
-      "jpg-to-pdf",
-      "pdf-to-word",
-      "pdf-to-jpg",
-      "pdf-to-powerpoint",
-      "pdf-to-excel",
-      "word-to-pdf",
-      "excel-to-pdf",
-      "powerpoint-to-pdf"
-    ]
-  },
   { label: "All tools", href: "/" }
 ];
 
@@ -83,7 +70,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         <div className="auth-actions">
           <Link
             href="/editor-studio"
-            className={`signup-btn ${active === "edit" ? "is-active" : ""}`}
+            className={`signup-btn ${active === "edit" || active === "sign-pdf" ? "is-active" : ""}`}
           >
             Open Studio
           </Link>

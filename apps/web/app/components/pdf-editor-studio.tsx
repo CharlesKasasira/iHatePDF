@@ -2,6 +2,7 @@
 
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  createSignatureRequest,
   type EditImageInput,
   type EditPageNumbersInput,
   type EditPageRotationInput,
@@ -9,6 +10,7 @@ import {
   type EditTextInput,
   type EditWatermarkInput,
   getPdfMetadata,
+  getPdfPagePreviewUrl,
   pollTask,
   queueEditPdf,
   uploadPdfWithRetention
@@ -17,6 +19,7 @@ import { SiteHeader } from "./site-header";
 
 type EditorTool = "select" | "text" | "highlight" | "shape" | "sign" | "image";
 type FontFamily = EditTextInput["fontFamily"];
+type SignatureFlowStep = "closed" | "choose" | "request";
 
 type StudioPageMeta = {
   pageNumber: number;
@@ -87,6 +90,11 @@ function buildEditedName(fileName: string): string {
   return `${stripped || "document"}-studio.pdf`;
 }
 
+function buildSignedName(fileName: string): string {
+  const stripped = fileName.toLowerCase().endsWith(".pdf") ? fileName.slice(0, -4) : fileName;
+  return `${stripped || "document"}-signed.pdf`;
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -138,17 +146,26 @@ function previewPageNumber(pageNumber: number, config: EditPageNumbersInput): st
   return `${config.prefix ?? ""}${config.startAt + pageNumber - 1}`;
 }
 
-export function PdfEditorStudio(): React.JSX.Element {
+export function PdfEditorStudio({
+  mode = "edit"
+}: {
+  mode?: "edit" | "sign";
+} = {}): React.JSX.Element {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
   const previewLoadIdRef = useRef(0);
 
   const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState("");
   const [sourceFileId, setSourceFileId] = useState<string | null>(null);
   const [sourceRetentionHours, setSourceRetentionHours] = useState<number | null>(null);
-  const [stagePageCount, setStagePageCount] = useState(1);
+  const [pages, setPages] = useState<StudioPageMeta[]>([
+    {
+      pageNumber: 1,
+      width: 612,
+      height: 792
+    }
+  ]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   const [tool, setTool] = useState<EditorTool>("select");
@@ -200,10 +217,24 @@ export function PdfEditorStudio(): React.JSX.Element {
   const [watermarkColor, setWatermarkColor] = useState("#19334d");
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.14);
   const [watermarkRotation, setWatermarkRotation] = useState(-32);
+  const [requesterEmail, setRequesterEmail] = useState("");
+  const [signerName, setSignerName] = useState("");
+  const [signerEmail, setSignerEmail] = useState("");
+  const [signerRole, setSignerRole] = useState("Signer");
+  const [signatureRequestMessage, setSignatureRequestMessage] = useState("");
+  const [signatureRequestOutputName, setSignatureRequestOutputName] = useState("signed-request.pdf");
+  const [signatureRequestStatus, setSignatureRequestStatus] = useState("");
+  const [signatureRequestLink, setSignatureRequestLink] = useState("");
+  const [signatureFlowStep, setSignatureFlowStep] = useState<SignatureFlowStep>("closed");
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
     [layers, selectedLayerId]
+  );
+
+  const selectedSignatureBox = useMemo(
+    () => (selectedLayer?.kind === "rectangle" ? selectedLayer : null),
+    [selectedLayer]
   );
 
   const pageRotationMap = useMemo(
@@ -255,36 +286,18 @@ export function PdfEditorStudio(): React.JSX.Element {
     ]
   );
 
-  const pages = useMemo<StudioPageMeta[]>(
-    () =>
-      Array.from({ length: stagePageCount }, (_, index) => ({
-        pageNumber: index + 1,
-        width: 612,
-        height: 792
-      })),
-    [stagePageCount]
-  );
-
-  useEffect(() => {
-    if (!pdfFile) {
-      setPreviewUrl("");
-      return;
-    }
-
-    const objectUrl = URL.createObjectURL(pdfFile);
-    setPreviewUrl(objectUrl);
-
-    return () => {
-      URL.revokeObjectURL(objectUrl);
-    };
-  }, [pdfFile]);
-
   useEffect(() => {
     if (!pdfFile) {
       previewLoadIdRef.current += 1;
       setSourceFileId(null);
       setSourceRetentionHours(null);
-      setStagePageCount(1);
+      setPages([
+        {
+          pageNumber: 1,
+          width: 612,
+          height: 792
+        }
+      ]);
       setIsLoadingPreview(false);
       return;
     }
@@ -293,7 +306,13 @@ export function PdfEditorStudio(): React.JSX.Element {
     previewLoadIdRef.current = loadId;
     setIsLoadingPreview(true);
     setSourceFileId(null);
-    setStagePageCount(1);
+    setPages([
+      {
+        pageNumber: 1,
+        width: 612,
+        height: 792
+      }
+    ]);
     setStatus(`Loading ${pdfFile.name} for preview...`);
 
     void (async () => {
@@ -307,7 +326,17 @@ export function PdfEditorStudio(): React.JSX.Element {
 
         setSourceFileId(uploaded.fileId);
         setSourceRetentionHours(retentionHours);
-        setStagePageCount(Math.max(1, metadata.pageCount));
+        setPages(
+          metadata.pages.length > 0
+            ? metadata.pages
+            : [
+                {
+                  pageNumber: 1,
+                  width: 612,
+                  height: 792
+                }
+              ]
+        );
         setRotationPage((current) => Math.min(Math.max(1, current), Math.max(1, metadata.pageCount)));
         setStatus(`${pdfFile.name} loaded. ${metadata.pageCount} page${metadata.pageCount === 1 ? "" : "s"} ready for editing.`);
       } catch (error) {
@@ -317,6 +346,13 @@ export function PdfEditorStudio(): React.JSX.Element {
 
         setSourceFileId(null);
         setSourceRetentionHours(null);
+        setPages([
+          {
+            pageNumber: 1,
+            width: 612,
+            height: 792
+          }
+        ]);
         setStatus(`PDF preview metadata failed: ${(error as Error).message}`);
       } finally {
         if (previewLoadIdRef.current === loadId) {
@@ -558,20 +594,93 @@ export function PdfEditorStudio(): React.JSX.Element {
     }
   };
 
+  const sendSignatureRequest = async (): Promise<void> => {
+    if (!pdfFile || !sourceFileId) {
+      setSignatureRequestStatus("Open a PDF first.");
+      return;
+    }
+
+    if (!requesterEmail.trim() || !signerEmail.trim()) {
+      setSignatureRequestStatus("Enter both requester and signer email addresses.");
+      return;
+    }
+
+    if (!selectedSignatureBox) {
+      setSignatureRequestStatus("Select a rectangle layer to use as the signer box.");
+      return;
+    }
+
+    if (!signatureRequestOutputName.trim()) {
+      setSignatureRequestStatus("Name the signed output PDF.");
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setSignatureRequestLink("");
+      setSignatureRequestStatus("Sending signature request...");
+
+      const result = await createSignatureRequest({
+        fileId: sourceFileId,
+        requesterEmail: requesterEmail.trim(),
+        signerName: signerName.trim() || undefined,
+        signerEmail: signerEmail.trim(),
+        signerRole: signerRole.trim() || undefined,
+        page: selectedSignatureBox.page,
+        x: selectedSignatureBox.x,
+        y: selectedSignatureBox.y,
+        width: selectedSignatureBox.width,
+        height: selectedSignatureBox.height,
+        outputName: signatureRequestOutputName.trim(),
+        message: signatureRequestMessage.trim() || undefined
+      });
+
+      setSignatureRequestLink(result.signingUrl);
+      setSignatureRequestStatus("Signature request sent.");
+      setSignatureFlowStep("request");
+    } catch (error) {
+      setSignatureRequestStatus(`Signature request failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openSignatureChooser = (): void => {
+    if (!pdfFile || !sourceFileId) {
+      setSignatureRequestStatus("Open a PDF first.");
+      return;
+    }
+
+    if (!selectedSignatureBox) {
+      setSignatureRequestStatus("Select a rectangle layer to define the signer box first.");
+      return;
+    }
+
+    setSignatureRequestStatus("");
+    setSignatureRequestLink("");
+    setSignatureFlowStep("choose");
+  };
+
   return (
     <div className="site-shell">
-      <SiteHeader active="edit" />
+      <SiteHeader active={mode === "sign" ? "sign-pdf" : "edit"} />
 
       <main className="studio-page">
         <section className="studio-shell">
           <div className="studio-topbar">
             <div className="studio-topbar__identity">
-              <span className="studio-pill studio-pill--brand">PDF Editor Studio</span>
-              <h1>Precision PDF editing for self-hosted teams</h1>
+              <span className="studio-pill studio-pill--brand">
+                {mode === "sign" ? "SIGN PDF" : "PDF Editor Studio"}
+              </span>
+              <h1>
+                {mode === "sign"
+                  ? "Sign PDFs yourself or send them for signature"
+                  : "Precision PDF editing for self-hosted teams"}
+              </h1>
               <p>
-                Layer text, highlights, signatures, and images on structured placement stages, then
-                rotate pages, add page numbers, and stamp watermarks without leaving the same export
-                pipeline.
+                {mode === "sign"
+                  ? "Mark signature areas on the PDF, sign it yourself with an uploaded signature image, or create a secure signer request for someone else."
+                  : "Layer text, highlights, signatures, and images directly on each PDF page, then rotate pages, add page numbers, and stamp watermarks without leaving the same export pipeline."}
               </p>
             </div>
 
@@ -600,6 +709,10 @@ export function PdfEditorStudio(): React.JSX.Element {
                   setSourceFileId(null);
                   setSourceRetentionHours(null);
                   setOutputName(file ? buildEditedName(file.name) : "studio-export.pdf");
+                  setSignatureRequestOutputName(file ? buildSignedName(file.name) : "signed-request.pdf");
+                  setSignatureRequestLink("");
+                  setSignatureRequestStatus("");
+                  setSignatureFlowStep("closed");
                   event.target.value = "";
                 }}
               />
@@ -726,7 +839,7 @@ export function PdfEditorStudio(): React.JSX.Element {
                   {pdfFile
                     ? isLoadingPreview
                       ? "Inspecting the uploaded PDF and loading a live preview..."
-                      : `${pages.length} page${pages.length === 1 ? "" : "s"} detected. Click any page stage to place the current tool.`
+                      : `${pages.length} page${pages.length === 1 ? "" : "s"} detected. Click directly on the PDF page to place the current tool.`
                     : "Open a PDF, then place layers or configure document-wide edits from the studio sidebar."}
                 </p>
 
@@ -739,8 +852,8 @@ export function PdfEditorStudio(): React.JSX.Element {
                 />
 
                 <div className="studio-stage-controls">
-                  <span>Placement stages</span>
-                  <strong>{isLoadingPreview ? "Loading..." : stagePageCount}</strong>
+                  <span>Pages</span>
+                  <strong>{isLoadingPreview ? "Loading..." : pages.length}</strong>
                 </div>
               </div>
 
@@ -749,7 +862,7 @@ export function PdfEditorStudio(): React.JSX.Element {
                 <div className="studio-layer-list">
                   {layers.length === 0 ? (
                     <p className="studio-empty-copy">
-                      No layers yet. Pick a tool, then click a placement stage to drop it in.
+                      No layers yet. Pick a tool, then click directly on the PDF page to drop it in.
                     </p>
                   ) : (
                     layers.map((layer, index) => (
@@ -1369,6 +1482,43 @@ export function PdfEditorStudio(): React.JSX.Element {
                 )}
               </div>
 
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Signature Flow</div>
+                <h2>Prepare signing</h2>
+                <p>
+                  Select a rectangle layer as the signature box, then choose whether you will sign it
+                  yourself or send a request to someone else.
+                </p>
+
+                <div className="studio-stage-controls">
+                  <span>Selected box</span>
+                  <strong>
+                    {selectedSignatureBox
+                      ? `P${selectedSignatureBox.page} · ${Math.round(selectedSignatureBox.width)} x ${Math.round(selectedSignatureBox.height)}`
+                      : "None"}
+                  </strong>
+                </div>
+
+                <button
+                  type="button"
+                  className="studio-primary-button studio-primary-button--full"
+                  onClick={openSignatureChooser}
+                  disabled={busy}
+                >
+                  Open signing flow
+                </button>
+
+                <p className={signatureRequestStatus.toLowerCase().includes("failed") ? "error" : "small"}>
+                  {signatureRequestStatus || "Use a rectangle layer to mark the signer area."}
+                </p>
+
+                {signatureRequestLink ? (
+                  <a className="download studio-download-link" href={signatureRequestLink} target="_blank" rel="noreferrer">
+                    Open signer link
+                  </a>
+                ) : null}
+              </div>
+
               <div className="studio-panel studio-panel--privacy">
                 <div className="studio-panel__eyebrow">Privacy & retention</div>
                 <h2>Retention window</h2>
@@ -1430,48 +1580,213 @@ export function PdfEditorStudio(): React.JSX.Element {
               ) : null}
 
               {pdfFile && pages.length > 0 ? (
-                <>
-                  {previewUrl ? (
-                    <section className="studio-preview-panel">
-                      <div className="studio-preview-panel__meta">
-                        <div>
-                          <strong>Source PDF preview</strong>
-                          <span>Use this to inspect the real document while placing edits on the stages below.</span>
-                        </div>
-                        <a href={previewUrl} target="_blank" rel="noreferrer">
-                          Open full preview
-                        </a>
-                      </div>
-                      <iframe
-                        className="studio-preview-frame"
-                        src={previewUrl}
-                        title={`Preview of ${pdfFile.name}`}
-                      />
-                    </section>
-                  ) : null}
-
-                  <div className="studio-page-stack">
-                    {pages.map((page) => (
-                      <StudioPdfPage
-                        key={page.pageNumber}
-                        fileName={pdfFile.name}
-                        page={page}
-                        layers={layers.filter((layer) => layer.page === page.pageNumber)}
-                        rotationDegrees={pageRotationMap.get(page.pageNumber) ?? 0}
-                        pageNumbers={pageNumberConfig}
-                        watermark={watermarkConfig}
-                        selectedLayerId={selectedLayerId}
-                        onSelectLayer={setSelectedLayerId}
-                        onPlaceLayer={(x, y) => {
-                          void createLayerAt(page.pageNumber, x, y);
-                        }}
-                      />
-                    ))}
-                  </div>
-                </>
+                <div className="studio-page-stack">
+                  {pages.map((page) => (
+                    <StudioPdfPage
+                      key={page.pageNumber}
+                      fileName={pdfFile.name}
+                      page={page}
+                      previewUrl={sourceFileId ? getPdfPagePreviewUrl(sourceFileId, page.pageNumber) : null}
+                      layers={layers.filter((layer) => layer.page === page.pageNumber)}
+                      rotationDegrees={pageRotationMap.get(page.pageNumber) ?? 0}
+                      pageNumbers={pageNumberConfig}
+                      watermark={watermarkConfig}
+                      selectedLayerId={selectedLayerId}
+                      onSelectLayer={setSelectedLayerId}
+                      onPlaceLayer={(x, y) => {
+                        void createLayerAt(page.pageNumber, x, y);
+                      }}
+                    />
+                  ))}
+                </div>
               ) : null}
             </section>
           </section>
+
+          {signatureFlowStep !== "closed" ? (
+            <div className="studio-modal-backdrop" onClick={() => setSignatureFlowStep("closed")}>
+              <div
+                className="studio-modal"
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
+              >
+                {signatureFlowStep === "choose" ? (
+                  <>
+                    <div className="studio-modal__header">
+                      <div>
+                        <span className="studio-panel__eyebrow">Sign PDF</span>
+                        <h2>Who will sign this document?</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="studio-modal__close"
+                        onClick={() => setSignatureFlowStep("closed")}
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                    <div className="studio-sign-choice-grid">
+                      <button
+                        type="button"
+                        className="studio-sign-choice"
+                        onClick={() => {
+                          setSignatureFlowStep("closed");
+                          setTool("sign");
+                          setStatus("Load a signature image, then click the PDF page to place it yourself.");
+                        }}
+                      >
+                        <strong>Only me</strong>
+                        <span>Sign this document yourself with a local signature image.</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="studio-sign-choice is-highlighted"
+                        onClick={() => setSignatureFlowStep("request")}
+                      >
+                        <strong>Several people</strong>
+                        <span>Invite another signer with a secure link for the selected box.</span>
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+
+                {signatureFlowStep === "request" ? (
+                  <>
+                    <div className="studio-modal__header">
+                      <div>
+                        <span className="studio-panel__eyebrow">Signature Request</span>
+                        <h2>Create your signature request</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="studio-modal__close"
+                        onClick={() => setSignatureFlowStep("closed")}
+                      >
+                        Close
+                      </button>
+                    </div>
+
+                    <div className="studio-modal__body">
+                      <section className="studio-modal__section">
+                        <h3>Who will receive your document?</h3>
+                        <div className="studio-request-recipient">
+                          <input
+                            value={signerName}
+                            onChange={(event) => setSignerName(event.target.value)}
+                            placeholder="Name"
+                          />
+                          <input
+                            type="email"
+                            value={signerEmail}
+                            onChange={(event) => setSignerEmail(event.target.value)}
+                            placeholder="Email"
+                          />
+                          <select
+                            value={signerRole}
+                            onChange={(event) => setSignerRole(event.target.value)}
+                          >
+                            <option value="Signer">Signer</option>
+                            <option value="Approver">Approver</option>
+                            <option value="Viewer">Viewer</option>
+                          </select>
+                        </div>
+                      </section>
+
+                      <section className="studio-modal__section">
+                        <h3>Request details</h3>
+                        <div className="studio-form-grid">
+                          <label>
+                            Your email
+                            <input
+                              type="email"
+                              value={requesterEmail}
+                              onChange={(event) => setRequesterEmail(event.target.value)}
+                              placeholder="you@example.com"
+                            />
+                          </label>
+                          <label>
+                            Signed output name
+                            <input
+                              value={signatureRequestOutputName}
+                              onChange={(event) => setSignatureRequestOutputName(event.target.value)}
+                              placeholder="signed-request.pdf"
+                            />
+                          </label>
+                          <label>
+                            Signature box
+                            <input
+                              value={
+                                selectedSignatureBox
+                                  ? `Page ${selectedSignatureBox.page} · ${Math.round(selectedSignatureBox.width)} x ${Math.round(selectedSignatureBox.height)}`
+                                  : "Select a rectangle layer"
+                              }
+                              readOnly
+                            />
+                          </label>
+                          <label>
+                            Message
+                            <textarea
+                              value={signatureRequestMessage}
+                              onChange={(event) => setSignatureRequestMessage(event.target.value)}
+                              placeholder="Please sign this document."
+                            />
+                          </label>
+                        </div>
+                      </section>
+
+                      <section className="studio-modal__section">
+                        <h3>Settings</h3>
+                        <div className="studio-request-settings">
+                          <div className="studio-request-setting">
+                            <strong>Expiration</strong>
+                            <span>Requests currently expire according to the server signing policy.</span>
+                          </div>
+                          <div className="studio-request-setting">
+                            <strong>Email notifications</strong>
+                            <span>The signer receives the secure link by email, and completion can be tracked from the returned document task.</span>
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div className="studio-modal__footer">
+                      <p className={signatureRequestStatus.toLowerCase().includes("failed") ? "error" : "small"}>
+                        {signatureRequestStatus || "Complete the signer details and apply the request."}
+                      </p>
+                      {signatureRequestLink ? (
+                        <a
+                          className="studio-secondary-button"
+                          href={signatureRequestLink}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open link
+                        </a>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="studio-secondary-button"
+                        onClick={() => setSignatureFlowStep("choose")}
+                      >
+                        Back
+                      </button>
+                      <button
+                        type="button"
+                        className="studio-primary-button"
+                        onClick={() => void sendSignatureRequest()}
+                        disabled={busy}
+                      >
+                        {busy ? "Sending request..." : "Apply"}
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </section>
       </main>
     </div>
@@ -1481,6 +1796,7 @@ export function PdfEditorStudio(): React.JSX.Element {
 function StudioPdfPage({
   fileName,
   page,
+  previewUrl,
   layers,
   rotationDegrees,
   pageNumbers,
@@ -1491,6 +1807,7 @@ function StudioPdfPage({
 }: {
   fileName: string;
   page: StudioPageMeta;
+  previewUrl: string | null;
   layers: StudioLayer[];
   rotationDegrees: number;
   pageNumbers: EditPageNumbersInput | null;
@@ -1568,12 +1885,23 @@ function StudioPdfPage({
         }}
         >
         <div className="studio-page-paper">
-          <div className="studio-page-paper__watermark">{fileName}</div>
-          <div className="studio-page-paper__grid" />
-          <div className="studio-page-paper__header">
-            <span>Studio placement surface</span>
-            <small>Page {page.pageNumber}</small>
-          </div>
+          {previewUrl ? (
+            <img
+              className="studio-page-paper__preview"
+              src={previewUrl}
+              alt={`${fileName} page ${page.pageNumber}`}
+              draggable={false}
+            />
+          ) : (
+            <>
+              <div className="studio-page-paper__watermark">{fileName}</div>
+              <div className="studio-page-paper__grid" />
+              <div className="studio-page-paper__header">
+                <span>Loading PDF page...</span>
+                <small>Page {page.pageNumber}</small>
+              </div>
+            </>
+          )}
           {watermark ? (
             <div
               className="studio-page-paper__watermark-preview"

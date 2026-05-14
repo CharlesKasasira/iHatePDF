@@ -1,63 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api";
-
-type SignatureRequestResponse = {
-  id: string;
-  token: string;
-  status: "pending" | "completed" | "expired" | "cancelled";
-  fileName: string;
-  expiresAt: string;
-  message: string | null;
-};
-
-type TaskStatusResponse = {
-  id: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  errorMessage: string | null;
-  outputDownloadUrl: string | null;
-};
-
-async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed (${response.status})`);
-  }
-
-  return response.json() as Promise<T>;
-}
-
-async function pollTask(taskId: string): Promise<TaskStatusResponse> {
-  let last: TaskStatusResponse | null = null;
-
-  for (let index = 0; index < 120; index += 1) {
-    const task = await jsonFetch<TaskStatusResponse>(`/tasks/${taskId}`);
-    last = task;
-
-    if (task.status === "completed" || task.status === "failed") {
-      return task;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-
-  if (!last) {
-    throw new Error("Task polling timed out before first response.");
-  }
-
-  return last;
-}
+import {
+  completeSignatureRequest,
+  getPdfPagePreviewUrl,
+  getSignatureRequest,
+  pollTask,
+  type SignatureRequestResponse
+} from "../../lib/pdf-api";
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -75,12 +26,6 @@ export default function SignRequestPage(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [signatureDataUrl, setSignatureDataUrl] = useState("");
-  const [page, setPage] = useState(1);
-  const [x, setX] = useState(50);
-  const [y, setY] = useState(50);
-  const [width, setWidth] = useState(180);
-  const [height, setHeight] = useState(80);
-  const [outputName, setOutputName] = useState("signed-request.pdf");
   const [status, setStatus] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -93,8 +38,8 @@ export default function SignRequestPage(): React.JSX.Element {
     const load = async (): Promise<void> => {
       try {
         setLoading(true);
-        const response = await jsonFetch<SignatureRequestResponse>(`/signature-requests/${token}`);
-        setRequest(response);
+        setError("");
+        setRequest(await getSignatureRequest(token));
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -104,6 +49,27 @@ export default function SignRequestPage(): React.JSX.Element {
 
     void load();
   }, [token]);
+
+  const previewUrl = useMemo(() => {
+    if (!request) {
+      return "";
+    }
+
+    return getPdfPagePreviewUrl(request.fileId, request.page);
+  }, [request]);
+
+  const signatureBoxStyle = useMemo((): React.CSSProperties | null => {
+    if (!request) {
+      return null;
+    }
+
+    return {
+      left: `${(request.x / request.pageWidth) * 100}%`,
+      top: `${((request.pageHeight - (request.y + request.height)) / request.pageHeight) * 100}%`,
+      width: `${(request.width / request.pageWidth) * 100}%`,
+      height: `${(request.height / request.pageHeight) * 100}%`
+    };
+  }, [request]);
 
   const onSubmit = async (): Promise<void> => {
     if (!token) {
@@ -121,21 +87,7 @@ export default function SignRequestPage(): React.JSX.Element {
       setStatus("Submitting signature...");
       setDownloadUrl("");
 
-      const { taskId } = await jsonFetch<{ taskId: string }>(
-        `/signature-requests/${token}/complete`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            signatureDataUrl,
-            page,
-            x,
-            y,
-            width,
-            height,
-            outputName
-          })
-        }
-      );
+      const { taskId } = await completeSignatureRequest(token, signatureDataUrl);
 
       setStatus("Processing signed document...");
       const task = await pollTask(taskId);
@@ -154,110 +106,99 @@ export default function SignRequestPage(): React.JSX.Element {
   };
 
   return (
-    <main>
-      <h1>Complete Signature Request</h1>
+    <main className="feature-page">
+      <section className="feature-hero">
+        <h1>Complete Signature Request</h1>
+        <p>Upload your signature and place it into the marked space on the requested PDF page.</p>
+      </section>
 
       {loading ? <p className="small">Loading signature request...</p> : null}
       {error ? <p className="error">{error}</p> : null}
 
       {request ? (
-        <section className="panel">
-          <p className="small">Document: {request.fileName}</p>
-          <p className="small">Status: {request.status}</p>
-          <p className="small">Expires: {new Date(request.expiresAt).toLocaleString()}</p>
-          {request.message ? <p className="small">Message: {request.message}</p> : null}
+        <section className="studio-workspace">
+          <aside className="studio-sidebar">
+            <div className="studio-panel">
+              <div className="studio-panel__eyebrow">Request</div>
+              <h2>{request.fileName}</h2>
+              <p className="small">Status: {request.status}</p>
+              <p className="small">Expires: {new Date(request.expiresAt).toLocaleString()}</p>
+              <p className="small">Page: {request.page}</p>
+              {request.message ? <p className="small">Message: {request.message}</p> : null}
+            </div>
 
-          {request.status !== "pending" ? (
-            <p className="error">This request is no longer pending.</p>
-          ) : (
-            <>
-              <label htmlFor="sig-image">Signature image</label>
-              <input
-                id="sig-image"
-                type="file"
-                accept="image/png,image/jpeg"
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) {
-                    return;
-                  }
+            {request.status !== "pending" ? (
+              <div className="studio-panel">
+                <p className="error">This request is no longer pending.</p>
+              </div>
+            ) : (
+              <div className="studio-panel">
+                <div className="studio-panel__eyebrow">Your Signature</div>
+                <label htmlFor="sig-image">Signature image</label>
+                <input
+                  id="sig-image"
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) {
+                      return;
+                    }
 
-                  setSignatureDataUrl(await fileToDataUrl(file));
-                }}
-              />
+                    setSignatureDataUrl(await fileToDataUrl(file));
+                  }}
+                />
 
-              <div className="grid two">
-                <div>
-                  <label htmlFor="sig-page">Page</label>
-                  <input
-                    id="sig-page"
-                    type="number"
-                    min={1}
-                    value={page}
-                    onChange={(event) => setPage(Number(event.target.value))}
+                {signatureDataUrl ? (
+                  <img
+                    src={signatureDataUrl}
+                    alt="Signature preview"
+                    style={{ maxWidth: "100%", marginTop: 12, borderRadius: 12 }}
                   />
-                </div>
-                <div>
-                  <label htmlFor="sig-x">X</label>
-                  <input
-                    id="sig-x"
-                    type="number"
-                    min={0}
-                    value={x}
-                    onChange={(event) => setX(Number(event.target.value))}
+                ) : null}
+
+                <button type="button" className="studio-primary-button studio-primary-button--full" disabled={busy} onClick={onSubmit}>
+                  {busy ? "Submitting..." : "Sign Document"}
+                </button>
+
+                <p className={status.includes("failed") ? "error" : "small"}>{status}</p>
+                {downloadUrl ? (
+                  <a className="download studio-download-link" href={downloadUrl} target="_blank" rel="noreferrer">
+                    Download signed document
+                  </a>
+                ) : null}
+              </div>
+            )}
+          </aside>
+
+          <section className="studio-canvas-area">
+            <article className="studio-page-card">
+              <div className="studio-page-card__meta">
+                <span>Page {request.page}</span>
+                <span>Signature area</span>
+              </div>
+              <div className="studio-page-surface" style={{ height: "auto", cursor: "default" }}>
+                <div
+                  className="studio-page-paper"
+                  style={{
+                    aspectRatio: `${request.pageWidth} / ${request.pageHeight}`
+                  }}
+                >
+                  <img
+                    className="studio-page-paper__preview"
+                    src={previewUrl}
+                    alt={`${request.fileName} page ${request.page}`}
+                    draggable={false}
                   />
-                </div>
-                <div>
-                  <label htmlFor="sig-y">Y</label>
-                  <input
-                    id="sig-y"
-                    type="number"
-                    min={0}
-                    value={y}
-                    onChange={(event) => setY(Number(event.target.value))}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="sig-w">Width</label>
-                  <input
-                    id="sig-w"
-                    type="number"
-                    min={1}
-                    value={width}
-                    onChange={(event) => setWidth(Number(event.target.value))}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="sig-h">Height</label>
-                  <input
-                    id="sig-h"
-                    type="number"
-                    min={1}
-                    value={height}
-                    onChange={(event) => setHeight(Number(event.target.value))}
-                  />
+                  {signatureBoxStyle ? (
+                    <div className="studio-signature-request-box" style={signatureBoxStyle}>
+                      <span>Sign here</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
-
-              <label htmlFor="sig-output">Output filename</label>
-              <input
-                id="sig-output"
-                value={outputName}
-                onChange={(event) => setOutputName(event.target.value)}
-              />
-
-              <button type="button" disabled={busy} onClick={onSubmit}>
-                {busy ? "Submitting..." : "Sign Document"}
-              </button>
-
-              <p className={status.includes("failed") ? "error" : "small"}>{status}</p>
-              {downloadUrl ? (
-                <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-                  Download signed document
-                </a>
-              ) : null}
-            </>
-          )}
+            </article>
+          </section>
         </section>
       ) : null}
     </main>
