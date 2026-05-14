@@ -4,12 +4,18 @@ import type { Route } from "next";
 type ActiveKey =
   | "merge"
   | "split"
+  | "remove-pages"
+  | "extract-pages"
+  | "organize-pdf"
   | "compress"
   | "protect"
   | "unlock"
+  | "jpg-to-pdf"
   | "pdf-to-word"
+  | "pdf-to-jpg"
   | "pdf-to-powerpoint"
   | "pdf-to-excel"
+  | "word-to-pdf"
   | "excel-to-pdf"
   | "powerpoint-to-pdf"
   | "edit";
@@ -25,14 +31,22 @@ const NAV_ITEMS: Array<{
 }> = [
   { label: "Merge", href: "/merge-pdf", match: ["merge"] },
   { label: "Split", href: "/split-pdf", match: ["split"] },
+  {
+    label: "Organize",
+    href: "/organize-pdf",
+    match: ["remove-pages", "extract-pages", "organize-pdf"]
+  },
   { label: "Compress", href: "/compress-pdf", match: ["compress"] },
   {
     label: "Convert",
-    href: "/pdf-to-word",
+    href: "/jpg-to-pdf",
     match: [
+      "jpg-to-pdf",
       "pdf-to-word",
+      "pdf-to-jpg",
       "pdf-to-powerpoint",
       "pdf-to-excel",
+      "word-to-pdf",
       "excel-to-pdf",
       "powerpoint-to-pdf"
     ]

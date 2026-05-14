@@ -10,13 +10,19 @@ datasource db {
 enum TaskType {
   merge
   split
+  remove_pages
+  extract_pages
+  organize_pdf
   sign
   compress
   protect
   unlock
+  jpg_to_pdf
   pdf_to_word
+  pdf_to_jpg
   pdf_to_powerpoint
   pdf_to_excel
+  word_to_pdf
   excel_to_pdf
   powerpoint_to_pdf
   edit

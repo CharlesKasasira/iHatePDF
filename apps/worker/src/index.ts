@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { Job, Worker } from "bullmq";
 import JSZip from "jszip";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -34,6 +34,7 @@ const WORD_MIME_TYPE =
 const POWERPOINT_MIME_TYPE =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const EXCEL_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const JPEG_MIME_TYPE = "image/jpeg";
 const PNG_MIME_TYPE = "image/png";
 const EMUS_PER_POINT = 12700;
 const TWIPS_PER_POINT = 20;
@@ -56,11 +57,38 @@ const MergePayloadSchema = z.object({
   outputName: z.string().min(1)
 });
 
+const JpgToPdfPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKeys: z.array(z.string()).min(1),
+  outputName: z.string().min(1)
+});
+
 const SplitPayloadSchema = z.object({
   taskId: z.string(),
   fileKey: z.string(),
   pageRanges: z.array(z.string()).min(1),
   outputPrefix: z.string().min(1)
+});
+
+const RemovePagesPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  pageRanges: z.array(z.string()).min(1),
+  outputName: z.string().min(1)
+});
+
+const ExtractPagesPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  pageRanges: z.array(z.string()).min(1),
+  outputName: z.string().min(1)
+});
+
+const OrganizePdfPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  pageOrder: z.array(z.number().int().min(1)).min(1),
+  outputName: z.string().min(1)
 });
 
 const SignPayloadSchema = z.object({
@@ -133,6 +161,35 @@ const EditImageSchema = z.object({
   dataUrl: z.string().startsWith("data:image/")
 });
 
+const EditPageRotationSchema = z.object({
+  page: z.number().int().min(1),
+  degrees: z.union([z.literal(90), z.literal(180), z.literal(270)])
+});
+
+const EditPageNumbersSchema = z.object({
+  startAt: z.number().int().min(1).max(100000),
+  fontSize: z.number().min(6).max(72),
+  color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/),
+  position: z.enum([
+    "top-left",
+    "top-center",
+    "top-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right"
+  ]),
+  margin: z.number().min(0).max(144),
+  prefix: z.string().optional()
+});
+
+const EditWatermarkSchema = z.object({
+  text: z.string().min(1),
+  fontSize: z.number().min(18).max(240),
+  color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/),
+  opacity: z.number().min(0.05).max(0.95),
+  rotation: z.number().min(-180).max(180)
+});
+
 const EditPayloadSchema = z
   .object({
     taskId: z.string(),
@@ -140,18 +197,32 @@ const EditPayloadSchema = z
     textEdits: z.array(EditTextSchema).default([]),
     rectangleEdits: z.array(EditRectangleSchema).default([]),
     imageEdits: z.array(EditImageSchema).default([]),
+    pageRotations: z.array(EditPageRotationSchema).default([]),
+    pageNumbers: EditPageNumbersSchema.optional(),
+    watermark: EditWatermarkSchema.optional(),
     outputName: z.string().min(1),
     expiresAtIso: z.string().datetime().optional()
   })
   .refine(
-    (value) => value.textEdits.length + value.rectangleEdits.length + value.imageEdits.length > 0,
+    (value) =>
+      value.textEdits.length +
+        value.rectangleEdits.length +
+        value.imageEdits.length +
+        value.pageRotations.length +
+        (value.pageNumbers ? 1 : 0) +
+        (value.watermark ? 1 : 0) >
+      0,
     {
       message: "At least one edit operation is required."
     }
   );
 
 type MergePayload = z.infer<typeof MergePayloadSchema>;
+type JpgToPdfPayload = z.infer<typeof JpgToPdfPayloadSchema>;
 type SplitPayload = z.infer<typeof SplitPayloadSchema>;
+type RemovePagesPayload = z.infer<typeof RemovePagesPayloadSchema>;
+type ExtractPagesPayload = z.infer<typeof ExtractPagesPayloadSchema>;
+type OrganizePdfPayload = z.infer<typeof OrganizePdfPayloadSchema>;
 type SignPayload = z.infer<typeof SignPayloadSchema>;
 type CompressPayload = z.infer<typeof CompressPayloadSchema>;
 type ProtectPayload = z.infer<typeof ProtectPayloadSchema>;
@@ -171,6 +242,12 @@ type RenderedPdfPage = {
   imageFileName: string;
 };
 
+type RenderedJpegPage = {
+  pageNumber: number;
+  imageBuffer: Buffer;
+  imageFileName: string;
+};
+
 function sanitizeFileName(name: string): string {
   const base = name.replace(/[^a-zA-Z0-9_.-]/g, "_").trim();
   return base || `file-${randomUUID()}`;
@@ -183,6 +260,19 @@ function safeNameWithExtension(name: string, extension: string): string {
 
 function safePdfName(name: string): string {
   return safeNameWithExtension(name, ".pdf");
+}
+
+function safeJpgName(name: string): string {
+  return safeNameWithExtension(name, ".jpg");
+}
+
+function safeZipName(name: string): string {
+  return safeNameWithExtension(name, ".zip");
+}
+
+function stripFileExtension(name: string): string {
+  const lastDot = name.lastIndexOf(".");
+  return lastDot > 0 ? name.slice(0, lastDot) : name;
 }
 
 function isJpegDataUrl(dataUrl: string): boolean {
@@ -450,6 +540,31 @@ function parseRange(range: string, totalPages: number): number[] {
   return pageIndices;
 }
 
+function expandPageRanges(ranges: string[], totalPages: number): number[] {
+  return ranges.flatMap((range) => parseRange(range, totalPages));
+}
+
+function uniquePageIndices(pageIndices: number[]): number[] {
+  return Array.from(new Set(pageIndices));
+}
+
+function parsePageOrder(pageOrder: number[], totalPages: number): number[] {
+  return pageOrder.map((pageNumber) => {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > totalPages) {
+      throw new Error(`Invalid page number ${pageNumber}. PDF has ${totalPages} page(s).`);
+    }
+
+    return pageNumber - 1;
+  });
+}
+
+async function createPdfFromPageIndices(source: PDFDocument, pageIndices: number[]): Promise<Buffer> {
+  const nextPdf = await PDFDocument.create();
+  const copiedPages = await nextPdf.copyPages(source, pageIndices);
+  copiedPages.forEach((page) => nextPdf.addPage(page));
+  return Buffer.from(await nextPdf.save());
+}
+
 async function runSplit(payload: SplitPayload, reportProgress: ProgressReporter): Promise<string> {
   validatePageRanges(payload.pageRanges);
 
@@ -496,6 +611,74 @@ async function runSplit(payload: SplitPayload, reportProgress: ProgressReporter)
   return uploadObject(objectKey, "application/zip", zipData, zipName);
 }
 
+async function runRemovePages(
+  payload: RemovePagesPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  validatePageRanges(payload.pageRanges);
+
+  await reportProgress(12, "Loading source PDF...");
+  const sourceBuffer = await downloadObject(payload.fileKey);
+  const source = await PDFDocument.load(sourceBuffer);
+  const totalPages = source.getPageCount();
+  const removedPages = new Set(expandPageRanges(payload.pageRanges, totalPages));
+  const keptPages = Array.from({ length: totalPages }, (_, index) => index).filter(
+    (pageIndex) => !removedPages.has(pageIndex)
+  );
+
+  if (keptPages.length === 0) {
+    throw new Error("Cannot remove every page from the PDF.");
+  }
+
+  await reportProgress(48, `Rebuilding PDF with ${keptPages.length} remaining page(s)...`);
+  const body = await createPdfFromPageIndices(source, keptPages);
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+
+  await reportProgress(96, "Saving updated PDF...");
+  return uploadObject(objectKey, "application/pdf", body, fileName);
+}
+
+async function runExtractPages(
+  payload: ExtractPagesPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  validatePageRanges(payload.pageRanges);
+
+  await reportProgress(12, "Loading source PDF...");
+  const sourceBuffer = await downloadObject(payload.fileKey);
+  const source = await PDFDocument.load(sourceBuffer);
+  const totalPages = source.getPageCount();
+  const extractedPages = uniquePageIndices(expandPageRanges(payload.pageRanges, totalPages));
+
+  await reportProgress(48, `Extracting ${extractedPages.length} page(s)...`);
+  const body = await createPdfFromPageIndices(source, extractedPages);
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+
+  await reportProgress(96, "Saving extracted PDF...");
+  return uploadObject(objectKey, "application/pdf", body, fileName);
+}
+
+async function runOrganizePdf(
+  payload: OrganizePdfPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  await reportProgress(12, "Loading source PDF...");
+  const sourceBuffer = await downloadObject(payload.fileKey);
+  const source = await PDFDocument.load(sourceBuffer);
+  const totalPages = source.getPageCount();
+  const orderedPages = parsePageOrder(payload.pageOrder, totalPages);
+
+  await reportProgress(48, `Reordering ${orderedPages.length} page slot(s)...`);
+  const body = await createPdfFromPageIndices(source, orderedPages);
+  const fileName = safePdfName(payload.outputName);
+  const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
+
+  await reportProgress(96, "Saving organized PDF...");
+  return uploadObject(objectKey, "application/pdf", body, fileName);
+}
+
 async function runSign(payload: SignPayload, reportProgress: ProgressReporter): Promise<string> {
   await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
@@ -530,30 +713,62 @@ async function runSign(payload: SignPayload, reportProgress: ProgressReporter): 
 }
 
 async function runCompress(payload: CompressPayload, reportProgress: ProgressReporter): Promise<string> {
-  await reportProgress(12, "Loading source PDF...");
-  const inputBuffer = await downloadObject(payload.fileKey);
-  const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
-  const optimized = await PDFDocument.create();
-  const pageIndices = source.getPageIndices();
+  const inputPath = resolveStoragePath(payload.fileKey);
 
-  await reportProgress(34, `Copying ${pageIndices.length} page(s)...`);
-  const pages = await optimized.copyPages(source, pageIndices);
-  pages.forEach((page) => optimized.addPage(page));
+  await reportProgress(18, "Preparing PDF for compression...");
+  const outputBuffer = await withTempDir(async (dir) => {
+    const outputPath = resolve(dir, `compressed-${randomUUID()}.pdf`);
+    const inputBuffer = await readFile(inputPath);
 
-  await reportProgress(82, "Finalizing compressed PDF...");
-  const optimizedBytes = await optimized.save({
-    useObjectStreams: true,
-    addDefaultPage: false,
-    objectsPerTick: 50
+    await reportProgress(52, "Recompressing PDF streams...");
+    await runCommand(env.QPDF_BIN, [
+      "--compress-streams=y",
+      "--decode-level=generalized",
+      "--recompress-flate",
+      "--compression-level=9",
+      "--object-streams=generate",
+      inputPath,
+      outputPath
+    ]);
+
+    await reportProgress(82, "Finalizing compressed PDF...");
+    const optimizedBuffer = await readFile(outputPath);
+    return optimizedBuffer.byteLength <= inputBuffer.byteLength ? optimizedBuffer : inputBuffer;
   });
-  const optimizedBuffer = Buffer.from(optimizedBytes);
-  const outputBuffer =
-    optimizedBuffer.byteLength <= inputBuffer.byteLength ? optimizedBuffer : inputBuffer;
 
   const fileName = safePdfName(payload.outputName);
   const objectKey = `outputs/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${fileName}`;
   await reportProgress(96, "Saving compressed PDF...");
   return uploadObject(objectKey, "application/pdf", outputBuffer, fileName);
+}
+
+async function runJpgToPdf(
+  payload: JpgToPdfPayload,
+  reportProgress: ProgressReporter
+): Promise<string> {
+  const pdfDoc = await PDFDocument.create();
+
+  for (const [index, key] of payload.fileKeys.entries()) {
+    await reportProgress(
+      14 + Math.floor((index / payload.fileKeys.length) * 60),
+      `Embedding image ${index + 1} of ${payload.fileKeys.length}...`
+    );
+    const imageBuffer = await downloadObject(key);
+    const jpgImage = await pdfDoc.embedJpg(imageBuffer);
+    const page = pdfDoc.addPage([jpgImage.width, jpgImage.height]);
+    page.drawImage(jpgImage, {
+      x: 0,
+      y: 0,
+      width: jpgImage.width,
+      height: jpgImage.height
+    });
+  }
+
+  await reportProgress(82, "Building PDF from JPG pages...");
+  const outputBuffer = Buffer.from(await pdfDoc.save());
+  const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving PDF...");
+  return saveOutputFile(fileName, "application/pdf", outputBuffer);
 }
 
 async function runProtect(payload: ProtectPayload, reportProgress: ProgressReporter): Promise<string> {
@@ -949,6 +1164,50 @@ async function renderPdfPages(inputBuffer: Buffer): Promise<RenderedPdfPage[]> {
           imageFileName: `page-${pageNumber}.png`
         };
       })
+    );
+  });
+}
+
+async function renderPdfPagesAsJpegs(inputBuffer: Buffer): Promise<RenderedJpegPage[]> {
+  const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const pageCount = source.getPageCount();
+
+  if (pageCount === 0) {
+    throw new Error("The uploaded PDF does not contain any pages.");
+  }
+
+  return withTempDir(async (dir) => {
+    const inputPath = resolve(dir, "source.pdf");
+    const outputPrefix = resolve(dir, "page");
+    await writeFile(inputPath, inputBuffer);
+    await runCommand(env.PDFTOPPM_BIN, [
+      "-jpeg",
+      "-r",
+      String(env.PDF_RENDER_DPI),
+      inputPath,
+      outputPrefix
+    ]);
+
+    const pageFiles = (await readdir(dir))
+      .map((fileName) => {
+        const match = /^page-(\d+)\.jpg$/i.exec(fileName);
+        return match ? { fileName, pageNumber: Number(match[1]) } : null;
+      })
+      .filter((value): value is { fileName: string; pageNumber: number } => value !== null)
+      .sort((left, right) => left.pageNumber - right.pageNumber);
+
+    if (pageFiles.length !== pageCount) {
+      throw new Error(
+        `PDF rendering produced ${pageFiles.length} image(s) for a ${pageCount}-page PDF.`
+      );
+    }
+
+    return Promise.all(
+      pageFiles.map(async ({ fileName, pageNumber }) => ({
+        pageNumber,
+        imageBuffer: await readFile(resolve(dir, fileName)),
+        imageFileName: `page-${pageNumber}.jpg`
+      }))
     );
   });
 }
@@ -1887,6 +2146,31 @@ async function extractPptxTextLines(inputBuffer: Buffer): Promise<string[]> {
   return uniqueCleanText(lines);
 }
 
+async function extractDocxTextLines(inputBuffer: Buffer): Promise<string[]> {
+  const zip = await loadOpenXmlZip(inputBuffer, "Word (.docx)");
+  const documentFile = zip.file("word/document.xml");
+  if (!documentFile) {
+    throw new Error("Unsupported file format. Upload a valid Word (.docx) file.");
+  }
+
+  const documentXml = await documentFile.async("string");
+  const paragraphMatches = documentXml.match(/<w:p\b[\s\S]*?<\/w:p>/g) ?? [];
+  const lines: string[] = [];
+
+  for (const paragraph of paragraphMatches) {
+    const text = extractXmlTextTokens(paragraph, "w:t").join(" ").trim();
+    if (text) {
+      lines.push(text);
+    }
+
+    if (lines.length >= 2200) {
+      return uniqueCleanText(lines);
+    }
+  }
+
+  return uniqueCleanText(lines);
+}
+
 function wrapTextLine(value: string, maxLength: number): string[] {
   if (value.length <= maxLength) {
     return [value];
@@ -2026,6 +2310,30 @@ function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): Standa
   return StandardFonts.Helvetica;
 }
 
+function resolveTextAnchorPosition(options: {
+  pageWidth: number;
+  pageHeight: number;
+  textWidth: number;
+  fontSize: number;
+  margin: number;
+  position: NonNullable<EditPayload["pageNumbers"]>["position"];
+}): { x: number; y: number } {
+  const { pageWidth, pageHeight, textWidth, fontSize, margin, position } = options;
+  const isTop = position.startsWith("top");
+  const isLeft = position.endsWith("left");
+  const isRight = position.endsWith("right");
+
+  let x = (pageWidth - textWidth) / 2;
+  if (isLeft) {
+    x = margin;
+  } else if (isRight) {
+    x = pageWidth - margin - textWidth;
+  }
+
+  const y = isTop ? pageHeight - margin - fontSize : margin;
+  return { x: Math.max(0, x), y: Math.max(0, y) };
+}
+
 async function runPdfToWord(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
   await reportProgress(14, "Rendering PDF pages...");
   const inputBuffer = await downloadObject(payload.fileKey);
@@ -2035,6 +2343,31 @@ async function runPdfToWord(payload: ConvertPayload, reportProgress: ProgressRep
   const fileName = safeNameWithExtension(payload.outputName, ".docx");
   await reportProgress(96, "Saving Word document...");
   return saveOutputFile(fileName, WORD_MIME_TYPE, docxBuffer);
+}
+
+async function runPdfToJpg(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(14, "Rendering PDF pages to JPG...");
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const renderedPages = await renderPdfPagesAsJpegs(inputBuffer);
+
+  if (renderedPages.length === 1) {
+    const fileName = safeJpgName(payload.outputName);
+    await reportProgress(96, "Saving JPG image...");
+    return saveOutputFile(fileName, JPEG_MIME_TYPE, renderedPages[0].imageBuffer);
+  }
+
+  const zip = new JSZip();
+  const archivePrefix = stripFileExtension(payload.outputName) || "images";
+
+  for (const page of renderedPages) {
+    zip.file(`${sanitizeFileName(archivePrefix)}-page-${page.pageNumber}.jpg`, page.imageBuffer);
+  }
+
+  await reportProgress(68, `Packaging ${renderedPages.length} JPG pages...`);
+  const zipBuffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  const zipName = safeZipName(`${archivePrefix}-images`);
+  await reportProgress(96, "Saving JPG archive...");
+  return saveOutputFile(zipName, "application/zip", zipBuffer);
 }
 
 async function runPdfToPowerpoint(
@@ -2087,6 +2420,17 @@ async function runPowerpointToPdf(
   return saveOutputFile(fileName, "application/pdf", pdfBuffer);
 }
 
+async function runWordToPdf(payload: ConvertPayload, reportProgress: ProgressReporter): Promise<string> {
+  await reportProgress(14, "Reading Word document...");
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const lines = await extractDocxTextLines(inputBuffer);
+  await reportProgress(62, `Formatting ${lines.length} extracted text line(s)...`);
+  const pdfBuffer = await createTextPdfBuffer(lines);
+  const fileName = safePdfName(payload.outputName);
+  await reportProgress(96, "Saving PDF...");
+  return saveOutputFile(fileName, "application/pdf", pdfBuffer);
+}
+
 async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): Promise<string> {
   await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
@@ -2094,7 +2438,12 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
   const pages = pdfDoc.getPages();
   const embeddedFonts = new Map<StandardFonts, Awaited<ReturnType<typeof pdfDoc.embedFont>>>();
   const totalEdits =
-    payload.textEdits.length + payload.rectangleEdits.length + payload.imageEdits.length;
+    payload.textEdits.length +
+    payload.rectangleEdits.length +
+    payload.imageEdits.length +
+    payload.pageRotations.length +
+    (payload.pageNumbers ? 1 : 0) +
+    (payload.watermark ? 1 : 0);
   let completedEdits = 0;
 
   const advanceEditProgress = async (message: string): Promise<void> => {
@@ -2112,15 +2461,20 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
     return pages[pageNumber - 1];
   };
 
-  for (const item of payload.textEdits) {
-    const page = pageAt(item.page);
-    const color = parseHexColor(item.color);
-    const fontName = resolveStandardFont(item);
+  const getEmbeddedFont = async (fontName: StandardFonts) => {
     let font = embeddedFonts.get(fontName);
     if (!font) {
       font = await pdfDoc.embedFont(fontName);
       embeddedFonts.set(fontName, font);
     }
+    return font;
+  };
+
+  for (const item of payload.textEdits) {
+    const page = pageAt(item.page);
+    const color = parseHexColor(item.color);
+    const fontName = resolveStandardFont(item);
+    const font = await getEmbeddedFont(fontName);
 
     page.drawText(item.text, {
       x: item.x,
@@ -2175,6 +2529,63 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
     await advanceEditProgress(`Applying image edit ${completedEdits + 1} of ${totalEdits}...`);
   }
 
+  if (payload.watermark) {
+    const font = await getEmbeddedFont(StandardFonts.HelveticaBold);
+    const color = parseHexColor(payload.watermark.color);
+
+    for (const page of pages) {
+      const { width, height } = page.getSize();
+      const textWidth = font.widthOfTextAtSize(payload.watermark.text, payload.watermark.fontSize);
+      page.drawText(payload.watermark.text, {
+        x: Math.max(0, (width - textWidth) / 2),
+        y: Math.max(0, (height - payload.watermark.fontSize) / 2),
+        size: payload.watermark.fontSize,
+        font,
+        color: rgb(color.red / 255, color.green / 255, color.blue / 255),
+        opacity: payload.watermark.opacity,
+        rotate: degrees(payload.watermark.rotation)
+      });
+    }
+
+    await advanceEditProgress(`Applying watermark ${completedEdits + 1} of ${totalEdits}...`);
+  }
+
+  if (payload.pageNumbers) {
+    const font = await getEmbeddedFont(StandardFonts.HelveticaBold);
+    const color = parseHexColor(payload.pageNumbers.color);
+
+    pages.forEach((page, index) => {
+      const label = `${payload.pageNumbers?.prefix ?? ""}${payload.pageNumbers!.startAt + index}`;
+      const textWidth = font.widthOfTextAtSize(label, payload.pageNumbers!.fontSize);
+      const { width, height } = page.getSize();
+      const point = resolveTextAnchorPosition({
+        pageWidth: width,
+        pageHeight: height,
+        textWidth,
+        fontSize: payload.pageNumbers!.fontSize,
+        margin: payload.pageNumbers!.margin,
+        position: payload.pageNumbers!.position
+      });
+
+      page.drawText(label, {
+        x: point.x,
+        y: point.y,
+        size: payload.pageNumbers!.fontSize,
+        font,
+        color: rgb(color.red / 255, color.green / 255, color.blue / 255)
+      });
+    });
+
+    await advanceEditProgress(`Adding page numbers ${completedEdits + 1} of ${totalEdits}...`);
+  }
+
+  for (const item of payload.pageRotations) {
+    const page = pageAt(item.page);
+    const nextAngle = (page.getRotation().angle + item.degrees) % 360;
+    page.setRotation(degrees(nextAngle));
+    await advanceEditProgress(`Rotating page ${item.page} (${completedEdits + 1} of ${totalEdits})...`);
+  }
+
   await reportProgress(86, "Saving edited PDF...");
   const editedBuffer = Buffer.from(await pdfDoc.save());
   const fileName = safePdfName(payload.outputName);
@@ -2211,10 +2622,42 @@ async function processJob(job: Job): Promise<void> {
     return;
   }
 
+  if (name === "jpg-to-pdf") {
+    const payload = JpgToPdfPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing JPG to PDF conversion...", (reportProgress) =>
+      runJpgToPdf(payload, reportProgress)
+    );
+    return;
+  }
+
   if (name === "split") {
     const payload = SplitPayloadSchema.parse(data);
     await runTask(payload.taskId, "Preparing split...", (reportProgress) =>
       runSplit(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "remove-pages") {
+    const payload = RemovePagesPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing page removal...", (reportProgress) =>
+      runRemovePages(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "extract-pages") {
+    const payload = ExtractPagesPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing page extraction...", (reportProgress) =>
+      runExtractPages(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "organize-pdf") {
+    const payload = OrganizePdfPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing page organization...", (reportProgress) =>
+      runOrganizePdf(payload, reportProgress)
     );
     return;
   }
@@ -2259,6 +2702,14 @@ async function processJob(job: Job): Promise<void> {
     return;
   }
 
+  if (name === "pdf-to-jpg") {
+    const payload = ConvertPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing JPG conversion...", (reportProgress) =>
+      runPdfToJpg(payload, reportProgress)
+    );
+    return;
+  }
+
   if (name === "pdf-to-powerpoint") {
     const payload = ConvertPayloadSchema.parse(data);
     await runTask(payload.taskId, "Preparing PowerPoint conversion...", (reportProgress) =>
@@ -2271,6 +2722,14 @@ async function processJob(job: Job): Promise<void> {
     const payload = ConvertPayloadSchema.parse(data);
     await runTask(payload.taskId, "Preparing Excel conversion...", (reportProgress) =>
       runPdfToExcel(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "word-to-pdf") {
+    const payload = ConvertPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing PDF conversion...", (reportProgress) =>
+      runWordToPdf(payload, reportProgress)
     );
     return;
   }

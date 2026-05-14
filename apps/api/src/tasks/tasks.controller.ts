@@ -3,8 +3,12 @@ import {
   CompressPdfDto,
   ConvertPdfDto,
   EditPdfDto,
+  ExtractPagesDto,
+  JpgToPdfDto,
   MergePdfDto,
+  OrganizePdfDto,
   ProtectPdfDto,
+  RemovePagesDto,
   SignPdfDto,
   SplitPdfDto,
   UnlockPdfDto
@@ -27,6 +31,21 @@ export class TasksController {
     return this.tasksService.queueSplit(dto);
   }
 
+  @Post("remove-pages")
+  queueRemovePages(@Body() dto: RemovePagesDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueRemovePages(dto);
+  }
+
+  @Post("extract-pages")
+  queueExtractPages(@Body() dto: ExtractPagesDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueExtractPages(dto);
+  }
+
+  @Post("organize-pdf")
+  queueOrganizePdf(@Body() dto: OrganizePdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueOrganizePdf(dto);
+  }
+
   @Post("sign")
   queueSign(@Body() dto: SignPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queueSign(dto);
@@ -47,9 +66,19 @@ export class TasksController {
     return this.tasksService.queueUnlock(dto);
   }
 
+  @Post("jpg-to-pdf")
+  queueJpgToPdf(@Body() dto: JpgToPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueJpgToPdf(dto);
+  }
+
   @Post("pdf-to-word")
   queuePdfToWord(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queuePdfToWord(dto);
+  }
+
+  @Post("pdf-to-jpg")
+  queuePdfToJpg(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToJpg(dto);
   }
 
   @Post("pdf-to-powerpoint")
@@ -60,6 +89,11 @@ export class TasksController {
   @Post("pdf-to-excel")
   queuePdfToExcel(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
     return this.tasksService.queuePdfToExcel(dto);
+  }
+
+  @Post("word-to-pdf")
+  queueWordToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    return this.tasksService.queueWordToPdf(dto);
   }
 
   @Post("excel-to-pdf")

@@ -6,6 +6,9 @@ import { StorageService } from "../storage/storage.service.js";
 
 const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "application/pdf",
+  "image/jpeg",
+  "image/jpg",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ]);
@@ -85,7 +88,7 @@ export class UploadsController {
     if (!ALLOWED_UPLOAD_MIME_TYPES.has(part.mimetype)) {
       part.file.resume();
       throw new BadRequestException(
-        "Unsupported file type. Upload PDF, Excel (.xlsx), or PowerPoint (.pptx)."
+        "Unsupported file type. Upload PDF, JPG/JPEG, Word (.docx), Excel (.xlsx), or PowerPoint (.pptx)."
       );
     }
 

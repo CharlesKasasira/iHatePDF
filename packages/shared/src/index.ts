@@ -1,6 +1,23 @@
 import { z } from "zod";
 
-export const PdfTaskType = z.enum(["merge", "split", "sign", "signature-request"]);
+export const PdfTaskType = z.enum([
+  "merge",
+  "split",
+  "sign",
+  "compress",
+  "protect",
+  "unlock",
+  "jpg-to-pdf",
+  "pdf-to-word",
+  "pdf-to-jpg",
+  "pdf-to-powerpoint",
+  "pdf-to-excel",
+  "word-to-pdf",
+  "excel-to-pdf",
+  "powerpoint-to-pdf",
+  "edit",
+  "signature-request"
+]);
 export type PdfTaskType = z.infer<typeof PdfTaskType>;
 
 export const MergePdfPayloadSchema = z.object({

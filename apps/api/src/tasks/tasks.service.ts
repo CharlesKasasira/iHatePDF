@@ -8,10 +8,17 @@ import {
   ConvertPdfDto,
   EditPdfDto,
   EditImageDto,
+  EditPageNumbersDto,
+  EditPageRotationDto,
   EditRectangleDto,
   EditTextDto,
+  EditWatermarkDto,
+  ExtractPagesDto,
+  JpgToPdfDto,
   MergePdfDto,
+  OrganizePdfDto,
   ProtectPdfDto,
+  RemovePagesDto,
   SignPdfDto,
   SplitPdfDto,
   UnlockPdfDto
@@ -23,11 +30,38 @@ interface MergeJobPayload {
   outputName: string;
 }
 
+interface JpgToPdfJobPayload {
+  taskId: string;
+  fileKeys: string[];
+  outputName: string;
+}
+
 interface SplitJobPayload {
   taskId: string;
   fileKey: string;
   pageRanges: string[];
   outputPrefix: string;
+}
+
+interface RemovePagesJobPayload {
+  taskId: string;
+  fileKey: string;
+  pageRanges: string[];
+  outputName: string;
+}
+
+interface ExtractPagesJobPayload {
+  taskId: string;
+  fileKey: string;
+  pageRanges: string[];
+  outputName: string;
+}
+
+interface OrganizePdfJobPayload {
+  taskId: string;
+  fileKey: string;
+  pageOrder: number[];
+  outputName: string;
 }
 
 interface SignJobPayload {
@@ -74,11 +108,18 @@ interface EditJobPayload {
   textEdits: EditTextDto[];
   rectangleEdits: EditRectangleDto[];
   imageEdits: EditImageDto[];
+  pageRotations: EditPageRotationDto[];
+  pageNumbers?: EditPageNumbersDto;
+  watermark?: EditWatermarkDto;
   outputName: string;
   expiresAtIso?: string;
 }
 
 const PDF_MIME_TYPES = ["application/pdf"] as const;
+const JPEG_MIME_TYPES = ["image/jpeg", "image/jpg"] as const;
+const WORD_MIME_TYPES = [
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+] as const;
 const EXCEL_MIME_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ] as const;
@@ -171,6 +212,52 @@ export class TasksService {
     return { taskId: task.id };
   }
 
+  async queueJpgToPdf(dto: JpgToPdfDto): Promise<{ taskId: string }> {
+    if (dto.fileIds.length === 0) {
+      throw new BadRequestException("JPG to PDF requires at least one image.");
+    }
+
+    const files = await this.prisma.fileObject.findMany({
+      where: { id: { in: dto.fileIds } }
+    });
+
+    if (files.length !== dto.fileIds.length) {
+      throw new NotFoundException("One or more input images were not found.");
+    }
+
+    const fileMap = new Map(files.map((file) => [file.id, file]));
+    const fileKeys = dto.fileIds.map((id) => {
+      const item = fileMap.get(id);
+      if (!item) {
+        throw new NotFoundException(`Input image ${id} not found.`);
+      }
+      if (!JPEG_MIME_TYPES.includes(item.mimeType as (typeof JPEG_MIME_TYPES)[number])) {
+        throw new BadRequestException("JPG to PDF requires JPG or JPEG input files.");
+      }
+      return item.objectKey;
+    });
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.jpg_to_pdf,
+        status: "queued",
+        payload: {
+          fileKeys,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: JpgToPdfJobPayload = {
+      taskId: task.id,
+      fileKeys,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("jpg-to-pdf", payload);
+    return { taskId: task.id };
+  }
+
   async queueSplit(dto: SplitPdfDto): Promise<{ taskId: string }> {
     const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
@@ -195,6 +282,87 @@ export class TasksService {
     };
 
     await this.queueService.enqueue("split", payload);
+    return { taskId: task.id };
+  }
+
+  async queueRemovePages(dto: RemovePagesDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.remove_pages,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          pageRanges: dto.pageRanges,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: RemovePagesJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      pageRanges: dto.pageRanges,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("remove-pages", payload);
+    return { taskId: task.id };
+  }
+
+  async queueExtractPages(dto: ExtractPagesDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.extract_pages,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          pageRanges: dto.pageRanges,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: ExtractPagesJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      pageRanges: dto.pageRanges,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("extract-pages", payload);
+    return { taskId: task.id };
+  }
+
+  async queueOrganizePdf(dto: OrganizePdfDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.organize_pdf,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName,
+          pageOrderLength: dto.pageOrder.length
+        }
+      }
+    });
+
+    const payload: OrganizePdfJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      pageOrder: dto.pageOrder,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("organize-pdf", payload);
     return { taskId: task.id };
   }
 
@@ -349,6 +517,31 @@ export class TasksService {
     return { taskId: task.id };
   }
 
+  async queuePdfToJpg(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.pdf_to_jpg,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: ConvertJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("pdf-to-jpg", payload);
+    return { taskId: task.id };
+  }
+
   async queuePdfToPowerpoint(dto: ConvertPdfDto): Promise<{ taskId: string }> {
     const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
 
@@ -396,6 +589,35 @@ export class TasksService {
     };
 
     await this.queueService.enqueue("pdf-to-excel", payload);
+    return { taskId: task.id };
+  }
+
+  async queueWordToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(
+      dto.fileId,
+      WORD_MIME_TYPES,
+      "a Word file (.docx)"
+    );
+
+    const task = await this.prisma.task.create({
+      data: {
+        type: TaskType.word_to_pdf,
+        status: "queued",
+        inputFileId: file.id,
+        payload: {
+          fileKey: file.objectKey,
+          outputName: dto.outputName
+        }
+      }
+    });
+
+    const payload: ConvertJobPayload = {
+      taskId: task.id,
+      fileKey: file.objectKey,
+      outputName: dto.outputName
+    };
+
+    await this.queueService.enqueue("word-to-pdf", payload);
     return { taskId: task.id };
   }
 
@@ -463,8 +685,19 @@ export class TasksService {
     const textEdits = dto.textEdits ?? [];
     const rectangleEdits = dto.rectangleEdits ?? [];
     const imageEdits = dto.imageEdits ?? [];
+    const pageRotations = dto.pageRotations ?? [];
+    const pageNumbers = dto.pageNumbers;
+    const watermark = dto.watermark;
 
-    if (textEdits.length + rectangleEdits.length + imageEdits.length === 0) {
+    if (
+      textEdits.length +
+        rectangleEdits.length +
+        imageEdits.length +
+        pageRotations.length +
+        (pageNumbers ? 1 : 0) +
+        (watermark ? 1 : 0) ===
+      0
+    ) {
       throw new BadRequestException("At least one edit operation is required.");
     }
 
@@ -480,7 +713,10 @@ export class TasksService {
           editCounts: {
             text: textEdits.length,
             rectangles: rectangleEdits.length,
-            images: imageEdits.length
+            images: imageEdits.length,
+            rotations: pageRotations.length,
+            pageNumbers: Boolean(pageNumbers),
+            watermark: Boolean(watermark)
           }
         }
       }
@@ -492,6 +728,9 @@ export class TasksService {
       textEdits,
       rectangleEdits,
       imageEdits,
+      pageRotations,
+      pageNumbers,
+      watermark,
       outputName: dto.outputName,
       expiresAtIso: dto.retentionHours
         ? new Date(Date.now() + dto.retentionHours * 60 * 60 * 1000).toISOString()
