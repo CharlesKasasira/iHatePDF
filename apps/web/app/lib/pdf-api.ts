@@ -4,6 +4,7 @@ export type AuthUser = {
   id: string;
   email: string;
   name: string | null;
+  isAdmin: boolean;
   createdAt: string;
 };
 
@@ -22,7 +23,12 @@ export type AccountActivityResponse = {
     type: string;
     status: "queued" | "processing" | "completed" | "failed";
     progressPercent: number;
+    progressMessage: string | null;
     errorMessage: string | null;
+    retryCount: number;
+    lastRetriedAt: string | null;
+    canRetry: boolean;
+    retryHint: string;
     createdAt: string;
     updatedAt: string;
     outputFileName: string | null;
@@ -50,6 +56,114 @@ export type AccountActivityResponse = {
     finalDownloadUrl: string | null;
     auditCertificateUrl: string | null;
   }>;
+  storageUsage: {
+    totalBytes: string;
+    fileCount: number;
+    expiringSoonCount: number;
+    largestFiles: AccountActivityResponse["files"];
+  };
+  apiUsage: {
+    apiKeyCount: number;
+    activeApiKeyCount: number;
+    totalEvents: number;
+    eventsLast30Days: number;
+    keys: Array<{
+      id: string;
+      name: string;
+      keyPrefix: string;
+      lastUsedAt: string | null;
+      expiresAt: string | null;
+      revokedAt: string | null;
+      createdAt: string;
+      usageCount: number;
+    }>;
+    recentEvents: Array<{
+      id: string;
+      method: string;
+      route: string;
+      statusCode: number | null;
+      taskId: string | null;
+      fileId: string | null;
+      apiKeyName: string | null;
+      apiKeyPrefix: string | null;
+      createdAt: string;
+    }>;
+  };
+  webhooks: {
+    endpointCount: number;
+    activeEndpointCount: number;
+    deliveries: WebhookDeliveryItem[];
+  };
+  retryVisibility: {
+    failedTaskCount: number;
+    retriedTaskCount: number;
+    tasks: AccountActivityResponse["tasks"];
+  };
+};
+
+export type WebhookDeliveryItem = {
+  id: string;
+  endpointId: string;
+  endpointUrl: string;
+  endpointActive: boolean;
+  eventType: string;
+  status: string;
+  responseStatus: number | null;
+  errorMessage: string | null;
+  attemptCount: number;
+  deliveredAt: string | null;
+  createdAt: string;
+};
+
+export type AdminDashboardResponse = {
+  generatedAt: string;
+  counts: {
+    users: number;
+    files: number;
+    tasks: number;
+    apiKeys: number;
+    webhookEndpoints: number;
+    webhookDeliveries: number;
+  };
+  storageUsage: {
+    totalBytes: string;
+    topOwners: Array<{
+      ownerId: string | null;
+      ownerEmail: string | null;
+      fileCount: number;
+      totalBytes: string;
+    }>;
+  };
+  apiUsage: {
+    totalEvents: number;
+    eventsLast30Days: number;
+    recentEvents: Array<{
+      id: string;
+      ownerEmail: string;
+      apiKeyName: string | null;
+      method: string;
+      route: string;
+      statusCode: number | null;
+      taskId: string | null;
+      fileId: string | null;
+      createdAt: string;
+    }>;
+  };
+  webhookDeliveries: WebhookDeliveryItem[];
+  taskRetryVisibility: {
+    byStatus: Array<{ status: string; count: number }>;
+    queue: {
+      name: string;
+      waiting: number;
+      active: number;
+      delayed: number;
+      completed: number;
+      failed: number;
+      paused: number;
+    } | null;
+    failedTasks: Array<AccountActivityResponse["tasks"][number] & { ownerEmail: string | null }>;
+  };
+  fileHistory: Array<AccountActivityResponse["files"][number] & { ownerEmail: string | null }>;
 };
 
 export type TaskStatusResponse = {
@@ -59,6 +173,8 @@ export type TaskStatusResponse = {
   progressPercent: number;
   progressMessage: string | null;
   errorMessage: string | null;
+  retryCount: number;
+  lastRetriedAt: string | null;
   outputDownloadUrl: string | null;
   createdAt: string;
   updatedAt: string;
@@ -457,6 +573,16 @@ export async function confirmPasswordReset(input: {
 
 export async function getAccountActivity(): Promise<AccountActivityResponse> {
   return jsonFetch<AccountActivityResponse>("/account/activity");
+}
+
+export async function getAdminDashboard(): Promise<AdminDashboardResponse> {
+  return jsonFetch<AdminDashboardResponse>("/account/admin-dashboard");
+}
+
+export async function retryTask(taskId: string): Promise<TaskStatusResponse> {
+  return jsonFetch<TaskStatusResponse>(`/tasks/${taskId}/retry`, {
+    method: "POST"
+  });
 }
 
 export async function createSignatureRequest(input: {

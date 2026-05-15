@@ -430,11 +430,63 @@ a {
   margin-top: 12px;
 }
 
+.account-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.account-summary-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 22px;
+}
+
+.account-stat {
+  display: grid;
+  gap: 8px;
+  min-height: 150px;
+  padding: 20px;
+  border: 1px solid rgba(22, 48, 61, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--panel-shadow);
+}
+
+.account-stat svg {
+  color: var(--teal);
+}
+
+.account-stat span {
+  color: #55707d;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.account-stat strong {
+  color: var(--ink);
+  font-size: 30px;
+  line-height: 1;
+}
+
+.account-stat small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .account-grid {
   display: grid;
   gap: 18px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 22px;
+}
+
+.account-grid--tools {
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .account-panel {
@@ -463,6 +515,49 @@ a {
 .activity-card span,
 .activity-card small {
   color: var(--muted);
+}
+
+.activity-action-button {
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  display: inline-flex;
+  gap: 8px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--dark);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 10px 13px;
+}
+
+.activity-action-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.account-meta-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0;
+}
+
+.account-meta-list span {
+  border: 1px solid rgba(22, 48, 61, 0.1);
+  border-radius: 14px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+}
+
+.account-meta-list strong {
+  color: var(--ink);
 }
 
 main {
@@ -2053,7 +2148,9 @@ a.download {
   }
 
   .trust-banner,
+  .account-summary-grid,
   .account-grid,
+  .account-grid--tools,
   .studio-workspace {
     grid-template-columns: 1fr;
   }

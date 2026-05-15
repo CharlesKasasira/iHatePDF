@@ -1,6 +1,7 @@
 import { Controller, Post, Req } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import { AuthService } from "../auth/auth.service.js";
+import { RateLimit } from "../rate-limit/rate-limit.decorator.js";
 import { UploadsService } from "./uploads.service.js";
 
 @Controller("uploads")
@@ -11,6 +12,7 @@ export class UploadsController {
   ) {}
 
   @Post()
+  @RateLimit("uploads")
   async uploadFile(
     @Req() request: FastifyRequest
   ): Promise<{ fileId: string; objectKey: string; fileName: string }> {

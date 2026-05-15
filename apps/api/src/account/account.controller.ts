@@ -10,4 +10,9 @@ export class AccountController {
   activity(@Req() request: FastifyRequest): ReturnType<AccountService["activity"]> {
     return this.accountService.activity(request);
   }
+
+  @Get("admin-dashboard")
+  adminDashboard(@Req() request: FastifyRequest): ReturnType<AccountService["adminDashboard"]> {
+    return this.accountService.adminDashboard(request);
+  }
 }

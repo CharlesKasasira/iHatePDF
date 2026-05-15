@@ -138,6 +138,8 @@ export interface TaskStatusView {
   progressPercent: number;
   progressMessage: string | null;
   errorMessage: string | null;
+  retryCount: number;
+  lastRetriedAt: Date | null;
   outputFileId: string | null;
   outputExpiresAt: Date | null;
   outputDownloadUrl: string | null;
@@ -214,6 +216,32 @@ export class TasksService {
 
       throw error;
     }
+  }
+
+  private jobNameForTaskType(type: TaskType): PdfTaskJobName | null {
+    const names: Record<TaskType, PdfTaskJobName> = {
+      merge: "merge",
+      split: "split",
+      remove_pages: "remove-pages",
+      extract_pages: "extract-pages",
+      organize_pdf: "organize-pdf",
+      sign: "sign",
+      compress: "compress",
+      protect: "protect",
+      unlock: "unlock",
+      jpg_to_pdf: "jpg-to-pdf",
+      pdf_to_word: "pdf-to-word",
+      pdf_to_jpg: "pdf-to-jpg",
+      pdf_to_powerpoint: "pdf-to-powerpoint",
+      pdf_to_excel: "pdf-to-excel",
+      word_to_pdf: "word-to-pdf",
+      excel_to_pdf: "excel-to-pdf",
+      powerpoint_to_pdf: "powerpoint-to-pdf",
+      edit: "edit",
+      signature_request: "signature-request"
+    };
+
+    return names[type] ?? null;
   }
 
   async queueMerge(dto: MergePdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
@@ -718,6 +746,8 @@ export class TasksService {
     progressPercent: number;
     progressMessage: string | null;
     errorMessage: string | null;
+    retryCount: number;
+    lastRetriedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
     outputFile: {
@@ -738,12 +768,82 @@ export class TasksService {
       progressPercent: task.progressPercent,
       progressMessage: task.progressMessage,
       errorMessage: task.errorMessage,
+      retryCount: task.retryCount,
+      lastRetriedAt: task.lastRetriedAt,
       outputFileId: task.outputFile?.id ?? null,
       outputExpiresAt: task.outputFile?.expiresAt ?? null,
       outputDownloadUrl,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt
     };
+  }
+
+  async retryTask(taskId: string, context: TaskRequestContext = {}): Promise<TaskStatusView> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      include: { outputFile: true }
+    });
+
+    if (!task) {
+      throw new NotFoundException("Task was not found.");
+    }
+
+    if (task.ownerId && task.ownerId !== context.ownerId) {
+      throw new NotFoundException("Task was not found.");
+    }
+
+    if (task.status !== "failed") {
+      throw new BadRequestException("Only failed tasks can be retried.");
+    }
+
+    if (task.type === TaskType.signature_request) {
+      throw new BadRequestException("Retry signature finalization from the signature workflow.");
+    }
+
+    const jobName = this.jobNameForTaskType(task.type);
+    if (!jobName) {
+      throw new BadRequestException("This task type cannot be retried.");
+    }
+
+    const payload =
+      typeof task.payload === "object" && task.payload !== null && !Array.isArray(task.payload)
+        ? ({ ...task.payload, taskId: task.id } as Record<string, unknown>)
+        : null;
+
+    if (!payload) {
+      throw new BadRequestException("This task no longer has a retryable payload.");
+    }
+
+    const updated = await this.prisma.task.update({
+      where: { id: task.id },
+      data: {
+        status: "queued",
+        progressPercent: 0,
+        progressMessage: "Retry queued.",
+        errorMessage: null,
+        retryCount: { increment: 1 },
+        lastRetriedAt: new Date()
+      },
+      include: { outputFile: true }
+    });
+
+    try {
+      await this.queueService.enqueue(jobName, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to queue task retry.";
+      await this.prisma.task.update({
+        where: { id: task.id },
+        data: {
+          status: "failed",
+          progressMessage: message,
+          errorMessage: message
+        },
+        include: { outputFile: true }
+      });
+      throw error instanceof Error ? new BadRequestException(error.message) : new BadRequestException(message);
+    }
+
+    return this.toTaskStatusView(updated);
   }
 
   async getTask(taskId: string, context: TaskRequestContext = {}): Promise<TaskStatusView> {

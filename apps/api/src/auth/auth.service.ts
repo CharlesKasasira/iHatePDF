@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
+  OnModuleInit,
   UnauthorizedException
 } from "@nestjs/common";
 import type { User } from "@prisma/client";
@@ -21,11 +23,15 @@ const PASSWORD_SALT_BYTES = 16;
 const PASSWORD_HASH_BYTES = 64;
 const SESSION_LAST_USED_THROTTLE_MS = 10 * 60 * 1000;
 const API_KEY_PREFIX = "ihp";
+const DEFAULT_ADMIN_EMAIL = "ckasasira@renu.ac.ug";
+const DEFAULT_ADMIN_PASSWORD = "password123#";
+const DEFAULT_ADMIN_NAME = "Default Admin";
 
 export type SafeUser = {
   id: string;
   email: string;
   name: string | null;
+  isAdmin: boolean;
   createdAt: Date;
 };
 
@@ -83,11 +89,12 @@ function extractApiKey(request: FastifyRequest): string | null {
   return null;
 }
 
-function safeUser(user: Pick<User, "id" | "email" | "name" | "createdAt">): SafeUser {
+function safeUser(user: Pick<User, "id" | "email" | "name" | "isAdmin" | "createdAt">): SafeUser {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
+    isAdmin: user.isAdmin,
     createdAt: user.createdAt
   };
 }
@@ -109,11 +116,15 @@ function sessionCookie(value: string, maxAgeSeconds: number): string {
 }
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.ensureDefaultAdminAccount();
+  }
 
   async hashPassword(password: string): Promise<string> {
     const salt = randomBytes(PASSWORD_SALT_BYTES).toString("base64url");
@@ -217,6 +228,15 @@ export class AuthService {
     const user = await this.currentSessionUser(request);
     if (!user) {
       throw new UnauthorizedException("Sign in to continue.");
+    }
+
+    return user;
+  }
+
+  async requireAdminUser(request: FastifyRequest): Promise<SafeUser> {
+    const user = await this.requireSessionUser(request);
+    if (!user.isAdmin) {
+      throw new ForbiddenException("Admin access is required.");
     }
 
     return user;
@@ -380,6 +400,26 @@ export class AuthService {
     });
 
     this.setSessionCookie(reply, token);
+  }
+
+  private async ensureDefaultAdminAccount(): Promise<void> {
+    const email = normalizeEmail(DEFAULT_ADMIN_EMAIL);
+    const passwordHash = await this.hashPassword(DEFAULT_ADMIN_PASSWORD);
+
+    await this.prisma.user.upsert({
+      where: { email },
+      create: {
+        email,
+        name: DEFAULT_ADMIN_NAME,
+        passwordHash,
+        isAdmin: true
+      },
+      update: {
+        name: DEFAULT_ADMIN_NAME,
+        passwordHash,
+        isAdmin: true
+      }
+    });
   }
 
   async requestPasswordReset(emailValue: string): Promise<{ ok: true }> {

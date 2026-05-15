@@ -18,8 +18,10 @@ import { TaskStatusView, TasksService } from "./tasks.service.js";
 import { AuthService } from "../auth/auth.service.js";
 import { Observable, concat, from, interval, of } from "rxjs";
 import { distinctUntilChanged, map, switchMap } from "rxjs/operators";
+import { RateLimit, SkipRateLimit } from "../rate-limit/rate-limit.decorator.js";
 
 @Controller("tasks")
+@RateLimit("taskQueue")
 export class TasksController {
   constructor(
     private readonly tasksService: TasksService,
@@ -121,7 +123,13 @@ export class TasksController {
     return this.tasksService.queueEdit(dto, await this.context(request));
   }
 
+  @Post(":id/retry")
+  async retryTask(@Param("id") id: string, @Req() request: FastifyRequest): Promise<TaskStatusView> {
+    return this.tasksService.retryTask(id, await this.context(request));
+  }
+
   @Sse(":id/events")
+  @SkipRateLimit()
   streamTask(@Param("id") id: string, @Req() request: FastifyRequest): Observable<MessageEvent> {
     return concat(of(0), interval(1000)).pipe(
       switchMap(() => from(this.context(request).then((context) => this.tasksService.getTask(id, context)))),
@@ -140,6 +148,7 @@ export class TasksController {
   }
 
   @Get(":id")
+  @SkipRateLimit()
   async getTask(@Param("id") id: string, @Req() request: FastifyRequest): Promise<TaskStatusView> {
     return this.tasksService.getTask(id, await this.context(request));
   }
