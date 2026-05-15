@@ -5,9 +5,11 @@ import {
   GoneException,
   NotFoundException,
   Param,
+  Req,
   Res
 } from "@nestjs/common";
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { SignatureEnvelopeStatus, type FileObject } from "@prisma/client";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -15,6 +17,7 @@ import { resolve } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
 import { env } from "../config/env.js";
+import { AuthService } from "../auth/auth.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 
@@ -26,6 +29,10 @@ type PdfPageMetadata = {
 
 function safeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
+
+function isEnvelopeOpen(status: SignatureEnvelopeStatus): boolean {
+  return status === SignatureEnvelopeStatus.sent || status === SignatureEnvelopeStatus.in_progress;
 }
 
 async function runCommand(command: string, args: string[]): Promise<void> {
@@ -56,27 +63,35 @@ async function runCommand(command: string, args: string[]): Promise<void> {
 export class FilesController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storageService: StorageService
+    private readonly storageService: StorageService,
+    private readonly authService: AuthService
   ) {}
 
-  @Get(":id/metadata")
-  async metadata(
-    @Param("id") id: string
-  ): Promise<{
+  private async assertCanAccessFile(file: FileObject, request: FastifyRequest): Promise<void> {
+    if (!file.ownerId) {
+      return;
+    }
+
+    const user = await this.authService.currentUser(request);
+    if (user?.id !== file.ownerId) {
+      throw new NotFoundException("File not found.");
+    }
+  }
+
+  private assertFileAvailable(file: FileObject): void {
+    if (file.expiresAt && file.expiresAt.getTime() <= Date.now()) {
+      throw new GoneException("File retention window has expired.");
+    }
+  }
+
+  private async inspectPdfMetadata(file: FileObject): Promise<{
     id: string;
     fileName: string;
     mimeType: string;
     pageCount: number;
     pages: PdfPageMetadata[];
   }> {
-    const file = await this.prisma.fileObject.findUnique({ where: { id } });
-    if (!file) {
-      throw new NotFoundException("File not found.");
-    }
-
-    if (file.expiresAt && file.expiresAt.getTime() <= Date.now()) {
-      throw new GoneException("File retention window has expired.");
-    }
+    this.assertFileAvailable(file);
 
     if (file.mimeType !== "application/pdf") {
       throw new BadRequestException("Metadata inspection is only available for PDF files.");
@@ -106,20 +121,12 @@ export class FilesController {
     }
   }
 
-  @Get(":id/pages/:page/preview")
-  async pagePreview(
-    @Param("id") id: string,
-    @Param("page") pageValue: string,
-    @Res() reply: FastifyReply
+  private async renderPagePreview(
+    file: FileObject,
+    pageValue: string,
+    reply: FastifyReply
   ): Promise<void> {
-    const file = await this.prisma.fileObject.findUnique({ where: { id } });
-    if (!file) {
-      throw new NotFoundException("File not found.");
-    }
-
-    if (file.expiresAt && file.expiresAt.getTime() <= Date.now()) {
-      throw new GoneException("File retention window has expired.");
-    }
+    this.assertFileAvailable(file);
 
     if (file.mimeType !== "application/pdf") {
       throw new BadRequestException("Preview rendering is only available for PDF files.");
@@ -181,16 +188,8 @@ export class FilesController {
     }
   }
 
-  @Get(":id/download")
-  async download(@Param("id") id: string, @Res() reply: FastifyReply): Promise<void> {
-    const file = await this.prisma.fileObject.findUnique({ where: { id } });
-    if (!file) {
-      throw new NotFoundException("File not found.");
-    }
-
-    if (file.expiresAt && file.expiresAt.getTime() <= Date.now()) {
-      throw new GoneException("File retention window has expired.");
-    }
+  private async streamDownload(file: FileObject, reply: FastifyReply): Promise<void> {
+    this.assertFileAvailable(file);
 
     let object: Awaited<ReturnType<StorageService["openObjectReadStream"]>>;
 
@@ -206,5 +205,155 @@ export class FilesController {
     reply.header("Content-Disposition", `attachment; filename=\"${normalizedFileName}\"`);
     reply.header("Content-Length", String(object.sizeBytes));
     reply.send(object.stream);
+  }
+
+  @Get(":id/metadata")
+  async metadata(
+    @Param("id") id: string,
+    @Req() request: FastifyRequest
+  ): Promise<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    pageCount: number;
+    pages: PdfPageMetadata[];
+  }> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id } });
+    if (!file) {
+      throw new NotFoundException("File not found.");
+    }
+
+    await this.assertCanAccessFile(file, request);
+    return this.inspectPdfMetadata(file);
+  }
+
+  @Get(":id/pages/:page/preview")
+  async pagePreview(
+    @Param("id") id: string,
+    @Param("page") pageValue: string,
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply
+  ): Promise<void> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id } });
+    if (!file) {
+      throw new NotFoundException("File not found.");
+    }
+
+    await this.assertCanAccessFile(file, request);
+    await this.renderPagePreview(file, pageValue, reply);
+  }
+
+  @Get(":id/download")
+  async download(
+    @Param("id") id: string,
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply
+  ): Promise<void> {
+    const file = await this.prisma.fileObject.findUnique({ where: { id } });
+    if (!file) {
+      throw new NotFoundException("File not found.");
+    }
+
+    await this.assertCanAccessFile(file, request);
+    await this.streamDownload(file, reply);
+  }
+
+  @Get("signature-requests/:token/metadata")
+  async signatureRequestMetadata(@Param("token") token: string) {
+    const file = await this.loadSignatureSourceFile(token);
+    return this.inspectPdfMetadata(file);
+  }
+
+  @Get("signature-requests/:token/pages/:page/preview")
+  async signatureRequestPagePreview(
+    @Param("token") token: string,
+    @Param("page") pageValue: string,
+    @Res() reply: FastifyReply
+  ): Promise<void> {
+    const file = await this.loadSignatureSourceFile(token);
+    await this.renderPagePreview(file, pageValue, reply);
+  }
+
+  @Get("signature-requests/:token/final-download")
+  async signatureRequestFinalDownload(
+    @Param("token") token: string,
+    @Res() reply: FastifyReply
+  ): Promise<void> {
+    const recipient = await this.prisma.signatureEnvelopeRecipient.findUnique({
+      where: { token },
+      include: {
+        envelope: {
+          include: {
+            finalFile: true
+          }
+        }
+      }
+    });
+
+    if (!recipient || !recipient.envelope.finalFile) {
+      throw new NotFoundException("Final signed PDF not found.");
+    }
+
+    if (recipient.envelope.status === SignatureEnvelopeStatus.revoked) {
+      throw new GoneException("This signing workflow has been revoked.");
+    }
+
+    if (!recipient.otpVerifiedAt || (recipient.passcodeHash && !recipient.passcodeVerifiedAt)) {
+      throw new GoneException("Verify your identity before downloading the final signed PDF.");
+    }
+
+    await this.streamDownload(recipient.envelope.finalFile, reply);
+  }
+
+  private async loadSignatureSourceFile(token: string): Promise<FileObject> {
+    const recipient = await this.prisma.signatureEnvelopeRecipient.findUnique({
+      where: { token },
+      include: {
+        envelope: {
+          include: {
+            sourceFile: true
+          }
+        }
+      }
+    });
+
+    if (!recipient) {
+      throw new NotFoundException("Signing request not found.");
+    }
+
+    const envelope = await this.expireSignatureEnvelopeIfNeeded(recipient.envelope);
+    if (envelope.status === SignatureEnvelopeStatus.expired) {
+      throw new GoneException("This signing workflow has expired.");
+    }
+
+    if (envelope.status === SignatureEnvelopeStatus.revoked) {
+      throw new GoneException("This signing workflow has been revoked.");
+    }
+
+    if (!recipient.otpVerifiedAt || (recipient.passcodeHash && !recipient.passcodeVerifiedAt)) {
+      throw new GoneException("Verify your identity before viewing this signing document.");
+    }
+
+    return recipient.envelope.sourceFile;
+  }
+
+  private async expireSignatureEnvelopeIfNeeded<TEnvelope extends {
+    id: string;
+    status: SignatureEnvelopeStatus;
+    expiresAt: Date;
+  }>(envelope: TEnvelope): Promise<TEnvelope> {
+    if (!isEnvelopeOpen(envelope.status) || envelope.expiresAt.getTime() >= Date.now()) {
+      return envelope;
+    }
+
+    await this.prisma.signatureEnvelope.update({
+      where: { id: envelope.id },
+      data: { status: SignatureEnvelopeStatus.expired }
+    });
+
+    return {
+      ...envelope,
+      status: SignatureEnvelopeStatus.expired
+    };
   }
 }

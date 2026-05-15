@@ -23,6 +23,7 @@ This repo is a self-hosted, open-source PDF platform starter with these implemen
 - Edit PDF (text, image, rectangle overlays)
 - Sign PDF files (image signature placement)
 - Signature requests (email link + remote sign page)
+- API mode with API keys, versioned REST endpoints, queue status schemas, and webhooks
 
 ## Stack
 
@@ -146,6 +147,26 @@ pnpm dev
 - `POST /api/signature-requests`
 - `GET /api/signature-requests/:token`
 - `POST /api/signature-requests/:token/complete`
+
+## API Mode
+
+API mode is the stable automation surface for scripts, integrations, and SDKs. It uses user-scoped API keys and versioned endpoints under `/api/v1`.
+
+- Create/list/revoke API keys: `POST /api/api-keys`, `GET /api/api-keys`, `DELETE /api/api-keys/:id`
+- Upload files: `POST /api/v1/files`
+- Queue tasks: `POST /api/v1/tasks/:operation`
+- Poll stable task status: `GET /api/v1/tasks/:id/status`
+- Inspect queue health: `GET /api/v1/queue/status`
+- Create/fetch signing workflows: `POST /api/v1/signature-requests`, `GET /api/v1/signature-requests/:id`
+- Manage webhooks: `POST /api/webhooks`, `GET /api/webhooks`, `PATCH /api/webhooks/:id`, `DELETE /api/webhooks/:id`
+
+Docs: [`docs/API.md`](docs/API.md)
+
+Examples:
+
+- CLI: [`examples/cli/compress-pdf.sh`](examples/cli/compress-pdf.sh)
+- Node: [`examples/node/compress-pdf.mjs`](examples/node/compress-pdf.mjs)
+- Python: [`examples/python/compress_pdf.py`](examples/python/compress_pdf.py)
 
 ## Notes
 

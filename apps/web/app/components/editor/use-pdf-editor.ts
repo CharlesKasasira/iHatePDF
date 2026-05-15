@@ -181,6 +181,12 @@ function reducer(state: EditorDocumentState, action: EditorAction): EditorDocume
           layer.id === action.layerId ? action.updater(layer) : layer
         )
       };
+    case "set-layers":
+      return {
+        ...state,
+        layers: action.layers,
+        status: action.status ?? state.status
+      };
     case "remove-layer":
       return {
         ...state,
@@ -383,6 +389,10 @@ export function usePdfEditor(mode: EditorMode) {
     },
     []
   );
+
+  const reorderLayers = useCallback((layers: EditorLayer[]) => {
+    dispatch({ type: "set-layers", layers, status: "Layer stack order updated." });
+  }, []);
 
   const createLayerAt = useCallback(
     (pageNumber: number, x: number, y: number) => {
@@ -608,6 +618,7 @@ export function usePdfEditor(mode: EditorMode) {
       queuePageRotation,
       removePageRotation,
       removeSelectedLayer,
+      reorderLayers,
       resetSignatureRequestFeedback,
       selectPdfFile,
       setAsset,

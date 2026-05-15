@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import {
   getPdfMetadata,
@@ -10,6 +10,8 @@ import {
   uploadPdf,
   type PdfFileMetadataResponse
 } from "../lib/pdf-api";
+import { TaskProgressState } from "../components/task-progress-state";
+import { UploadDropzone } from "../components/upload-dropzone";
 
 type LoadedPdf = {
   fileId: string;
@@ -24,7 +26,6 @@ function stripExtension(fileName: string): string {
 }
 
 export default function ExtractPagesPage(): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [loadedPdf, setLoadedPdf] = useState<LoadedPdf | null>(null);
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [outputName, setOutputName] = useState("extracted-pages.pdf");
@@ -138,31 +139,18 @@ export default function ExtractPagesPage(): React.JSX.Element {
           <h1>Extract pages from PDF</h1>
           <p>Preview the real pages, choose the ones you want to keep, and export only those pages.</p>
 
-          <div className="upload-center compact">
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-            >
-              Select PDF file
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              accept="application/pdf"
-              onChange={(event) => {
-                void onSelectFile(event.target.files?.[0] ?? null);
-                event.target.value = "";
-              }}
-            />
-          </div>
-          <p className="drop-hint">
-            {loadedPdf
-              ? `${loadedPdf.fileName} · ${loadedPdf.pageCount} page(s)`
-              : "Upload a PDF to extract pages visually"}
-          </p>
+          <UploadDropzone
+            label="Select PDF file"
+            hint={
+              loadedPdf
+                ? `${loadedPdf.fileName} · ${loadedPdf.pageCount} page(s)`
+                : "Upload or drop a PDF to extract pages visually"
+            }
+            accept="application/pdf"
+            compact
+            disabled={busy}
+            onFiles={(files) => void onSelectFile(files?.[0] ?? null)}
+          />
         </section>
 
         <section className="merge-workbench">
@@ -255,7 +243,12 @@ export default function ExtractPagesPage(): React.JSX.Element {
                 );
               })}
             </div>
-          ) : null}
+          ) : (
+            <div className="tool-empty-state">
+              <strong>No preview loaded</strong>
+              <span>Upload a PDF to preview pages and choose what to extract.</span>
+            </div>
+          )}
 
           <button
             type="button"
@@ -266,32 +259,12 @@ export default function ExtractPagesPage(): React.JSX.Element {
             {busy ? "Extracting..." : "Extract pages"}
           </button>
 
-          {busy || progressPercent > 0 ? (
-            <div className="batch-task-progress">
-              <div className="batch-task-progress-row">
-                <span>{status}</span>
-                <strong>{progressPercent}%</strong>
-              </div>
-              <div className="task-progress-rail">
-                <span style={{ width: `${progressPercent}%` }} />
-              </div>
-            </div>
-          ) : null}
-
-          <p
-            className={
-              status.toLowerCase().includes("failed") || status.toLowerCase().includes("error")
-                ? "error"
-                : "small"
-            }
-          >
-            {status}
-          </p>
-          {downloadUrl ? (
-            <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-              Download extracted PDF
-            </a>
-          ) : null}
+          <TaskProgressState
+            status={status}
+            progressPercent={progressPercent}
+            downloadUrl={downloadUrl}
+            downloadLabel="Download extracted PDF"
+          />
         </section>
       </main>
     </div>

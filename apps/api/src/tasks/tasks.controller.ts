@@ -1,4 +1,5 @@
-import { Body, Controller, Get, MessageEvent, Param, Post, Sse } from "@nestjs/common";
+import { Body, Controller, Get, MessageEvent, Param, Post, Req, Sse } from "@nestjs/common";
+import type { FastifyRequest } from "fastify";
 import {
   CompressPdfDto,
   ConvertPdfDto,
@@ -14,107 +15,116 @@ import {
   UnlockPdfDto
 } from "./dto.js";
 import { TaskStatusView, TasksService } from "./tasks.service.js";
+import { AuthService } from "../auth/auth.service.js";
 import { Observable, concat, from, interval, of } from "rxjs";
 import { distinctUntilChanged, map, switchMap } from "rxjs/operators";
 
 @Controller("tasks")
 export class TasksController {
-  constructor(private readonly tasksService: TasksService) {}
+  constructor(
+    private readonly tasksService: TasksService,
+    private readonly authService: AuthService
+  ) {}
+
+  private async context(request: FastifyRequest): Promise<{ ownerId?: string }> {
+    const user = await this.authService.currentUser(request);
+    return user ? { ownerId: user.id } : {};
+  }
 
   @Post("merge")
-  queueMerge(@Body() dto: MergePdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueMerge(dto);
+  async queueMerge(@Body() dto: MergePdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueMerge(dto, await this.context(request));
   }
 
   @Post("split")
-  queueSplit(@Body() dto: SplitPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueSplit(dto);
+  async queueSplit(@Body() dto: SplitPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueSplit(dto, await this.context(request));
   }
 
   @Post("remove-pages")
-  queueRemovePages(@Body() dto: RemovePagesDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueRemovePages(dto);
+  async queueRemovePages(@Body() dto: RemovePagesDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueRemovePages(dto, await this.context(request));
   }
 
   @Post("extract-pages")
-  queueExtractPages(@Body() dto: ExtractPagesDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueExtractPages(dto);
+  async queueExtractPages(@Body() dto: ExtractPagesDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueExtractPages(dto, await this.context(request));
   }
 
   @Post("organize-pdf")
-  queueOrganizePdf(@Body() dto: OrganizePdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueOrganizePdf(dto);
+  async queueOrganizePdf(@Body() dto: OrganizePdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueOrganizePdf(dto, await this.context(request));
   }
 
   @Post("sign")
-  queueSign(@Body() dto: SignPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueSign(dto);
+  async queueSign(@Body() dto: SignPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueSign(dto, await this.context(request));
   }
 
   @Post("compress")
-  queueCompress(@Body() dto: CompressPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueCompress(dto);
+  async queueCompress(@Body() dto: CompressPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueCompress(dto, await this.context(request));
   }
 
   @Post("protect")
-  queueProtect(@Body() dto: ProtectPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueProtect(dto);
+  async queueProtect(@Body() dto: ProtectPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueProtect(dto, await this.context(request));
   }
 
   @Post("unlock")
-  queueUnlock(@Body() dto: UnlockPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueUnlock(dto);
+  async queueUnlock(@Body() dto: UnlockPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueUnlock(dto, await this.context(request));
   }
 
   @Post("jpg-to-pdf")
-  queueJpgToPdf(@Body() dto: JpgToPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueJpgToPdf(dto);
+  async queueJpgToPdf(@Body() dto: JpgToPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueJpgToPdf(dto, await this.context(request));
   }
 
   @Post("pdf-to-word")
-  queuePdfToWord(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queuePdfToWord(dto);
+  async queuePdfToWord(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToWord(dto, await this.context(request));
   }
 
   @Post("pdf-to-jpg")
-  queuePdfToJpg(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queuePdfToJpg(dto);
+  async queuePdfToJpg(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToJpg(dto, await this.context(request));
   }
 
   @Post("pdf-to-powerpoint")
-  queuePdfToPowerpoint(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queuePdfToPowerpoint(dto);
+  async queuePdfToPowerpoint(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToPowerpoint(dto, await this.context(request));
   }
 
   @Post("pdf-to-excel")
-  queuePdfToExcel(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queuePdfToExcel(dto);
+  async queuePdfToExcel(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queuePdfToExcel(dto, await this.context(request));
   }
 
   @Post("word-to-pdf")
-  queueWordToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueWordToPdf(dto);
+  async queueWordToPdf(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueWordToPdf(dto, await this.context(request));
   }
 
   @Post("excel-to-pdf")
-  queueExcelToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueExcelToPdf(dto);
+  async queueExcelToPdf(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueExcelToPdf(dto, await this.context(request));
   }
 
   @Post("powerpoint-to-pdf")
-  queuePowerpointToPdf(@Body() dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queuePowerpointToPdf(dto);
+  async queuePowerpointToPdf(@Body() dto: ConvertPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queuePowerpointToPdf(dto, await this.context(request));
   }
 
   @Post("edit")
-  queueEditPdf(@Body() dto: EditPdfDto): Promise<{ taskId: string }> {
-    return this.tasksService.queueEdit(dto);
+  async queueEditPdf(@Body() dto: EditPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueEdit(dto, await this.context(request));
   }
 
   @Sse(":id/events")
-  streamTask(@Param("id") id: string): Observable<MessageEvent> {
+  streamTask(@Param("id") id: string, @Req() request: FastifyRequest): Observable<MessageEvent> {
     return concat(of(0), interval(1000)).pipe(
-      switchMap(() => from(this.tasksService.getTask(id))),
+      switchMap(() => from(this.context(request).then((context) => this.tasksService.getTask(id, context)))),
       distinctUntilChanged((previous, current) => {
         return (
           previous.status === current.status &&
@@ -130,7 +140,7 @@ export class TasksController {
   }
 
   @Get(":id")
-  getTask(@Param("id") id: string): Promise<TaskStatusView> {
-    return this.tasksService.getTask(id);
+  async getTask(@Param("id") id: string, @Req() request: FastifyRequest): Promise<TaskStatusView> {
+    return this.tasksService.getTask(id, await this.context(request));
   }
 }

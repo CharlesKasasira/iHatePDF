@@ -1,8 +1,10 @@
 "use client";
 
-import { startTransition, useRef, useState } from "react";
+import { startTransition, useState } from "react";
 import { SiteHeader } from "./site-header";
 import { isAllowedFileType, pollTask, type TaskStatusResponse, uploadFile } from "../lib/pdf-api";
+import { TaskProgressState } from "./task-progress-state";
+import { UploadDropzone } from "./upload-dropzone";
 
 type BatchTaskPhase =
   | "idle"
@@ -111,7 +113,6 @@ export function BatchOperationPage({
   queueTask,
   extraInput
 }: BatchOperationPageProps): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<BatchTaskItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -293,31 +294,15 @@ export function BatchOperationPage({
           <h1>{title}</h1>
           <p>{description}</p>
 
-          <div className="upload-center compact">
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-            >
-              {selectLabel}
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              multiple
-              accept={accept}
-              onChange={(event) => {
-                addFiles(event.target.files);
-                event.target.value = "";
-              }}
-            />
-          </div>
-
-          <p className="drop-hint">
-            {items.length > 0 ? `${items.length} file(s) staged` : emptyHint}
-          </p>
+          <UploadDropzone
+            label={selectLabel}
+            hint={items.length > 0 ? `${items.length} file(s) staged` : emptyHint}
+            accept={accept}
+            multiple
+            compact
+            disabled={busy}
+            onFiles={addFiles}
+          />
         </section>
 
         <section className="merge-workbench batch-workbench">
@@ -361,6 +346,13 @@ export function BatchOperationPage({
             {busy ? runningLabel : startLabel}
           </button>
 
+          {items.length === 0 ? (
+            <div className="tool-empty-state">
+              <strong>No files staged yet</strong>
+              <span>{emptyHint}</span>
+            </div>
+          ) : null}
+
           <p className={notice.toLowerCase().includes("failed") ? "error" : "small"}>{notice}</p>
 
           {items.length > 0 ? (
@@ -401,22 +393,12 @@ export function BatchOperationPage({
                     disabled={busy}
                   />
 
-                  <div className="batch-task-progress">
-                    <div className="batch-task-progress-row">
-                      <span>{item.progressMessage}</span>
-                      <strong>{item.progressPercent}%</strong>
-                    </div>
-                    <div className="task-progress-rail">
-                      <span style={{ width: `${item.progressPercent}%` }} />
-                    </div>
-                  </div>
-
-                  {item.errorMessage ? <p className="error">{item.errorMessage}</p> : null}
-                  {item.downloadUrl ? (
-                    <a className="download" href={item.downloadUrl} target="_blank" rel="noreferrer">
-                      {downloadLabel}
-                    </a>
-                  ) : null}
+                  <TaskProgressState
+                    status={item.errorMessage || item.progressMessage}
+                    progressPercent={item.progressPercent}
+                    downloadUrl={item.downloadUrl}
+                    downloadLabel={downloadLabel}
+                  />
                 </article>
               ))}
             </div>

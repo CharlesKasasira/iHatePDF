@@ -1,20 +1,27 @@
 "use client";
 
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createSignatureRequest,
+  createSignatureTemplate,
+  createSignatureTemplateFromEnvelope,
   getPdfMetadata,
   getPdfPagePreviewUrl,
   getSignatureEnvelope,
+  listSignatureTemplates,
   remindSignatureRecipient,
   reassignSignatureRecipient,
   revokeSignatureEnvelope,
   retrySignatureEnvelopeFinalization,
   type PdfFileMetadataResponse,
   type SignatureEnvelopeResponse,
+  type SignatureEnvelopeTemplate,
   uploadPdfWithRetention
 } from "../lib/pdf-api";
+import { useAuth } from "./auth-provider";
+import { ReorderableList, ReorderHandle } from "./reorderable-list";
 import { SiteHeader } from "./site-header";
+import { UploadDropzone } from "./upload-dropzone";
 import styles from "./signature-workflow-studio.module.css";
 
 type SignFieldType = "signature" | "initials" | "name" | "date" | "checkbox" | "text";
@@ -25,6 +32,7 @@ type DraftRecipient = {
   name: string;
   email: string;
   role: string;
+  passcode: string;
 };
 
 type DraftField = {
@@ -81,7 +89,7 @@ export function SignatureWorkflowStudio({
 }: {
   initialEnvelopeId?: string | null;
 }): React.JSX.Element {
-  const pdfInputRef = useRef<HTMLInputElement>(null);
+  const { user } = useAuth();
 
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState<string | null>(null);
@@ -101,7 +109,8 @@ export function SignatureWorkflowStudio({
       key: nextId("signer"),
       name: "Primary signer",
       email: "",
-      role: "Signer"
+      role: "Signer",
+      passcode: ""
     }
   ]);
   const [selectedRecipientKey, setSelectedRecipientKey] = useState<string>("");
@@ -111,6 +120,8 @@ export function SignatureWorkflowStudio({
 
   const [workflowStatus, setWorkflowStatus] = useState("Upload a PDF and place the first signer field.");
   const [busy, setBusy] = useState(false);
+  const [templates, setTemplates] = useState<SignatureEnvelopeTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
 
   const [envelopeId, setEnvelopeId] = useState<string | null>(initialEnvelopeId);
   const [envelope, setEnvelope] = useState<SignatureEnvelopeResponse | null>(null);
@@ -136,6 +147,23 @@ export function SignatureWorkflowStudio({
   }, [recipients, selectedRecipientKey]);
 
   useEffect(() => {
+    if (user?.email && !requesterEmail.trim()) {
+      setRequesterEmail(user.email);
+    }
+  }, [user?.email, requesterEmail]);
+
+  useEffect(() => {
+    if (!user) {
+      setTemplates([]);
+      return;
+    }
+
+    listSignatureTemplates()
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
+  }, [user]);
+
+  useEffect(() => {
     if (!envelopeId) {
       return;
     }
@@ -154,8 +182,7 @@ export function SignatureWorkflowStudio({
     }
   };
 
-  const onPdfSelect = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
-    const file = event.target.files?.[0] ?? null;
+  const onPdfSelect = async (file: File | null): Promise<void> => {
     setPdfFile(file);
     setFileId(null);
     setPdfMeta(null);
@@ -169,8 +196,6 @@ export function SignatureWorkflowStudio({
     if (file) {
       setOutputName(buildSignedName(file.name));
     }
-    event.target.value = "";
-
     if (!file) {
       return;
     }
@@ -197,7 +222,8 @@ export function SignatureWorkflowStudio({
       key: nextId("signer"),
       name: `Signer ${recipients.length + 1}`,
       email: "",
-      role: "Signer"
+      role: "Signer",
+      passcode: ""
     };
     setRecipients((current) => [...current, nextRecipient]);
     setSelectedRecipientKey(nextRecipient.key);
@@ -299,7 +325,8 @@ export function SignatureWorkflowStudio({
           name: recipient.name.trim() || undefined,
           email: recipient.email.trim(),
           role: recipient.role.trim() || undefined,
-          routingOrder: index + 1
+          routingOrder: index + 1,
+          passcode: recipient.passcode.trim() || undefined
         })),
         fields: fields.map((field) => ({
           recipientKey: field.recipientKey,
@@ -327,6 +354,102 @@ export function SignatureWorkflowStudio({
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveCurrentTemplate = async (): Promise<void> => {
+    if (!user) {
+      setWorkflowStatus("Sign in to save envelope templates.");
+      return;
+    }
+    if (recipients.some((recipient) => !recipient.email.trim())) {
+      setWorkflowStatus("Add signer emails before saving a reusable template.");
+      return;
+    }
+    if (fields.length === 0) {
+      setWorkflowStatus("Add fields before saving a reusable template.");
+      return;
+    }
+
+    const name = window.prompt("Template name", title.trim() || "Signing workflow");
+    if (!name) {
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const template = await createSignatureTemplate({
+        name,
+        title: title.trim() || undefined,
+        requesterEmail: requesterEmail.trim() || undefined,
+        message: message.trim() || undefined,
+        outputName: outputName.trim(),
+        routing,
+        recipients: recipients.map((recipient, index) => ({
+          key: recipient.key,
+          name: recipient.name.trim() || undefined,
+          email: recipient.email.trim() || undefined,
+          role: recipient.role.trim() || undefined,
+          routingOrder: index + 1
+        })),
+        fields: fields.map((field) => ({
+          recipientKey: field.recipientKey,
+          type: field.type,
+          label: field.label.trim() || undefined,
+          placeholder: field.placeholder.trim() || undefined,
+          required: field.required,
+          page: field.page,
+          x: field.x,
+          y: field.y,
+          width: field.width,
+          height: field.height
+        }))
+      });
+      setTemplates((current) => [template, ...current]);
+      setWorkflowStatus(`Template "${template.name}" saved.`);
+    } catch (error) {
+      setWorkflowStatus(`Template save failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyTemplate = (templateId: string): void => {
+    const template = templates.find((item) => item.id === templateId);
+    setSelectedTemplateId(templateId);
+    if (!template) {
+      return;
+    }
+
+    const nextRecipients = template.recipients.map((recipient) => ({
+      key: recipient.key,
+      name: recipient.name ?? "",
+      email: recipient.email ?? "",
+      role: recipient.role ?? "Signer",
+      passcode: ""
+    }));
+    setTitle(template.title ?? "");
+    setRequesterEmail(template.requesterEmail ?? user?.email ?? "");
+    setMessage(template.message ?? "");
+    setOutputName(template.outputName);
+    setRouting(template.routing);
+    setRecipients(nextRecipients);
+    setSelectedRecipientKey(nextRecipients[0]?.key ?? "");
+    setFields(
+      template.fields.map((field) => ({
+        id: nextId("field"),
+        recipientKey: field.recipientKey,
+        type: field.type,
+        label: field.label ?? "",
+        placeholder: field.placeholder ?? "",
+        required: field.required,
+        page: field.page,
+        x: field.x,
+        y: field.y,
+        width: field.width,
+        height: field.height
+      }))
+    );
+    setWorkflowStatus(`Template "${template.name}" applied. Upload or verify the PDF page layout before sending.`);
   };
 
   const resetStudio = (): void => {
@@ -372,6 +495,33 @@ export function SignatureWorkflowStudio({
                 <a className={styles.primaryButton} href={envelope.finalDownloadUrl} target="_blank" rel="noreferrer">
                   Download final signed PDF
                 </a>
+              ) : null}
+              {envelope.auditCertificateUrl ? (
+                <a className={styles.secondaryButton} href={envelope.auditCertificateUrl} target="_blank" rel="noreferrer">
+                  Download audit certificate
+                </a>
+              ) : null}
+              {user ? (
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  onClick={async () => {
+                    const name = window.prompt("Template name", envelope.title || envelope.fileName);
+                    if (!name) {
+                      return;
+                    }
+                    try {
+                      setManageStatus("Saving template...");
+                      const template = await createSignatureTemplateFromEnvelope(envelope.id, name);
+                      setTemplates((current) => [template, ...current]);
+                      setManageStatus(`Template "${template.name}" saved.`);
+                    } catch (error) {
+                      setManageStatus((error as Error).message);
+                    }
+                  }}
+                >
+                  Save as template
+                </button>
               ) : null}
               {envelope.status === "finalization_failed" ? (
                 <button
@@ -493,6 +643,7 @@ export function SignatureWorkflowStudio({
                     <span>
                       {new Date(event.createdAt).toLocaleString()}
                       {event.actorEmail ? ` · ${event.actorEmail}` : ""}
+                      {event.ipAddress ? ` · ${event.ipAddress}` : ""}
                     </span>
                   </div>
                 ))}
@@ -519,10 +670,14 @@ export function SignatureWorkflowStudio({
             </p>
           </div>
           <div className={styles.heroActions}>
-            <button className={styles.primaryButton} type="button" onClick={() => pdfInputRef.current?.click()}>
-              {pdfFile ? "Replace PDF" : "Upload PDF"}
-            </button>
-            <input ref={pdfInputRef} type="file" hidden accept="application/pdf" onChange={(event) => void onPdfSelect(event)} />
+            <UploadDropzone
+              label={pdfFile ? "Replace PDF" : "Upload PDF"}
+              hint={pdfFile ? pdfFile.name : "Drop a PDF here to start"}
+              accept="application/pdf"
+              compact
+              disabled={uploading || busy}
+              onFiles={(files) => void onPdfSelect(files?.[0] ?? null)}
+            />
           </div>
         </section>
 
@@ -569,6 +724,19 @@ export function SignatureWorkflowStudio({
                   <input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} />
                 </label>
               </div>
+              {templates.length > 0 ? (
+                <label>
+                  Template
+                  <select value={selectedTemplateId} onChange={(event) => applyTemplate(event.target.value)}>
+                    <option value="">Choose a saved template</option>
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </article>
 
             <article className={styles.panel}>
@@ -578,12 +746,18 @@ export function SignatureWorkflowStudio({
                   Add signer
                 </button>
               </div>
-              <div className={styles.recipientList}>
-                {recipients.map((recipient, index) => (
-                  <div
-                    key={recipient.key}
-                    className={`${styles.recipientCard} ${selectedRecipientKey === recipient.key ? styles.recipientCardActive : ""}`}
-                  >
+              <ReorderableList
+                items={recipients}
+                onReorder={(nextRecipients) => {
+                  setRecipients(nextRecipients);
+                  setWorkflowStatus("Signer routing order updated.");
+                }}
+                className={styles.recipientList}
+                disabled={busy || uploading}
+                keyForItem={(recipient) => recipient.key}
+                renderItem={(recipient, index) => (
+                  <div className={`${styles.recipientCard} ${selectedRecipientKey === recipient.key ? styles.recipientCardActive : ""}`}>
+                    <ReorderHandle label="Drag signer to reorder routing" />
                     <button type="button" className={styles.recipientSelect} onClick={() => setSelectedRecipientKey(recipient.key)}>
                       <strong>{recipient.name || `Signer ${index + 1}`}</strong>
                       <span>Order {index + 1}</span>
@@ -617,6 +791,16 @@ export function SignatureWorkflowStudio({
                         }
                         placeholder="Role"
                       />
+                      <input
+                        value={recipient.passcode}
+                        onChange={(event) =>
+                          setRecipients((current) =>
+                            current.map((item) => item.key === recipient.key ? { ...item, passcode: event.target.value } : item)
+                          )
+                        }
+                        placeholder="Optional passcode"
+                        type="password"
+                      />
                       <div className={styles.compactActions}>
                         <button type="button" onClick={() => moveRecipient(recipient.key, -1)}>Up</button>
                         <button type="button" onClick={() => moveRecipient(recipient.key, 1)}>Down</button>
@@ -624,8 +808,8 @@ export function SignatureWorkflowStudio({
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
+                )}
+              />
             </article>
 
             <article className={styles.panel}>
@@ -811,6 +995,9 @@ export function SignatureWorkflowStudio({
             </article>
 
             <article className={styles.panel}>
+              <button className={styles.secondaryButton} type="button" onClick={() => void saveCurrentTemplate()} disabled={busy || fields.length === 0}>
+                Save as template
+              </button>
               <button className={styles.primaryButton} type="button" onClick={() => void createWorkflow()} disabled={busy || uploading}>
                 {busy ? "Creating workflow..." : "Send signing workflow"}
               </button>
@@ -835,6 +1022,19 @@ export function SignatureWorkflowStudio({
                   selectedFieldId={selectedFieldId}
                   recipients={recipients}
                   onSelectField={setSelectedFieldId}
+                  onMoveField={(fieldId, x, y) => {
+                    setFields((current) =>
+                      current.map((field) =>
+                        field.id === fieldId
+                          ? {
+                              ...field,
+                              x: clamp(x, 0, Math.max(0, page.width - field.width)),
+                              y: clamp(y, 0, Math.max(0, page.height - field.height))
+                            }
+                          : field
+                      )
+                    );
+                  }}
                   onPlaceField={(x, y) => placeField(page.pageNumber, page.width, page.height, x, y)}
                 />
               ))
@@ -854,6 +1054,7 @@ function SigningCanvasPage({
   selectedFieldId,
   recipients,
   onSelectField,
+  onMoveField,
   onPlaceField
 }: {
   fileId: string | null;
@@ -863,9 +1064,42 @@ function SigningCanvasPage({
   selectedFieldId: string | null;
   recipients: DraftRecipient[];
   onSelectField: (id: string) => void;
+  onMoveField: (id: string, x: number, y: number) => void;
   onPlaceField: (x: number, y: number) => void;
 }): React.JSX.Element {
   const pageRef = useRef<HTMLDivElement>(null);
+
+  const startMoveField = (event: React.PointerEvent<HTMLButtonElement>, field: DraftField): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectField(field.id);
+    const surface = pageRef.current;
+    if (!surface) {
+      return;
+    }
+
+    const startRect = surface.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originalX = field.x;
+    const originalY = field.y;
+
+    const handleMove = (moveEvent: PointerEvent): void => {
+      const deltaX = ((moveEvent.clientX - startX) / startRect.width) * page.width;
+      const deltaY = ((moveEvent.clientY - startY) / startRect.height) * page.height;
+      onMoveField(field.id, originalX + deltaX, originalY - deltaY);
+    };
+
+    const stopMove = (): void => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", stopMove);
+      window.removeEventListener("pointercancel", stopMove);
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", stopMove);
+    window.addEventListener("pointercancel", stopMove);
+  };
 
   return (
     <article className={styles.pageCard}>
@@ -909,6 +1143,7 @@ function SigningCanvasPage({
                 event.stopPropagation();
                 onSelectField(field.id);
               }}
+              onPointerDown={(event) => startMoveField(event, field)}
             >
               <strong>{field.label || field.type}</strong>
               <span>{recipient?.name || recipient?.email || "Unassigned"}</span>

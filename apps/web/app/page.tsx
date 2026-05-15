@@ -1,194 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import type { Route } from "next";
 import { useMemo, useState } from "react";
 import { SiteHeader } from "./components/site-header";
+import { ToolIcon } from "./components/tool-icon";
+import { TOOL_GROUPS, TOOLS, toolsForGroup, type ToolGroupId } from "./components/tool-registry";
 
-const FILTERS = [
-  "All",
-  "Workflows",
-  "Organize PDF",
-  "Optimize PDF",
-  "Convert PDF",
-  "Edit PDF",
-  "PDF Security"
-] as const;
-
+const FILTERS = ["all", ...TOOL_GROUPS.map((group) => group.id)] as const;
 type Filter = (typeof FILTERS)[number];
-type ToolCategory = Exclude<Filter, "All">;
 
-type ToolCard = {
-  title: string;
-  description: string;
-  href: Route;
-  icon: string;
-  iconClass: string;
-  categories: ToolCategory[];
-  highlight?: boolean;
-  badge?: string;
-};
-
-const TOOLS: ToolCard[] = [
-  {
-    title: "Merge PDF",
-    description: "Combine PDFs in the order you want with the easiest PDF merger available.",
-    href: "/merge-pdf",
-    icon: "↗↘",
-    iconClass: "icon-orange",
-    categories: ["Workflows", "Organize PDF"],
-    highlight: true
-  },
-  {
-    title: "Split PDF",
-    description: "Separate one page or a whole set for easy conversion into independent PDF files.",
-    href: "/split-pdf",
-    icon: "⇱⇲",
-    iconClass: "icon-orange",
-    categories: ["Workflows", "Organize PDF"]
-  },
-  {
-    title: "Remove pages",
-    description: "Delete the pages you do not want and keep the rest of the PDF intact.",
-    href: "/remove-pages",
-    icon: "−",
-    iconClass: "icon-orange",
-    categories: ["Organize PDF"]
-  },
-  {
-    title: "Extract pages",
-    description: "Pull selected pages into a new PDF without generating a separate file per range.",
-    href: "/extract-pages",
-    icon: "⤴",
-    iconClass: "icon-blue",
-    categories: ["Organize PDF"]
-  },
-  {
-    title: "Organize PDF",
-    description: "Reorder, duplicate, and remove pages before exporting a clean final document.",
-    href: "/organize-pdf",
-    icon: "☰",
-    iconClass: "icon-green",
-    categories: ["Workflows", "Organize PDF"],
-    highlight: true
-  },
-  {
-    title: "Compress PDF",
-    description: "Reduce file size while optimizing for maximal PDF quality.",
-    href: "/compress-pdf",
-    icon: "⤢",
-    iconClass: "icon-green",
-    categories: ["Workflows", "Optimize PDF"]
-  },
-  {
-    title: "Protect PDF",
-    description: "Encrypt your PDF with a password to keep sensitive data confidential.",
-    href: "/protect-pdf",
-    icon: "🔒",
-    iconClass: "icon-purple",
-    categories: ["PDF Security"]
-  },
-  {
-    title: "Unlock PDF",
-    description: "Remove a known password from a PDF so it can be opened without prompts.",
-    href: "/unlock-pdf",
-    icon: "🔓",
-    iconClass: "icon-green",
-    categories: ["PDF Security"]
-  },
-  {
-    title: "JPG to PDF",
-    description: "Turn JPG and JPEG images into a single ordered PDF document.",
-    href: "/jpg-to-pdf",
-    icon: "J",
-    iconClass: "icon-orange",
-    categories: ["Convert PDF"],
-    highlight: true
-  },
-  {
-    title: "PDF to Word",
-    description: "Convert PDF files into easy to edit DOC and DOCX documents.",
-    href: "/pdf-to-word",
-    icon: "W",
-    iconClass: "icon-blue",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "PDF to JPG",
-    description: "Export each PDF page as a sharp JPG image, packaged for download.",
-    href: "/pdf-to-jpg",
-    icon: "J",
-    iconClass: "icon-green",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "PDF to PowerPoint",
-    description: "Turn PDF files into easy to edit PPT and PPTX slideshows.",
-    href: "/pdf-to-powerpoint",
-    icon: "P",
-    iconClass: "icon-orange",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "PDF to Excel",
-    description: "Pull data straight from PDFs into Excel spreadsheets in seconds.",
-    href: "/pdf-to-excel",
-    icon: "X",
-    iconClass: "icon-green",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "Word to PDF",
-    description: "Make DOCX documents easy to read by converting them into PDF files.",
-    href: "/word-to-pdf",
-    icon: "W",
-    iconClass: "icon-blue",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "PowerPoint to PDF",
-    description: "Make PPT and PPTX slideshows easy to view by converting them to PDF.",
-    href: "/powerpoint-to-pdf",
-    icon: "P",
-    iconClass: "icon-orange",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "Excel to PDF",
-    description: "Make EXCEL spreadsheets easy to read by converting them to PDF.",
-    href: "/excel-to-pdf",
-    icon: "X",
-    iconClass: "icon-green",
-    categories: ["Convert PDF"]
-  },
-  {
-    title: "Sign PDF",
-    description: "Upload a PDF, place signature areas, sign it yourself, or send a secure signature request.",
-    href: "/sign-pdf",
-    icon: "✍",
-    iconClass: "icon-blue",
-    categories: ["Workflows", "Edit PDF"],
-    highlight: true
-  },
-  {
-    title: "PDF Editor Studio",
-    description: "Place styled text, signatures, highlights, and image layers on multi-page placement stages.",
-    href: "/editor-studio",
-    icon: "✎",
-    iconClass: "icon-purple",
-    categories: ["Edit PDF"],
-    badge: "Studio"
+function filterLabel(filter: Filter): string {
+  if (filter === "all") {
+    return "All tools";
   }
-];
+  return TOOL_GROUPS.find((group) => group.id === filter)?.label ?? filter;
+}
 
 export default function HomePage(): React.JSX.Element {
-  const [selectedFilter, setSelectedFilter] = useState<Filter>("All");
+  const [selectedFilter, setSelectedFilter] = useState<Filter>("all");
 
   const visibleTools = useMemo(
-    () =>
-      selectedFilter === "All"
-        ? TOOLS
-        : TOOLS.filter((tool) => tool.categories.includes(selectedFilter)),
+    () => (selectedFilter === "all" ? TOOLS : toolsForGroup(selectedFilter as ToolGroupId)),
     [selectedFilter]
   );
 
@@ -198,10 +30,10 @@ export default function HomePage(): React.JSX.Element {
 
       <main className="tools-home">
         <section className="hero-block">
-          <h1>Every tool you need to work with PDFs in one place</h1>
+          <h1>Every PDF workflow in one polished workspace</h1>
           <p>
-            Self-hosted PDF workflows with deliberate retention controls. Merge, split, compress,
-            convert, secure, and edit documents in a workspace you actually control.
+            Self-hosted tools for organizing, optimizing, converting, editing, securing, and signing
+            documents with clear progress and deliberate retention controls.
           </p>
         </section>
 
@@ -211,12 +43,12 @@ export default function HomePage(): React.JSX.Element {
             <span>Your files stay on your infrastructure, not a random third-party SaaS.</span>
           </article>
           <article>
-            <strong>Explicit retention</strong>
-            <span>Studio exports can auto-expire instead of lingering indefinitely.</span>
+            <strong>Operational progress</strong>
+            <span>Uploads, queued jobs, failures, and downloads stay visible while work runs.</span>
           </article>
           <article>
-            <strong>Serious editor</strong>
-            <span>Use the new Editor Studio for layered text, signatures, highlights, and images.</span>
+            <strong>Precise ordering</strong>
+            <span>Drag files, page slots, layers, and signers into the order you need.</span>
           </article>
         </section>
 
@@ -229,7 +61,7 @@ export default function HomePage(): React.JSX.Element {
               onClick={() => setSelectedFilter(filter)}
               aria-pressed={selectedFilter === filter}
             >
-              {filter}
+              {filterLabel(filter)}
             </button>
           ))}
         </section>
@@ -238,11 +70,14 @@ export default function HomePage(): React.JSX.Element {
           {visibleTools.map((tool) => (
             <Link
               href={tool.href}
-              key={tool.title}
-              className={`tool-card ${tool.highlight ? "is-highlighted" : ""}`}
+              key={tool.key}
+              className={`tool-card ${tool.featured ? "is-highlighted" : ""}`}
             >
-              <div className={`tool-icon ${tool.iconClass}`}>{tool.icon}</div>
+              <div className="tool-icon">
+                <ToolIcon name={tool.icon} />
+              </div>
               {tool.badge ? <span className="tool-badge">{tool.badge}</span> : null}
+              <span className="tool-card__group">{filterLabel(tool.group)}</span>
               <h2>{tool.title}</h2>
               <p>{tool.description}</p>
             </Link>

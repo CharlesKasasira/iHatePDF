@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { pollTask, queueSplit, uploadPdf } from "../lib/pdf-api";
+import { TaskProgressState } from "../components/task-progress-state";
+import { UploadDropzone } from "../components/upload-dropzone";
 
 export default function SplitPage(): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [pageRanges, setPageRanges] = useState("1");
   const [outputPrefix, setOutputPrefix] = useState("split");
@@ -72,24 +73,14 @@ export default function SplitPage(): React.JSX.Element {
           <h1>Split PDF file</h1>
           <p>Separate one page or a whole set for easy conversion into independent PDF files.</p>
 
-          <div className="upload-center compact">
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-            >
-              Select PDF file
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              accept="application/pdf"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            />
-          </div>
-          <p className="drop-hint">{file ? `Selected: ${file.name}` : "Choose one file to split"}</p>
+          <UploadDropzone
+            label="Select PDF file"
+            hint={file ? `Selected: ${file.name}` : "Choose one file to split or drop it here"}
+            accept="application/pdf"
+            compact
+            disabled={busy}
+            onFiles={(files) => setFile(files?.[0] ?? null)}
+          />
         </section>
 
         <section className="merge-workbench">
@@ -114,24 +105,19 @@ export default function SplitPage(): React.JSX.Element {
             {busy ? "Splitting..." : "Split PDF"}
           </button>
 
-          {busy || progressPercent > 0 ? (
-            <div className="batch-task-progress">
-              <div className="batch-task-progress-row">
-                <span>{status}</span>
-                <strong>{progressPercent}%</strong>
-              </div>
-              <div className="task-progress-rail">
-                <span style={{ width: `${progressPercent}%` }} />
-              </div>
+          {!file ? (
+            <div className="tool-empty-state">
+              <strong>No PDF selected</strong>
+              <span>Upload one PDF, then enter page ranges such as 1, 2-4.</span>
             </div>
           ) : null}
 
-          <p className={status.toLowerCase().includes("failed") ? "error" : "small"}>{status}</p>
-          {downloadUrl ? (
-            <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-              Download split output
-            </a>
-          ) : null}
+          <TaskProgressState
+            status={status}
+            progressPercent={progressPercent}
+            downloadUrl={downloadUrl}
+            downloadLabel="Download split output"
+          />
         </section>
       </main>
     </div>

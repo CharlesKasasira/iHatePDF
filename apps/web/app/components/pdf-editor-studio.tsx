@@ -191,6 +191,7 @@ export function PdfEditorStudio({
       onSignatureRequestChange={actions.setSignatureRequest}
       onSendSignatureRequest={sendSignatureRequest}
       onMoveLayer={actions.moveLayer}
+      onReorderLayers={actions.reorderLayers}
       onPlaceLayer={(pageNumber, x, y) => actions.createLayerAt(pageNumber, x, y)}
     />
   );

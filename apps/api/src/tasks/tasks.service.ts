@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { TaskType } from "@prisma/client";
-import { QueueService } from "../queue/queue.service.js";
+import { Prisma, TaskType } from "@prisma/client";
+import { type PdfTaskJobName, QueueService } from "../queue/queue.service.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { StorageService } from "../storage/storage.service.js";
 import {
@@ -127,6 +127,10 @@ const POWERPOINT_MIME_TYPES = [
   "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ] as const;
 
+export type TaskRequestContext = {
+  ownerId?: string;
+};
+
 export interface TaskStatusView {
   id: string;
   status: string;
@@ -134,6 +138,8 @@ export interface TaskStatusView {
   progressPercent: number;
   progressMessage: string | null;
   errorMessage: string | null;
+  outputFileId: string | null;
+  outputExpiresAt: Date | null;
   outputDownloadUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -150,10 +156,15 @@ export class TasksService {
   private async requireInputFile(
     fileId: string,
     allowedMimeTypes?: readonly string[],
-    expectedFileTypeLabel = "a supported file format"
-  ): Promise<{ id: string; objectKey: string; mimeType: string }> {
+    expectedFileTypeLabel = "a supported file format",
+    context: TaskRequestContext = {}
+  ): Promise<{ id: string; objectKey: string; mimeType: string; ownerId: string | null }> {
     const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
     if (!file) {
+      throw new NotFoundException("Input file was not found.");
+    }
+
+    if (file.ownerId && file.ownerId !== context.ownerId) {
       throw new NotFoundException("Input file was not found.");
     }
 
@@ -166,7 +177,46 @@ export class TasksService {
     return file;
   }
 
-  async queueMerge(dto: MergePdfDto): Promise<{ taskId: string }> {
+  private async createTaskAndEnqueue<TPayload>(input: {
+    type: TaskType;
+    inputFileId?: string;
+    ownerId?: string;
+    payload: Prisma.InputJsonValue;
+    jobName: PdfTaskJobName;
+    buildJobPayload: (taskId: string) => TPayload;
+  }): Promise<{ taskId: string }> {
+    const task = await this.prisma.task.create({
+      data: {
+        type: input.type,
+        status: "queued",
+        inputFileId: input.inputFileId,
+        ownerId: input.ownerId ?? null,
+        payload: input.payload
+      }
+    });
+
+    try {
+      await this.queueService.enqueue(input.jobName, input.buildJobPayload(task.id));
+      return { taskId: task.id };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to queue task.";
+
+      await this.prisma.task
+        .update({
+          where: { id: task.id },
+          data: {
+            status: "failed",
+            errorMessage: message,
+            progressMessage: message
+          }
+        })
+        .catch(() => undefined);
+
+      throw error;
+    }
+  }
+
+  async queueMerge(dto: MergePdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
     if (dto.fileIds.length < 2) {
       throw new BadRequestException("Merge requires at least two files.");
     }
@@ -185,34 +235,32 @@ export class TasksService {
       if (!item) {
         throw new NotFoundException(`Input file ${id} not found.`);
       }
+      if (item.ownerId && item.ownerId !== context.ownerId) {
+        throw new NotFoundException(`Input file ${id} not found.`);
+      }
       if (item.mimeType !== "application/pdf") {
         throw new BadRequestException("Merge requires PDF input files.");
       }
       return item.objectKey;
     });
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.merge,
-        status: "queued",
-        payload: {
-          fileKeys,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.merge,
+      ownerId: context.ownerId,
+      payload: {
+        fileKeys,
+        outputName: dto.outputName
+      },
+      jobName: "merge",
+      buildJobPayload: (taskId): MergeJobPayload => ({
+        taskId,
+        fileKeys,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: MergeJobPayload = {
-      taskId: task.id,
-      fileKeys,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("merge", payload);
-    return { taskId: task.id };
   }
 
-  async queueJpgToPdf(dto: JpgToPdfDto): Promise<{ taskId: string }> {
+  async queueJpgToPdf(dto: JpgToPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
     if (dto.fileIds.length === 0) {
       throw new BadRequestException("JPG to PDF requires at least one image.");
     }
@@ -231,456 +279,382 @@ export class TasksService {
       if (!item) {
         throw new NotFoundException(`Input image ${id} not found.`);
       }
+      if (item.ownerId && item.ownerId !== context.ownerId) {
+        throw new NotFoundException(`Input image ${id} not found.`);
+      }
       if (!JPEG_MIME_TYPES.includes(item.mimeType as (typeof JPEG_MIME_TYPES)[number])) {
         throw new BadRequestException("JPG to PDF requires JPG or JPEG input files.");
       }
       return item.objectKey;
     });
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.jpg_to_pdf,
-        status: "queued",
-        payload: {
-          fileKeys,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.jpg_to_pdf,
+      ownerId: context.ownerId,
+      payload: {
+        fileKeys,
+        outputName: dto.outputName
+      },
+      jobName: "jpg-to-pdf",
+      buildJobPayload: (taskId): JpgToPdfJobPayload => ({
+        taskId,
+        fileKeys,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: JpgToPdfJobPayload = {
-      taskId: task.id,
-      fileKeys,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("jpg-to-pdf", payload);
-    return { taskId: task.id };
   }
 
-  async queueSplit(dto: SplitPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueSplit(dto: SplitPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.split,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          pageRanges: dto.pageRanges,
-          outputPrefix: dto.outputPrefix
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.split,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputPrefix: dto.outputPrefix
+      },
+      jobName: "split",
+      buildJobPayload: (taskId): SplitJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputPrefix: dto.outputPrefix
+      })
     });
-
-    const payload: SplitJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      pageRanges: dto.pageRanges,
-      outputPrefix: dto.outputPrefix
-    };
-
-    await this.queueService.enqueue("split", payload);
-    return { taskId: task.id };
   }
 
-  async queueRemovePages(dto: RemovePagesDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueRemovePages(dto: RemovePagesDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.remove_pages,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          pageRanges: dto.pageRanges,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.remove_pages,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputName: dto.outputName
+      },
+      jobName: "remove-pages",
+      buildJobPayload: (taskId): RemovePagesJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: RemovePagesJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      pageRanges: dto.pageRanges,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("remove-pages", payload);
-    return { taskId: task.id };
   }
 
-  async queueExtractPages(dto: ExtractPagesDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueExtractPages(dto: ExtractPagesDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.extract_pages,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          pageRanges: dto.pageRanges,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.extract_pages,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputName: dto.outputName
+      },
+      jobName: "extract-pages",
+      buildJobPayload: (taskId): ExtractPagesJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        pageRanges: dto.pageRanges,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ExtractPagesJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      pageRanges: dto.pageRanges,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("extract-pages", payload);
-    return { taskId: task.id };
   }
 
-  async queueOrganizePdf(dto: OrganizePdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueOrganizePdf(dto: OrganizePdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.organize_pdf,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName,
-          pageOrderLength: dto.pageOrder.length
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.organize_pdf,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName,
+        pageOrderLength: dto.pageOrder.length
+      },
+      jobName: "organize-pdf",
+      buildJobPayload: (taskId): OrganizePdfJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        pageOrder: dto.pageOrder,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: OrganizePdfJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      pageOrder: dto.pageOrder,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("organize-pdf", payload);
-    return { taskId: task.id };
   }
 
-  async queueSign(dto: SignPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueSign(dto: SignPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.sign,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          signatureDataUrl: dto.signatureDataUrl,
-          page: dto.page,
-          x: dto.x,
-          y: dto.y,
-          width: dto.width,
-          height: dto.height,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.sign,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        signatureDataUrl: dto.signatureDataUrl,
+        page: dto.page,
+        x: dto.x,
+        y: dto.y,
+        width: dto.width,
+        height: dto.height,
+        outputName: dto.outputName
+      },
+      jobName: "sign",
+      buildJobPayload: (taskId): SignJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        signatureDataUrl: dto.signatureDataUrl,
+        page: dto.page,
+        x: dto.x,
+        y: dto.y,
+        width: dto.width,
+        height: dto.height,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: SignJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      signatureDataUrl: dto.signatureDataUrl,
-      page: dto.page,
-      x: dto.x,
-      y: dto.y,
-      width: dto.width,
-      height: dto.height,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("sign", payload);
-    return { taskId: task.id };
   }
 
-  async queueCompress(dto: CompressPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueCompress(dto: CompressPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.compress,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.compress,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "compress",
+      buildJobPayload: (taskId): CompressJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: CompressJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("compress", payload);
-    return { taskId: task.id };
   }
 
-  async queueProtect(dto: ProtectPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueProtect(dto: ProtectPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
     const password = dto.password.trim();
     if (!password) {
       throw new BadRequestException("Password is required.");
     }
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.protect,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName,
-          passwordProvided: true
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.protect,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName,
+        passwordProvided: true
+      },
+      jobName: "protect",
+      buildJobPayload: (taskId): ProtectJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        password,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ProtectJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      password,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("protect", payload);
-    return { taskId: task.id };
   }
 
-  async queueUnlock(dto: UnlockPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueUnlock(dto: UnlockPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
     const password = dto.password.trim();
     if (!password) {
       throw new BadRequestException("Password is required.");
     }
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.unlock,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName,
-          passwordProvided: true
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.unlock,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName,
+        passwordProvided: true
+      },
+      jobName: "unlock",
+      buildJobPayload: (taskId): UnlockJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        password,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: UnlockJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      password,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("unlock", payload);
-    return { taskId: task.id };
   }
 
-  async queuePdfToWord(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queuePdfToWord(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.pdf_to_word,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.pdf_to_word,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "pdf-to-word",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("pdf-to-word", payload);
-    return { taskId: task.id };
   }
 
-  async queuePdfToJpg(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queuePdfToJpg(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.pdf_to_jpg,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.pdf_to_jpg,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "pdf-to-jpg",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("pdf-to-jpg", payload);
-    return { taskId: task.id };
   }
 
-  async queuePdfToPowerpoint(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queuePdfToPowerpoint(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.pdf_to_powerpoint,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.pdf_to_powerpoint,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "pdf-to-powerpoint",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("pdf-to-powerpoint", payload);
-    return { taskId: task.id };
   }
 
-  async queuePdfToExcel(dto: ConvertPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queuePdfToExcel(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.pdf_to_excel,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.pdf_to_excel,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "pdf-to-excel",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("pdf-to-excel", payload);
-    return { taskId: task.id };
   }
 
-  async queueWordToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+  async queueWordToPdf(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
     const file = await this.requireInputFile(
       dto.fileId,
       WORD_MIME_TYPES,
-      "a Word file (.docx)"
+      "a Word file (.docx)",
+      context
     );
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.word_to_pdf,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.word_to_pdf,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "word-to-pdf",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("word-to-pdf", payload);
-    return { taskId: task.id };
   }
 
-  async queueExcelToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+  async queueExcelToPdf(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
     const file = await this.requireInputFile(
       dto.fileId,
       EXCEL_MIME_TYPES,
-      "an Excel file (.xlsx)"
+      "an Excel file (.xlsx)",
+      context
     );
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.excel_to_pdf,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.excel_to_pdf,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "excel-to-pdf",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("excel-to-pdf", payload);
-    return { taskId: task.id };
   }
 
-  async queuePowerpointToPdf(dto: ConvertPdfDto): Promise<{ taskId: string }> {
+  async queuePowerpointToPdf(dto: ConvertPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
     const file = await this.requireInputFile(
       dto.fileId,
       POWERPOINT_MIME_TYPES,
-      "a PowerPoint file (.pptx)"
+      "a PowerPoint file (.pptx)",
+      context
     );
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.powerpoint_to_pdf,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName
-        }
-      }
+    return this.createTaskAndEnqueue({
+      type: TaskType.powerpoint_to_pdf,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      },
+      jobName: "powerpoint-to-pdf",
+      buildJobPayload: (taskId): ConvertJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        outputName: dto.outputName
+      })
     });
-
-    const payload: ConvertJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      outputName: dto.outputName
-    };
-
-    await this.queueService.enqueue("powerpoint-to-pdf", payload);
-    return { taskId: task.id };
   }
 
-  async queueEdit(dto: EditPdfDto): Promise<{ taskId: string }> {
-    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file");
+  async queueEdit(dto: EditPdfDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, PDF_MIME_TYPES, "a PDF file", context);
 
     const textEdits = dto.textEdits ?? [];
     const rectangleEdits = dto.rectangleEdits ?? [];
@@ -701,50 +675,46 @@ export class TasksService {
       throw new BadRequestException("At least one edit operation is required.");
     }
 
-    const task = await this.prisma.task.create({
-      data: {
-        type: TaskType.edit,
-        status: "queued",
-        inputFileId: file.id,
-        payload: {
-          fileKey: file.objectKey,
-          outputName: dto.outputName,
-          retentionHours: dto.retentionHours ?? null,
-          editCounts: {
-            text: textEdits.length,
-            rectangles: rectangleEdits.length,
-            images: imageEdits.length,
-            rotations: pageRotations.length,
-            pageNumbers: Boolean(pageNumbers),
-            watermark: Boolean(watermark)
-          }
+    return this.createTaskAndEnqueue({
+      type: TaskType.edit,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        outputName: dto.outputName,
+        retentionHours: dto.retentionHours ?? null,
+        editCounts: {
+          text: textEdits.length,
+          rectangles: rectangleEdits.length,
+          images: imageEdits.length,
+          rotations: pageRotations.length,
+          pageNumbers: Boolean(pageNumbers),
+          watermark: Boolean(watermark)
         }
-      }
+      },
+      jobName: "edit",
+      buildJobPayload: (taskId): EditJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        textEdits,
+        rectangleEdits,
+        imageEdits,
+        pageRotations,
+        pageNumbers,
+        watermark,
+        outputName: dto.outputName,
+        expiresAtIso: dto.retentionHours
+          ? new Date(Date.now() + dto.retentionHours * 60 * 60 * 1000).toISOString()
+          : undefined
+      })
     });
-
-    const payload: EditJobPayload = {
-      taskId: task.id,
-      fileKey: file.objectKey,
-      textEdits,
-      rectangleEdits,
-      imageEdits,
-      pageRotations,
-      pageNumbers,
-      watermark,
-      outputName: dto.outputName,
-      expiresAtIso: dto.retentionHours
-        ? new Date(Date.now() + dto.retentionHours * 60 * 60 * 1000).toISOString()
-        : undefined
-    };
-
-    await this.queueService.enqueue("edit", payload);
-    return { taskId: task.id };
   }
 
   private toTaskStatusView(task: {
     id: string;
     status: string;
     type: string;
+    ownerId: string | null;
     progressPercent: number;
     progressMessage: string | null;
     errorMessage: string | null;
@@ -768,19 +738,25 @@ export class TasksService {
       progressPercent: task.progressPercent,
       progressMessage: task.progressMessage,
       errorMessage: task.errorMessage,
+      outputFileId: task.outputFile?.id ?? null,
+      outputExpiresAt: task.outputFile?.expiresAt ?? null,
       outputDownloadUrl,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt
     };
   }
 
-  async getTask(taskId: string): Promise<TaskStatusView> {
+  async getTask(taskId: string, context: TaskRequestContext = {}): Promise<TaskStatusView> {
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
       include: { outputFile: true }
     });
 
     if (!task) {
+      throw new NotFoundException("Task not found.");
+    }
+
+    if (task.ownerId && task.ownerId !== context.ownerId) {
       throw new NotFoundException("Task not found.");
     }
 

@@ -1,9 +1,10 @@
 import "dotenv/config";
 import { Job, Worker } from "bullmq";
 import JSZip from "jszip";
+import nodemailer from "nodemailer";
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -19,6 +20,13 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().url(),
   STORAGE_DIR: z.string().default("../../storage"),
+  API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
+  APP_BASE_URL: z.string().url().default("http://localhost:3000"),
+  SMTP_HOST: z.string().default("localhost"),
+  SMTP_PORT: z.coerce.number().default(1025),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  MAIL_FROM: z.string().default("iHatePDF <no-reply@ihatepdf.local>"),
   QPDF_BIN: z.string().default("qpdf"),
   PDFTOPPM_BIN: z.string().default("pdftoppm"),
   PDF_RENDER_DPI: z.coerce.number().int().min(72).max(300).default(144)
@@ -40,6 +48,18 @@ const EMUS_PER_POINT = 12700;
 const TWIPS_PER_POINT = 20;
 
 const prisma = new PrismaClient();
+const mailTransporter = nodemailer.createTransport({
+  host: env.SMTP_HOST,
+  port: env.SMTP_PORT,
+  secure: false,
+  auth:
+    env.SMTP_USER && env.SMTP_PASS
+      ? {
+          user: env.SMTP_USER,
+          pass: env.SMTP_PASS
+        }
+      : undefined
+});
 const redisConnection = (() => {
   const url = new URL(env.REDIS_URL);
   return {
@@ -50,6 +70,87 @@ const redisConnection = (() => {
     maxRetriesPerRequest: null as null
   };
 })();
+
+function matchesWebhookEvent(events: unknown, eventType: string): boolean {
+  return Array.isArray(events) && (events.includes("*") || events.includes(eventType));
+}
+
+function signWebhookBody(secret: string, timestamp: string, body: string): string {
+  return `v1=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+}
+
+async function dispatchWebhooks(
+  ownerId: string | null | undefined,
+  eventType: string,
+  data: Record<string, unknown>
+): Promise<void> {
+  if (!ownerId) {
+    return;
+  }
+
+  const endpoints = await prisma.webhookEndpoint.findMany({
+    where: { ownerId, active: true }
+  });
+  const payload = {
+    id: `evt_${randomBytes(16).toString("hex")}`,
+    type: eventType,
+    createdAt: new Date().toISOString(),
+    data
+  };
+  const body = JSON.stringify(payload);
+
+  await Promise.all(
+    endpoints
+      .filter((endpoint) => matchesWebhookEvent(endpoint.events, eventType))
+      .map(async (endpoint) => {
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const delivery = await prisma.webhookDelivery.create({
+          data: {
+            endpointId: endpoint.id,
+            eventType,
+            payload: payload as any,
+            status: "pending"
+          }
+        });
+
+        try {
+          const response = await fetch(endpoint.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "User-Agent": "iHatePDF-Webhooks/1.0",
+              "X-IHatePDF-Delivery": delivery.id,
+              "X-IHatePDF-Event": eventType,
+              "X-IHatePDF-Timestamp": timestamp,
+              "X-IHatePDF-Signature": signWebhookBody(endpoint.signingSecret, timestamp, body)
+            },
+            body,
+            signal: AbortSignal.timeout(10_000)
+          });
+          const responseBody = (await response.text()).slice(0, 4096);
+          await prisma.webhookDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: response.ok ? "delivered" : "failed",
+              responseStatus: response.status,
+              responseBody,
+              attemptCount: 1,
+              deliveredAt: response.ok ? new Date() : null
+            }
+          });
+        } catch (error) {
+          await prisma.webhookDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: "failed",
+              errorMessage: error instanceof Error ? error.message : String(error),
+              attemptCount: 1
+            }
+          });
+        }
+      })
+  );
+}
 
 const MergePayloadSchema = z.object({
   taskId: z.string(),
@@ -328,6 +429,91 @@ async function downloadObject(objectKey: string): Promise<Buffer> {
   return readFile(resolveStoragePath(objectKey));
 }
 
+function sha256(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function wrapCertificateText(text: string, maxLength = 108): string[] {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+    } else {
+      if (current) {
+        lines.push(current);
+      }
+      current = word;
+    }
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines;
+}
+
+async function buildAuditCertificate(envelope: any, finalBuffer: Buffer): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const lines: string[] = [
+    "iHatePDF Audit Certificate",
+    `Envelope ID: ${envelope.id}`,
+    `Document: ${envelope.sourceFile.fileName}`,
+    `Final output: ${envelope.outputName}`,
+    `Requester: ${envelope.requesterEmail}`,
+    `Status: ${envelope.status}`,
+    `Created: ${envelope.createdAt.toISOString()}`,
+    `Completed: ${envelope.completedAt ? envelope.completedAt.toISOString() : "Not completed"}`,
+    `Final file ID: ${envelope.finalFileId ?? "Not available"}`,
+    `Final PDF SHA-256: ${sha256(finalBuffer)}`,
+    "",
+    "Recipients"
+  ];
+
+  for (const recipient of envelope.recipients) {
+    lines.push(
+      `- ${recipient.name ?? recipient.email} <${recipient.email}> | ${recipient.role ?? "Signer"} | ${recipient.status} | OTP verified: ${recipient.otpVerifiedAt ? recipient.otpVerifiedAt.toISOString() : "no"} | passcode: ${recipient.passcodeHash ? (recipient.passcodeVerifiedAt ? "verified" : "required") : "not required"}`
+    );
+  }
+
+  lines.push("", "Event Log");
+  for (const event of envelope.events) {
+    const evidence = [event.actorEmail, event.ipAddress, event.userAgent].filter(Boolean).join(" | ");
+    lines.push(`- ${event.createdAt.toISOString()} | ${event.type} | ${event.description}${evidence ? ` | ${evidence}` : ""}`);
+  }
+
+  let page = pdf.addPage();
+  let y = page.getHeight() - 48;
+  for (const [index, rawLine] of lines.entries()) {
+    const isTitle = index === 0;
+    const font = isTitle ? bold : regular;
+    const size = isTitle ? 16 : 9;
+    for (const line of wrapCertificateText(rawLine)) {
+      if (y < 48) {
+        page = pdf.addPage();
+        y = page.getHeight() - 48;
+      }
+      page.drawText(line, {
+        x: 48,
+        y,
+        size,
+        font,
+        color: isTitle ? rgb(0.08, 0.18, 0.3) : rgb(0.12, 0.12, 0.12)
+      });
+      y -= isTitle ? 22 : 14;
+    }
+  }
+
+  return Buffer.from(await pdf.save());
+}
+
 async function runCommand(command: string, args: string[]): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const child = spawn(command, args);
@@ -462,7 +648,7 @@ async function markProcessing(taskId: string, progressMessage = "Preparing task.
 
 async function markFailed(taskId: string, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message : "Unknown task error";
-  await prisma.task.update({
+  const task = await prisma.task.update({
     where: { id: taskId },
     data: {
       status: TaskStatus.failed,
@@ -487,7 +673,8 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
       status: SignatureEnvelopeStatus.finalizing
     },
     select: {
-      id: true
+      id: true,
+      ownerId: true
     }
   });
 
@@ -513,11 +700,148 @@ async function markFailed(taskId: string, error: unknown): Promise<void> {
         }
       }))
     });
+
+    await Promise.all(
+      envelopes.map((envelope) =>
+        dispatchWebhooks(envelope.ownerId, "signing.envelope.finalization_failed", {
+          envelopeId: envelope.id,
+          taskId,
+          error: message
+        })
+      )
+    );
+  }
+
+  await dispatchWebhooks(task.ownerId, "task.failed", {
+    taskId,
+    type: task.type,
+    status: TaskStatus.failed,
+    error: message
+  });
+}
+
+async function sendCompletionEmailsForTask(taskId: string, outputFileId: string): Promise<void> {
+  const envelopes = await prisma.signatureEnvelope.findMany({
+    where: {
+      finalTaskId: taskId,
+      finalFileId: outputFileId
+    },
+    include: {
+      sourceFile: true,
+      finalFile: true,
+      recipients: {
+        orderBy: [{ routingOrder: "asc" }, { createdAt: "asc" }]
+      },
+      fields: {
+        include: {
+          recipient: true,
+          value: true
+        },
+        orderBy: [{ page: "asc" }, { createdAt: "asc" }]
+      },
+      events: {
+        orderBy: { createdAt: "asc" }
+      }
+    }
+  });
+
+  for (const envelope of envelopes) {
+    if (!envelope.finalFile) {
+      continue;
+    }
+
+    const finalBuffer = await downloadObject(envelope.finalFile.objectKey);
+    const certificateBuffer = await buildAuditCertificate(envelope, finalBuffer);
+    const canAttachFinal = finalBuffer.byteLength <= 9 * 1024 * 1024;
+    const recipients = [
+      {
+        email: envelope.requesterEmail,
+        name: "Requester",
+        link: `${env.APP_BASE_URL}/sign-pdf?envelope=${encodeURIComponent(envelope.id)}`
+      },
+      ...envelope.recipients.map((recipient) => ({
+        email: recipient.email,
+        name: recipient.name ?? recipient.email,
+        link: `${env.API_PUBLIC_URL}/api/files/signature-requests/${encodeURIComponent(recipient.token)}/final-download`
+      }))
+    ];
+    const uniqueRecipients = new Map(recipients.map((recipient) => [recipient.email, recipient]));
+
+    for (const recipient of uniqueRecipients.values()) {
+      try {
+        await mailTransporter.sendMail({
+          from: env.MAIL_FROM,
+          to: recipient.email,
+          subject: envelope.title ? `Completed signature packet: ${envelope.title}` : "Completed signed PDF",
+          text: [
+            `The signing workflow${envelope.title ? ` for "${envelope.title}"` : ""} is complete.`,
+            canAttachFinal
+              ? "The final signed PDF is attached."
+              : `The final signed PDF is available here: ${recipient.link}`,
+            `Audit certificate: attached.`,
+            `Envelope ID: ${envelope.id}`
+          ].join("\n"),
+          attachments: [
+            ...(canAttachFinal
+              ? [
+                  {
+                    filename: envelope.finalFile.fileName,
+                    content: finalBuffer,
+                    contentType: "application/pdf"
+                  }
+                ]
+              : []),
+            {
+              filename: `${envelope.id}-audit-certificate.pdf`,
+              content: certificateBuffer,
+              contentType: "application/pdf"
+            }
+          ]
+        });
+
+        await prisma.signatureEnvelopeEvent.create({
+          data: {
+            envelopeId: envelope.id,
+            type: SignatureEnvelopeEventType.completion_email_sent,
+            actorEmail: recipient.email,
+            description: `Completion email sent to ${recipient.email}.`,
+            metadata: {
+              taskId,
+              attachedFinalPdf: canAttachFinal
+            }
+          }
+        });
+      } catch (error) {
+        await prisma.signatureEnvelopeEvent.create({
+          data: {
+            envelopeId: envelope.id,
+            type: SignatureEnvelopeEventType.completion_email_failed,
+            actorEmail: recipient.email,
+            description: `Completion email failed for ${recipient.email}.`,
+            metadata: {
+              taskId,
+              error: error instanceof Error ? error.message : String(error)
+            }
+          }
+        });
+      }
+    }
   }
 }
 
 async function markCompleted(taskId: string, outputFileId: string): Promise<void> {
-  await prisma.task.update({
+  const finalizingEnvelopes = await prisma.signatureEnvelope.findMany({
+    where: {
+      finalTaskId: taskId,
+      status: "finalizing"
+    },
+    select: {
+      id: true,
+      ownerId: true
+    }
+  });
+
+  const task = await prisma.task.update({
     where: { id: taskId },
     data: {
       status: TaskStatus.completed,
@@ -527,6 +851,13 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
       progressMessage: "Completed"
     }
   });
+
+  if (task.ownerId) {
+    await prisma.fileObject.update({
+      where: { id: outputFileId },
+      data: { ownerId: task.ownerId }
+    });
+  }
 
   await prisma.signatureRequest.updateMany({
     where: {
@@ -550,6 +881,25 @@ async function markCompleted(taskId: string, outputFileId: string): Promise<void
       finalFileId: outputFileId
     }
   });
+
+  await sendCompletionEmailsForTask(taskId, outputFileId);
+
+  await dispatchWebhooks(task.ownerId, "task.completed", {
+    taskId,
+    type: task.type,
+    status: TaskStatus.completed,
+    outputFileId
+  });
+
+  await Promise.all(
+    finalizingEnvelopes.map((envelope) =>
+      dispatchWebhooks(envelope.ownerId, "signing.envelope.completed", {
+        envelopeId: envelope.id,
+        taskId,
+        outputFileId
+      })
+    )
+  );
 }
 
 async function runMerge(payload: MergePayload, reportProgress: ProgressReporter): Promise<string> {

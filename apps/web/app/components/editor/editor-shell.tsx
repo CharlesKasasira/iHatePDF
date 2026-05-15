@@ -51,6 +51,7 @@ export function EditorShell({
   onSignatureRequestChange,
   onSendSignatureRequest,
   onMoveLayer,
+  onReorderLayers,
   onPlaceLayer
 }: {
   mode: EditorMode;
@@ -89,6 +90,7 @@ export function EditorShell({
   onSignatureRequestChange: (patch: Partial<EditorDocumentState["signatureRequest"]>) => void;
   onSendSignatureRequest: () => Promise<void>;
   onMoveLayer: (layerId: string, x: number, y: number) => void;
+  onReorderLayers: (layers: EditorLayer[]) => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
 }): React.JSX.Element {
   const pdfInputRef = useRef<HTMLInputElement>(null);
@@ -227,6 +229,7 @@ export function EditorShell({
               onOpenSignatureChooser={onOpenSignatureChooser}
               onRetentionHoursChange={onRetentionHoursChange}
               onExport={onExport}
+              onReorderLayers={onReorderLayers}
             />
 
             <EditorCanvas
