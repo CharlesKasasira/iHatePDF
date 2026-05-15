@@ -27,6 +27,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   const refresh = async (): Promise<void> => {
     try {
       setUser(await getCurrentUser());
+    } catch {
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -52,8 +54,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         return nextUser;
       },
       logout: async () => {
-        await apiLogout();
         setUser(null);
+        await apiLogout().catch(() => undefined);
       }
     }),
     [user, loading]

@@ -27,8 +27,26 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
   const { user, loading, logout } = useAuth();
   const [openGroup, setOpenGroup] = useState<ToolGroupId | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const selectedGroup = openGroup ?? activeGroup(active);
   const selectedTools = toolsForGroup(selectedGroup);
+
+  const handleLogout = async (): Promise<void> => {
+    if (loggingOut) {
+      return;
+    }
+
+    try {
+      setLoggingOut(true);
+      setOpenGroup(null);
+      setMobileOpen(false);
+      await logout();
+    } catch {
+      // The auth provider clears local session state optimistically; server revocation is best effort here.
+    } finally {
+      setLoggingOut(false);
+    }
+  };
 
   return (
     <header className="site-header">
@@ -80,13 +98,23 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
           </Link>
           {!loading && user ? (
             <>
+              {user.isAdmin ? (
+                <Link href="/admin" className="auth-link">
+                  Admin
+                </Link>
+              ) : null}
               <Link href="/account" className="auth-link auth-link-user">
                 <UserRound aria-hidden="true" size={16} />
                 <span>{user.name || user.email}</span>
               </Link>
-              <button className="auth-link auth-link-button" type="button" onClick={() => void logout()}>
+              <button
+                className="auth-link auth-link-button"
+                type="button"
+                disabled={loggingOut}
+                onClick={() => void handleLogout()}
+              >
                 <LogOut aria-hidden="true" size={15} />
-                <span>Log out</span>
+                <span>{loggingOut ? "Logging out..." : "Log out"}</span>
               </button>
             </>
           ) : null}

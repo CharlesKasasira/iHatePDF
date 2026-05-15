@@ -6,6 +6,7 @@ import { CleanupModule } from "./cleanup/cleanup.module.js";
 import { FilesModule } from "./files/files.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
 import { QueueModule } from "./queue/queue.module.js";
+import { RateLimitModule } from "./rate-limit/rate-limit.module.js";
 import { SignatureRequestsModule } from "./signature-requests/signature-requests.module.js";
 import { StorageModule } from "./storage/storage.module.js";
 import { TasksModule } from "./tasks/tasks.module.js";
@@ -16,6 +17,7 @@ import { UploadsModule } from "./uploads/uploads.module.js";
     PrismaModule,
     AuthModule,
     QueueModule,
+    RateLimitModule,
     StorageModule,
     CleanupModule,
     ApiModeModule,

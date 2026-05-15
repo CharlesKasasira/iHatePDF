@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Req, Res } from "@nestjs/common";
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from "class-validator";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { RateLimit } from "../rate-limit/rate-limit.decorator.js";
 import { AuthService, type SafeUser } from "./auth.service.js";
 
 class SignupDto {
@@ -45,6 +46,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post("signup")
+  @RateLimit("signup")
   signup(
     @Body() dto: SignupDto,
     @Res({ passthrough: true }) reply: FastifyReply
@@ -53,6 +55,7 @@ export class AuthController {
   }
 
   @Post("login")
+  @RateLimit("login")
   login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) reply: FastifyReply
@@ -74,11 +77,13 @@ export class AuthController {
   }
 
   @Post("password-reset/request")
+  @RateLimit("passwordReset")
   requestPasswordReset(@Body() dto: PasswordResetRequestDto): Promise<{ ok: true }> {
     return this.authService.requestPasswordReset(dto.email);
   }
 
   @Post("password-reset/confirm")
+  @RateLimit("passwordReset")
   confirmPasswordReset(@Body() dto: PasswordResetConfirmDto): Promise<{ ok: true }> {
     return this.authService.confirmPasswordReset(dto);
   }
