@@ -16,6 +16,7 @@ export const PdfTaskType = z.enum([
   "excel-to-pdf",
   "powerpoint-to-pdf",
   "edit",
+  "image-tool",
   "signature-request"
 ]);
 export type PdfTaskType = z.infer<typeof PdfTaskType>;

@@ -121,7 +121,7 @@ export function EditorShell({
               <h1>
                 {mode === "sign"
                   ? "Sign PDFs yourself or send them for signature"
-                  : "Precision PDF editing for self-hosted teams"}
+                  : "Precision PDF editing"}
               </h1>
               <p>
                 {mode === "sign"
@@ -227,6 +227,7 @@ export function EditorShell({
               activeTool={state.tool}
               selectedLayerId={state.selection.layerId}
               onSelectLayer={(layerId) => onSelectLayer(layerId)}
+              onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
               onPlaceLayer={onPlaceLayer}
             />

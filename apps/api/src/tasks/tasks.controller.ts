@@ -5,6 +5,7 @@ import {
   ConvertPdfDto,
   EditPdfDto,
   ExtractPagesDto,
+  ImageToolDto,
   JpgToPdfDto,
   MergePdfDto,
   OrganizePdfDto,
@@ -121,6 +122,11 @@ export class TasksController {
   @Post("edit")
   async queueEditPdf(@Body() dto: EditPdfDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
     return this.tasksService.queueEdit(dto, await this.context(request));
+  }
+
+  @Post("image-tools")
+  async queueImageTool(@Body() dto: ImageToolDto, @Req() request: FastifyRequest): Promise<{ taskId: string }> {
+    return this.tasksService.queueImageTool(dto, await this.context(request));
   }
 
   @Post(":id/retry")

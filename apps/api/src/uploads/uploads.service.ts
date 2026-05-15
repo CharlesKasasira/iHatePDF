@@ -8,6 +8,10 @@ const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -88,7 +92,7 @@ export class UploadsService {
     if (!ALLOWED_UPLOAD_MIME_TYPES.has(part.mimetype)) {
       part.file.resume();
       throw new BadRequestException(
-        "Unsupported file type. Upload PDF, JPG/JPEG, Word (.docx), Excel (.xlsx), or PowerPoint (.pptx)."
+        "Unsupported file type. Upload PDF, JPG/JPEG, PNG, WebP, GIF, SVG, Word (.docx), Excel (.xlsx), or PowerPoint (.pptx)."
       );
     }
 

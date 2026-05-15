@@ -148,6 +148,9 @@ importers:
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
       uuid:
         specifier: ^11.0.4
         version: 11.1.0

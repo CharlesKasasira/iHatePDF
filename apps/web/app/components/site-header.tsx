@@ -15,13 +15,13 @@ import {
 } from "./tool-registry";
 
 type SiteHeaderProps = {
-  active?: ActiveKey | "all-tools" | null;
+  active?: ActiveKey | "all-tools" | "image-tools" | null;
 };
 
 const DESKTOP_TOOL_GROUPS = TOOL_GROUPS.filter((group) => group.id !== "sign");
 
 function activeGroup(active: SiteHeaderProps["active"]): ToolGroupId | null {
-  if (!active || active === "all-tools") {
+  if (!active || active === "all-tools" || active === "image-tools") {
     return null;
   }
 
@@ -34,7 +34,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
   const [openGroup, setOpenGroup] = useState<ToolGroupId | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const activeTool = active && active !== "all-tools" ? active : null;
+  const activeTool = active && active !== "all-tools" && active !== "image-tools" ? active : null;
   const currentGroup = activeGroup(active);
   const selectedGroup = openGroup ?? currentGroup ?? "organize";
   const selectedTools = toolsForGroup(selectedGroup);
@@ -50,7 +50,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
       setMobileOpen(false);
       await logout();
     } catch {
-      // The auth provider clears local session state optimistically; server revocation is best effort here.
+      // Keep the current user visible if the server-side logout did not complete.
     } finally {
       setLoggingOut(false);
     }
@@ -68,6 +68,12 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         <nav className="top-nav top-nav--desktop" aria-label="Primary tools">
           <Link href="/" className={`top-nav-link top-nav-home ${active === "all-tools" ? "is-active" : ""}`}>
             All tools
+          </Link>
+          <Link
+            href="/image-tools"
+            className={`top-nav-link top-nav-home ${active === "image-tools" ? "is-active" : ""}`}
+          >
+            Image tools
           </Link>
           {DESKTOP_TOOL_GROUPS.map((group) => {
             const isActive = group.id === currentGroup;
@@ -191,6 +197,15 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
             onClick={() => setMobileOpen(false)}
           >
             <span>All tools</span>
+          </Link>
+          <Link
+            href="/image-tools"
+            className={`mobile-tool-menu__item mobile-tool-menu__item--home ${
+              active === "image-tools" ? "is-active" : ""
+            }`}
+            onClick={() => setMobileOpen(false)}
+          >
+            <span>Image tools</span>
           </Link>
           {TOOL_GROUPS.map((group) => (
             <section key={group.id} className="mobile-tool-menu__group">

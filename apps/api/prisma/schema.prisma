@@ -26,6 +26,7 @@ enum TaskType {
   excel_to_pdf
   powerpoint_to_pdf
   edit
+  image_tool
   signature_request
 }
 

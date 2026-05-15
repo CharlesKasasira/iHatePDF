@@ -13,7 +13,8 @@ export const TOOL_ITEMS: Array<{ id: EditorTool; label: string; hint: string }> 
   { id: "select", label: "Select", hint: "Inspect and refine layers" },
   { id: "text", label: "Text", hint: "Place styled type onto the page" },
   { id: "highlight", label: "Highlight", hint: "Lay down translucent emphasis bars" },
-  { id: "shape", label: "Shapes", hint: "Frame sections with clean blocks" },
+  { id: "shape", label: "Shapes", hint: "Add clean blocks to the page" },
+  { id: "erase", label: "Erase", hint: "Cover PDF content with white blocks" },
   { id: "sign", label: "Sign", hint: "Stamp a handwritten signature image" },
   { id: "image", label: "Image", hint: "Insert logos, seals, or graphics" }
 ];

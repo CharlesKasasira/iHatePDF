@@ -262,6 +262,16 @@ export type TaskStatusResponse = {
   updatedAt: string;
 };
 
+export type ImageToolOperation =
+  | "compress"
+  | "resize"
+  | "crop"
+  | "rotate"
+  | "convert_to_jpg"
+  | "convert_from_jpg"
+  | "watermark"
+  | "meme";
+
 export type SignatureRequestResponse = {
   envelopeId: string;
   title: string | null;
@@ -500,6 +510,7 @@ async function readError(response: Response): Promise<string> {
 export async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    cache: init?.cache ?? "no-store",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
@@ -526,6 +537,18 @@ function inferMimeType(file: File): string {
   }
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
     return "image/jpeg";
+  }
+  if (lower.endsWith(".png")) {
+    return "image/png";
+  }
+  if (lower.endsWith(".webp")) {
+    return "image/webp";
+  }
+  if (lower.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (lower.endsWith(".svg")) {
+    return "image/svg+xml";
   }
   if (lower.endsWith(".docx")) {
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -583,6 +606,10 @@ export async function uploadPdf(file: File): Promise<UploadedFileMeta> {
 
 export async function uploadJpg(file: File): Promise<UploadedFileMeta> {
   return uploadFile(file, ["image/jpeg", "image/jpg"]);
+}
+
+export async function uploadImage(file: File): Promise<UploadedFileMeta> {
+  return uploadFile(file, ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
 }
 
 export async function uploadPdfWithRetention(
@@ -1207,6 +1234,18 @@ export async function queuePdfToJpg(fileId: string, outputName: string): Promise
   return jsonFetch<{ taskId: string }>("/tasks/pdf-to-jpg", {
     method: "POST",
     body: JSON.stringify({ fileId, outputName })
+  });
+}
+
+export async function queueImageTool(
+  fileId: string,
+  operation: ImageToolOperation,
+  outputName: string,
+  options: Record<string, unknown>
+): Promise<{ taskId: string }> {
+  return jsonFetch<{ taskId: string }>("/tasks/image-tools", {
+    method: "POST",
+    body: JSON.stringify({ fileId, operation, outputName, options })
   });
 }
 

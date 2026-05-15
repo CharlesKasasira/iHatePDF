@@ -14,6 +14,7 @@ import {
   EditTextDto,
   EditWatermarkDto,
   ExtractPagesDto,
+  ImageToolDto,
   JpgToPdfDto,
   MergePdfDto,
   OrganizePdfDto,
@@ -102,6 +103,14 @@ interface ConvertJobPayload {
   outputName: string;
 }
 
+interface ImageToolJobPayload {
+  taskId: string;
+  fileKey: string;
+  operation: ImageToolDto["operation"];
+  outputName: string;
+  options: Prisma.JsonObject;
+}
+
 interface EditJobPayload {
   taskId: string;
   fileKey: string;
@@ -117,6 +126,14 @@ interface EditJobPayload {
 
 const PDF_MIME_TYPES = ["application/pdf"] as const;
 const JPEG_MIME_TYPES = ["image/jpeg", "image/jpg"] as const;
+const IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml"
+] as const;
 const WORD_MIME_TYPES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ] as const;
@@ -238,6 +255,7 @@ export class TasksService {
       excel_to_pdf: "excel-to-pdf",
       powerpoint_to_pdf: "powerpoint-to-pdf",
       edit: "edit",
+      image_tool: "image-tool",
       signature_request: "signature-request"
     };
 
@@ -582,6 +600,39 @@ export class TasksService {
         taskId,
         fileKey: file.objectKey,
         outputName: dto.outputName
+      })
+    });
+  }
+
+  async queueImageTool(dto: ImageToolDto, context: TaskRequestContext = {}): Promise<{ taskId: string }> {
+    const file = await this.requireInputFile(dto.fileId, IMAGE_MIME_TYPES, "a JPG, PNG, WebP, GIF, or SVG image", context);
+
+    if (
+      dto.operation === "convert_from_jpg" &&
+      !JPEG_MIME_TYPES.includes(file.mimeType as (typeof JPEG_MIME_TYPES)[number])
+    ) {
+      throw new BadRequestException("Convert from JPG requires a JPG or JPEG input file.");
+    }
+
+    const options = (dto.options ?? {}) as Prisma.JsonObject;
+
+    return this.createTaskAndEnqueue({
+      type: TaskType.image_tool,
+      inputFileId: file.id,
+      ownerId: context.ownerId,
+      payload: {
+        fileKey: file.objectKey,
+        operation: dto.operation,
+        outputName: dto.outputName,
+        options
+      },
+      jobName: "image-tool",
+      buildJobPayload: (taskId): ImageToolJobPayload => ({
+        taskId,
+        fileKey: file.objectKey,
+        operation: dto.operation,
+        outputName: dto.outputName,
+        options
       })
     });
   }

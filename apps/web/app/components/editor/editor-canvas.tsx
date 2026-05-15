@@ -16,6 +16,7 @@ export function EditorCanvas({
   activeTool,
   selectedLayerId,
   onSelectLayer,
+  onUpdateLayer,
   onMoveLayer,
   onPlaceLayer
 }: {
@@ -29,6 +30,7 @@ export function EditorCanvas({
   activeTool: EditorTool;
   selectedLayerId: string | null;
   onSelectLayer: (layerId: string) => void;
+  onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
   onMoveLayer: (layerId: string, x: number, y: number) => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
 }): React.JSX.Element {
@@ -59,6 +61,7 @@ export function EditorCanvas({
               activeTool={activeTool}
               selectedLayerId={selectedLayerId}
               onSelectLayer={onSelectLayer}
+              onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
               onPlaceLayer={(x, y) => onPlaceLayer(page.pageNumber, x, y)}
             />

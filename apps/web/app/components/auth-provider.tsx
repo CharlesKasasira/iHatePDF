@@ -54,8 +54,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         return nextUser;
       },
       logout: async () => {
-        setUser(null);
-        await apiLogout().catch(() => undefined);
+        try {
+          await apiLogout();
+          setUser(null);
+        } catch (error) {
+          await refresh();
+          throw error;
+        }
       }
     }),
     [user, loading]

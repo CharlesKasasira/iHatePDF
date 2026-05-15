@@ -429,7 +429,9 @@ export function usePdfEditor(mode: EditorMode) {
         return;
       }
 
-      if (state.tool === "highlight" || state.tool === "shape") {
+      if (state.tool === "highlight" || state.tool === "shape" || state.tool === "erase") {
+        const isHighlight = state.tool === "highlight";
+        const isErase = state.tool === "erase";
         dispatch({
           type: "add-layer",
           layer: {
@@ -441,10 +443,12 @@ export function usePdfEditor(mode: EditorMode) {
             y,
             width: state.draftDefaults.rectangle.width,
             height: state.draftDefaults.rectangle.height,
-            color: state.tool === "highlight" ? "#ffe082" : state.draftDefaults.rectangle.color,
-            opacity: state.tool === "highlight" ? 0.26 : state.draftDefaults.rectangle.opacity
+            color: isHighlight ? "#ffe082" : isErase ? "#ffffff" : state.draftDefaults.rectangle.color,
+            opacity: isHighlight ? 0.26 : isErase ? 1 : state.draftDefaults.rectangle.opacity
           },
-          status: `Placed a ${state.tool === "highlight" ? "highlight" : "shape"} layer on page ${pageNumber}.`
+          status: `Placed a ${
+            isHighlight ? "highlight" : isErase ? "white erase block" : "shape"
+          } layer on page ${pageNumber}.`
         });
         return;
       }
