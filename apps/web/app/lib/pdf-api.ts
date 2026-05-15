@@ -5,7 +5,61 @@ export type AuthUser = {
   email: string;
   name: string | null;
   isAdmin: boolean;
+  suspendedAt: string | null;
+  lockedAt: string | null;
+  lockReason: string | null;
   createdAt: string;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string | null;
+  isAdmin: boolean;
+  suspendedAt: string | null;
+  lockedAt: string | null;
+  lockReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  counts: {
+    files: number;
+    tasks: number;
+    apiKeys: number;
+    sessions: number;
+  };
+  recentSecurityEvents: Array<{
+    id: string;
+    type: string;
+    description: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+    actorEmail: string | null;
+    createdAt: string;
+  }>;
+};
+
+export type AdminApiKey = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  ownerId: string;
+  ownerEmail: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  rateLimitedAt: string | null;
+  rateLimitReason: string | null;
+  createdAt: string;
+  usage: {
+    total: number;
+    last30Days: number;
+    byRoute: Array<{
+      route: string;
+      method: string;
+      count: number;
+      lastUsedAt: string;
+    }>;
+  };
 };
 
 export type AccountActivityResponse = {
@@ -113,6 +167,34 @@ export type WebhookDeliveryItem = {
   attemptCount: number;
   deliveredAt: string | null;
   createdAt: string;
+};
+
+export type ApiKeyItem = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+export type CreatedApiKey = ApiKeyItem & {
+  key: string;
+};
+
+export type WebhookEndpointItem = {
+  id: string;
+  url: string;
+  description: string | null;
+  events: unknown;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreatedWebhookEndpoint = WebhookEndpointItem & {
+  signingSecret: string;
 };
 
 export type AdminDashboardResponse = {
@@ -577,6 +659,113 @@ export async function getAccountActivity(): Promise<AccountActivityResponse> {
 
 export async function getAdminDashboard(): Promise<AdminDashboardResponse> {
   return jsonFetch<AdminDashboardResponse>("/account/admin-dashboard");
+}
+
+export async function listApiKeys(): Promise<ApiKeyItem[]> {
+  return jsonFetch<ApiKeyItem[]>("/api-keys");
+}
+
+export async function createApiKey(input: {
+  name: string;
+  expiresAt?: string;
+}): Promise<CreatedApiKey> {
+  return jsonFetch<CreatedApiKey>("/api-keys", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function revokeApiKey(id: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(`/api-keys/${id}`, {
+    method: "DELETE"
+  });
+}
+
+export async function listWebhookEvents(): Promise<{ events: string[] }> {
+  return jsonFetch<{ events: string[] }>("/webhooks/events");
+}
+
+export async function listWebhooks(): Promise<WebhookEndpointItem[]> {
+  return jsonFetch<WebhookEndpointItem[]>("/webhooks");
+}
+
+export async function createWebhook(input: {
+  url: string;
+  description?: string;
+  events?: string[];
+}): Promise<CreatedWebhookEndpoint> {
+  return jsonFetch<CreatedWebhookEndpoint>("/webhooks", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateWebhook(
+  id: string,
+  input: {
+    url?: string;
+    description?: string;
+    events?: string[];
+    active?: boolean;
+  }
+): Promise<WebhookEndpointItem> {
+  return jsonFetch<WebhookEndpointItem>(`/webhooks/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function rotateWebhookSecret(id: string): Promise<{ id: string; signingSecret: string }> {
+  return jsonFetch<{ id: string; signingSecret: string }>(`/webhooks/${id}/rotate-secret`, {
+    method: "POST"
+  });
+}
+
+export async function deleteWebhook(id: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(`/webhooks/${id}`, {
+    method: "DELETE"
+  });
+}
+
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  return jsonFetch<AdminUser[]>("/account/admin/users");
+}
+
+export async function updateAdminUser(
+  userId: string,
+  input: { isAdmin?: boolean; suspended?: boolean; locked?: boolean; lockReason?: string }
+): Promise<AdminUser> {
+  return jsonFetch<AdminUser>(`/account/admin/users/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function resetAdminUserPassword(userId: string, password: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(`/account/admin/users/${userId}/reset-password`, {
+    method: "POST",
+    body: JSON.stringify({ password })
+  });
+}
+
+export async function forceLogoutAdminUser(userId: string): Promise<{ ok: true; revokedSessions: number }> {
+  return jsonFetch<{ ok: true; revokedSessions: number }>(`/account/admin/users/${userId}/force-logout`, {
+    method: "POST"
+  });
+}
+
+export async function getAdminApiKeys(): Promise<AdminApiKey[]> {
+  return jsonFetch<AdminApiKey[]>("/account/admin/api-keys");
+}
+
+export async function updateAdminApiKey(
+  apiKeyId: string,
+  input: { revoked?: boolean; rateLimited?: boolean; rateLimitReason?: string }
+): Promise<AdminApiKey> {
+  return jsonFetch<AdminApiKey>(`/account/admin/api-keys/${apiKeyId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
 }
 
 export async function retryTask(taskId: string): Promise<TaskStatusResponse> {

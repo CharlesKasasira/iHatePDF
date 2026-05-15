@@ -1,5 +1,5 @@
-import { Injectable } from "@nestjs/common";
-import type { TaskStatus, TaskType } from "@prisma/client";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { UserSecurityEventType, type TaskStatus, type TaskType } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import { AuthService } from "../auth/auth.service.js";
 import { env } from "../config/env.js";
@@ -154,6 +154,57 @@ type AdminDashboard = {
   fileHistory: Array<AccountFileHistoryItem & { ownerEmail: string | null }>;
 };
 
+type AdminUserManagementItem = {
+  id: string;
+  email: string;
+  name: string | null;
+  isAdmin: boolean;
+  suspendedAt: Date | null;
+  lockedAt: Date | null;
+  lockReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  counts: {
+    files: number;
+    tasks: number;
+    apiKeys: number;
+    sessions: number;
+  };
+  recentSecurityEvents: Array<{
+    id: string;
+    type: string;
+    description: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+    actorEmail: string | null;
+    createdAt: Date;
+  }>;
+};
+
+type AdminApiKeyOversightItem = {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  ownerId: string;
+  ownerEmail: string;
+  lastUsedAt: Date | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+  rateLimitedAt: Date | null;
+  rateLimitReason: string | null;
+  createdAt: Date;
+  usage: {
+    total: number;
+    last30Days: number;
+    byRoute: Array<{
+      route: string;
+      method: string;
+      count: number;
+      lastUsedAt: Date;
+    }>;
+  };
+};
+
 function isDownloadAvailable(file: { expiresAt: Date | null }): boolean {
   return !file.expiresAt || file.expiresAt.getTime() > Date.now();
 }
@@ -168,6 +219,35 @@ function taskRetryHint(task: { type: TaskType; status: TaskStatus }): string {
   }
 
   return "Retry will requeue the same saved task payload.";
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function requestIp(request: FastifyRequest): string {
+  const forwardedFor = firstHeaderValue(request.headers["x-forwarded-for"]);
+  if (forwardedFor) {
+    const [firstIp] = forwardedFor.split(",");
+    if (firstIp?.trim()) {
+      return firstIp.trim();
+    }
+  }
+
+  return (
+    firstHeaderValue(request.headers["cf-connecting-ip"]) ??
+    firstHeaderValue(request.headers["x-real-ip"]) ??
+    request.ip ??
+    "unknown"
+  );
+}
+
+function requestUserAgent(request: FastifyRequest): string | null {
+  return firstHeaderValue(request.headers["user-agent"]);
 }
 
 @Injectable()
@@ -626,5 +706,404 @@ export class AccountService {
         ownerEmail: file.owner?.email ?? null
       }))
     };
+  }
+
+  private mapAdminUser(user: {
+    id: string;
+    email: string;
+    name: string | null;
+    isAdmin: boolean;
+    suspendedAt: Date | null;
+    lockedAt: Date | null;
+    lockReason: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    securityEvents: Array<{
+      id: string;
+      type: UserSecurityEventType;
+      description: string;
+      ipAddress: string | null;
+      userAgent: string | null;
+      actorEmail: string | null;
+      createdAt: Date;
+    }>;
+    _count: {
+      files: number;
+      tasks: number;
+      apiKeys: number;
+      sessions: number;
+    };
+  }): AdminUserManagementItem {
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isAdmin: user.isAdmin,
+      suspendedAt: user.suspendedAt,
+      lockedAt: user.lockedAt,
+      lockReason: user.lockReason,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      counts: {
+        files: user._count.files,
+        tasks: user._count.tasks,
+        apiKeys: user._count.apiKeys,
+        sessions: user._count.sessions
+      },
+      recentSecurityEvents: user.securityEvents.map((event) => ({
+        id: event.id,
+        type: event.type,
+        description: event.description,
+        ipAddress: event.ipAddress,
+        userAgent: event.userAgent,
+        actorEmail: event.actorEmail,
+        createdAt: event.createdAt
+      }))
+    };
+  }
+
+  async listAdminUsers(request: FastifyRequest): Promise<AdminUserManagementItem[]> {
+    await this.authService.requireAdminUser(request);
+    const users = await this.prisma.user.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        securityEvents: {
+          orderBy: { createdAt: "desc" },
+          take: 5
+        },
+        _count: {
+          select: {
+            files: true,
+            tasks: true,
+            apiKeys: true,
+            sessions: {
+              where: {
+                revokedAt: null,
+                expiresAt: { gt: new Date() }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return users.map((user) => this.mapAdminUser(user));
+  }
+
+  async updateAdminUser(
+    request: FastifyRequest,
+    userId: string,
+    input: { isAdmin?: boolean; suspended?: boolean; locked?: boolean; lockReason?: string }
+  ): Promise<AdminUserManagementItem> {
+    const admin = await this.authService.requireAdminUser(request);
+    const target = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        securityEvents: {
+          orderBy: { createdAt: "desc" },
+          take: 5
+        },
+        _count: {
+          select: {
+            files: true,
+            tasks: true,
+            apiKeys: true,
+            sessions: {
+              where: {
+                revokedAt: null,
+                expiresAt: { gt: new Date() }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!target) {
+      throw new NotFoundException("User was not found.");
+    }
+
+    if (target.id === admin.id && input.suspended === true) {
+      throw new BadRequestException("You cannot suspend your own admin account.");
+    }
+
+    if (target.id === admin.id && input.locked === true) {
+      throw new BadRequestException("You cannot lock your own admin account.");
+    }
+
+    if (target.id === admin.id && input.isAdmin === false) {
+      throw new BadRequestException("You cannot demote your own admin account.");
+    }
+
+    if (target.isAdmin && (input.isAdmin === false || input.locked === true || input.suspended === true)) {
+      const adminCount = await this.prisma.user.count({
+        where: {
+          isAdmin: true,
+          suspendedAt: null,
+          lockedAt: null
+        }
+      });
+      if (adminCount <= 1) {
+        throw new BadRequestException("At least one active admin account is required.");
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.user.update({
+        where: { id: target.id },
+        data: {
+          isAdmin: input.isAdmin,
+          suspendedAt: input.suspended === undefined ? undefined : input.suspended ? new Date() : null,
+          lockedAt: input.locked === undefined ? undefined : input.locked ? new Date() : null,
+          lockReason:
+            input.locked === undefined
+              ? undefined
+              : input.locked
+                ? input.lockReason?.trim() || "Locked by admin."
+                : null
+        },
+        include: {
+          securityEvents: {
+            orderBy: { createdAt: "desc" },
+            take: 5
+          },
+          _count: {
+            select: {
+              files: true,
+              tasks: true,
+              apiKeys: true,
+              sessions: {
+                where: {
+                  revokedAt: null,
+                  expiresAt: { gt: new Date() }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      if (input.suspended === true || input.isAdmin === false || input.locked === true) {
+        await tx.userSession.updateMany({
+          where: {
+            userId: target.id,
+            revokedAt: null
+          },
+          data: { revokedAt: new Date() }
+        });
+      }
+
+      if (input.locked !== undefined) {
+        await tx.userSecurityEvent.create({
+          data: {
+            userId: target.id,
+            email: target.email,
+            actorEmail: admin.email,
+            type: input.locked ? UserSecurityEventType.account_locked : UserSecurityEventType.account_unlocked,
+            ipAddress: requestIp(request),
+            userAgent: requestUserAgent(request),
+            description: input.locked
+              ? `Account locked by ${admin.email}.`
+              : `Account unlocked by ${admin.email}.`,
+            metadata: input.locked
+              ? {
+                  reason: input.lockReason?.trim() || "Locked by admin."
+                }
+              : undefined
+          }
+        });
+      }
+
+      return next;
+    });
+
+    return this.mapAdminUser(updated);
+  }
+
+  async resetAdminUserPassword(
+    request: FastifyRequest,
+    userId: string,
+    input: { password: string }
+  ): Promise<{ ok: true }> {
+    await this.authService.requireAdminUser(request);
+    if (input.password.length < 8) {
+      throw new BadRequestException("Password must be at least 8 characters.");
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!target) {
+      throw new NotFoundException("User was not found.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: target.id },
+        data: {
+          passwordHash: await this.authService.hashPassword(input.password)
+        }
+      });
+      await tx.userSession.updateMany({
+        where: {
+          userId: target.id,
+          revokedAt: null
+        },
+        data: { revokedAt: new Date() }
+      });
+    });
+
+    return { ok: true };
+  }
+
+  async forceLogoutAdminUser(request: FastifyRequest, userId: string): Promise<{ ok: true; revokedSessions: number }> {
+    const admin = await this.authService.requireAdminUser(request);
+    const target = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!target) {
+      throw new NotFoundException("User was not found.");
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.userSession.updateMany({
+        where: {
+          userId: target.id,
+          revokedAt: null
+        },
+        data: { revokedAt: new Date() }
+      });
+
+      await tx.userSecurityEvent.create({
+        data: {
+          userId: target.id,
+          email: target.email,
+          actorEmail: admin.email,
+          type: UserSecurityEventType.sessions_revoked,
+          ipAddress: requestIp(request),
+          userAgent: requestUserAgent(request),
+          description: `Active sessions force-logged out by ${admin.email}.`,
+          metadata: {
+            revokedSessions: revoked.count
+          }
+        }
+      });
+
+      return revoked;
+    });
+
+    return { ok: true, revokedSessions: result.count };
+  }
+
+  private async mapAdminApiKey(key: {
+    id: string;
+    name: string;
+    keyPrefix: string;
+    lastUsedAt: Date | null;
+    expiresAt: Date | null;
+    revokedAt: Date | null;
+    rateLimitedAt: Date | null;
+    rateLimitReason: string | null;
+    createdAt: Date;
+    ownerId: string;
+    owner: {
+      email: string;
+    };
+    _count: {
+      usageEvents: number;
+    };
+  }, since: Date): Promise<AdminApiKeyOversightItem> {
+    const [last30Days, routeGroups] = await Promise.all([
+      this.prisma.apiUsageEvent.count({
+        where: {
+          apiKeyId: key.id,
+          createdAt: { gte: since }
+        }
+      }),
+      this.prisma.apiUsageEvent.groupBy({
+        by: ["route", "method"],
+        where: { apiKeyId: key.id },
+        _count: { _all: true },
+        _max: { createdAt: true }
+      })
+    ]);
+
+    return {
+      id: key.id,
+      name: key.name,
+      keyPrefix: key.keyPrefix,
+      ownerId: key.ownerId,
+      ownerEmail: key.owner.email,
+      lastUsedAt: key.lastUsedAt,
+      expiresAt: key.expiresAt,
+      revokedAt: key.revokedAt,
+      rateLimitedAt: key.rateLimitedAt,
+      rateLimitReason: key.rateLimitReason,
+      createdAt: key.createdAt,
+      usage: {
+        total: key._count.usageEvents,
+        last30Days,
+        byRoute: routeGroups
+          .map((group) => ({
+            route: group.route,
+            method: group.method,
+            count: group._count._all,
+            lastUsedAt: group._max.createdAt ?? key.createdAt
+          }))
+          .sort((left, right) => right.count - left.count)
+          .slice(0, 8)
+      }
+    };
+  }
+
+  async listAdminApiKeys(request: FastifyRequest): Promise<AdminApiKeyOversightItem[]> {
+    await this.authService.requireAdminUser(request);
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const keys = await this.prisma.apiKey.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        owner: {
+          select: { email: true }
+        },
+        _count: {
+          select: { usageEvents: true }
+        }
+      }
+    });
+
+    return Promise.all(keys.map((key) => this.mapAdminApiKey(key, since)));
+  }
+
+  async updateAdminApiKey(
+    request: FastifyRequest,
+    keyId: string,
+    input: { revoked?: boolean; rateLimited?: boolean; rateLimitReason?: string }
+  ): Promise<AdminApiKeyOversightItem> {
+    await this.authService.requireAdminUser(request);
+    const existing = await this.prisma.apiKey.findUnique({ where: { id: keyId } });
+    if (!existing) {
+      throw new NotFoundException("API key was not found.");
+    }
+
+    const updated = await this.prisma.apiKey.update({
+      where: { id: existing.id },
+      data: {
+        revokedAt: input.revoked === undefined ? undefined : input.revoked ? existing.revokedAt ?? new Date() : null,
+        rateLimitedAt:
+          input.rateLimited === undefined ? undefined : input.rateLimited ? existing.rateLimitedAt ?? new Date() : null,
+        rateLimitReason:
+          input.rateLimited === undefined
+            ? input.rateLimitReason?.trim() || undefined
+            : input.rateLimited
+              ? input.rateLimitReason?.trim() || "Rate limited by admin."
+              : null
+      },
+      include: {
+        owner: {
+          select: { email: true }
+        },
+        _count: {
+          select: { usageEvents: true }
+        }
+      }
+    });
+
+    return this.mapAdminApiKey(updated, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   }
 }

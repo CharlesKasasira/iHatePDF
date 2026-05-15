@@ -90,6 +90,12 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </button>
 
         <div className="auth-actions">
+          <Link href="/developer" className="auth-link">
+            Developer
+          </Link>
+          <Link href="/automation" className="auth-link">
+            Automation
+          </Link>
           <Link href="/legal-validity" className="auth-link">
             Validity
           </Link>
