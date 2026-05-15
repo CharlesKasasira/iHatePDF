@@ -15,12 +15,18 @@ import {
 } from "./tool-registry";
 
 type SiteHeaderProps = {
-  active?: ActiveKey | null;
+  active?: ActiveKey | "all-tools" | null;
 };
 
-function activeGroup(active: ActiveKey | null): ToolGroupId {
+const DESKTOP_TOOL_GROUPS = TOOL_GROUPS.filter((group) => group.id !== "sign");
+
+function activeGroup(active: SiteHeaderProps["active"]): ToolGroupId | null {
+  if (!active || active === "all-tools") {
+    return null;
+  }
+
   const tool = TOOLS.find((item) => isToolActive(item, active));
-  return tool?.group ?? "organize";
+  return tool?.group ?? null;
 }
 
 export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Element {
@@ -28,7 +34,9 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
   const [openGroup, setOpenGroup] = useState<ToolGroupId | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const selectedGroup = openGroup ?? activeGroup(active);
+  const activeTool = active && active !== "all-tools" ? active : null;
+  const currentGroup = activeGroup(active);
+  const selectedGroup = openGroup ?? currentGroup ?? "organize";
   const selectedTools = toolsForGroup(selectedGroup);
 
   const handleLogout = async (): Promise<void> => {
@@ -58,9 +66,12 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </Link>
 
         <nav className="top-nav top-nav--desktop" aria-label="Primary tools">
-          {TOOL_GROUPS.map((group) => {
-            const isActive = group.id === activeGroup(active);
-            const isOpen = selectedGroup === group.id;
+          <Link href="/" className={`top-nav-link top-nav-home ${active === "all-tools" ? "is-active" : ""}`}>
+            All tools
+          </Link>
+          {DESKTOP_TOOL_GROUPS.map((group) => {
+            const isActive = group.id === currentGroup;
+            const isOpen = openGroup === group.id;
 
             return (
               <button
@@ -93,9 +104,6 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
           <Link href="/developer" className="auth-link">
             Developer
           </Link>
-          <Link href="/automation" className="auth-link">
-            Automation
-          </Link>
           <Link href="/legal-validity" className="auth-link">
             Validity
           </Link>
@@ -125,14 +133,9 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
             </>
           ) : null}
           {!loading && !user ? (
-            <>
-              <Link href="/login" className="auth-link">
-                Log in
-              </Link>
-              <Link href="/signup" className="auth-link auth-link-strong">
-                Sign up
-              </Link>
-            </>
+            <Link href="/login" className="auth-link auth-link-strong">
+              Log in
+            </Link>
           ) : null}
           <Link
             href="/editor-studio"
@@ -163,7 +166,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
               <Link
                 key={tool.key}
                 href={tool.href}
-                className={`mega-menu__tool ${isToolActive(tool, active) ? "is-active" : ""}`}
+                className={`mega-menu__tool ${isToolActive(tool, activeTool) ? "is-active" : ""}`}
               >
                 <span className="mega-menu__icon">
                   <ToolIcon name={tool.icon} />
@@ -180,6 +183,15 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
 
       {mobileOpen ? (
         <nav className="mobile-tool-menu" aria-label="Mobile tools">
+          <Link
+            href="/"
+            className={`mobile-tool-menu__item mobile-tool-menu__item--home ${
+              active === "all-tools" ? "is-active" : ""
+            }`}
+            onClick={() => setMobileOpen(false)}
+          >
+            <span>All tools</span>
+          </Link>
           {TOOL_GROUPS.map((group) => (
             <section key={group.id} className="mobile-tool-menu__group">
               <h2>{group.label}</h2>
@@ -188,7 +200,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
                   <Link
                     key={tool.key}
                     href={tool.href}
-                    className={`mobile-tool-menu__item ${isToolActive(tool, active) ? "is-active" : ""}`}
+                    className={`mobile-tool-menu__item ${isToolActive(tool, activeTool) ? "is-active" : ""}`}
                     onClick={() => setMobileOpen(false)}
                   >
                     <ToolIcon name={tool.icon} />

@@ -26,7 +26,7 @@ export default function HomePage(): React.JSX.Element {
 
   return (
     <div className="site-shell">
-      <SiteHeader />
+      <SiteHeader active="all-tools" />
 
       <main className="tools-home">
         <section className="hero-block">

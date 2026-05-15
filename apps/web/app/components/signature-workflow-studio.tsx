@@ -2,6 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CalendarDays,
+  CheckSquare,
+  PenLine,
+  Type,
+  UserRound,
+  type LucideIcon
+} from "lucide-react";
+import {
   createSignatureRequest,
   createSignatureTemplate,
   createSignatureTemplateFromEnvelope,
@@ -56,13 +64,14 @@ const FIELD_LIBRARY: Array<{
   label: string;
   width: number;
   height: number;
+  icon: LucideIcon;
 }> = [
-  { type: "signature", label: "Signature", width: 168, height: 56 },
-  { type: "initials", label: "Initials", width: 92, height: 34 },
-  { type: "name", label: "Name", width: 172, height: 34 },
-  { type: "date", label: "Date", width: 132, height: 34 },
-  { type: "checkbox", label: "Checkbox", width: 28, height: 28 },
-  { type: "text", label: "Text field", width: 220, height: 40 }
+  { type: "signature", label: "Signature", width: 168, height: 56, icon: PenLine },
+  { type: "initials", label: "Initials", width: 92, height: 34, icon: PenLine },
+  { type: "name", label: "Full name", width: 172, height: 34, icon: UserRound },
+  { type: "date", label: "Sign date", width: 132, height: 34, icon: CalendarDays },
+  { type: "checkbox", label: "Checkbox", width: 28, height: 28, icon: CheckSquare },
+  { type: "text", label: "Text field", width: 220, height: 40, icon: Type }
 ];
 
 function nextId(prefix: string): string {
@@ -811,23 +820,68 @@ export function SignatureWorkflowStudio({
                 )}
               />
             </article>
+          </aside>
 
+          <section className={styles.canvasStack}>
+            {!pdfMeta ? (
+              <div className={styles.emptyState}>
+                <strong>Upload a PDF to map the workflow.</strong>
+                <span>Each page becomes a signing surface where you can assign fields to specific recipients.</span>
+              </div>
+            ) : (
+              pages.map((page) => (
+                <SigningCanvasPage
+                  key={page.pageNumber}
+                  fileId={fileId}
+                  fileName={pdfMeta.fileName}
+                  page={page}
+                  fields={fields.filter((field) => field.page === page.pageNumber)}
+                  selectedFieldId={selectedFieldId}
+                  recipients={recipients}
+                  onSelectField={setSelectedFieldId}
+                  onMoveField={(fieldId, x, y) => {
+                    setFields((current) =>
+                      current.map((field) =>
+                        field.id === fieldId
+                          ? {
+                              ...field,
+                              x: clamp(x, 0, Math.max(0, page.width - field.width)),
+                              y: clamp(y, 0, Math.max(0, page.height - field.height))
+                            }
+                          : field
+                      )
+                    );
+                  }}
+                  onPlaceField={(x, y) => placeField(page.pageNumber, page.width, page.height, x, y)}
+                />
+              ))
+            )}
+          </section>
+
+          <aside className={`${styles.sidebar} ${styles.rightSidebar}`}>
             <article className={styles.panel}>
               <div className={styles.panelHeader}>
                 <span className={styles.eyebrow}>Field palette</span>
                 <strong>{selectedRecipient?.name || selectedRecipient?.email || "Select signer"}</strong>
               </div>
               <div className={styles.fieldLibrary}>
-                {FIELD_LIBRARY.map((item) => (
+                {FIELD_LIBRARY.map((item) => {
+                  const Icon = item.icon;
+                  return (
                   <button
-                    key={item.type}
+                    key={`${item.type}-${item.label}`}
                     type="button"
                     className={`${styles.fieldChip} ${activeFieldType === item.type ? styles.fieldChipActive : ""}`}
                     onClick={() => setActiveFieldType(item.type)}
                   >
-                    {item.label}
+                    <span className={styles.gripDots} aria-hidden="true" />
+                    <span>{item.label}</span>
+                    <span className={styles.fieldChipIcon}>
+                      <Icon aria-hidden="true" />
+                    </span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
               <p className={styles.note}>Choose a field type, then click directly on any page to place it for the selected signer.</p>
             </article>
@@ -1004,42 +1058,6 @@ export function SignatureWorkflowStudio({
               <p className={styles.note}>{workflowStatus}</p>
             </article>
           </aside>
-
-          <section className={styles.canvasStack}>
-            {!pdfMeta ? (
-              <div className={styles.emptyState}>
-                <strong>Upload a PDF to map the workflow.</strong>
-                <span>Each page becomes a signing surface where you can assign fields to specific recipients.</span>
-              </div>
-            ) : (
-              pages.map((page) => (
-                <SigningCanvasPage
-                  key={page.pageNumber}
-                  fileId={fileId}
-                  fileName={pdfMeta.fileName}
-                  page={page}
-                  fields={fields.filter((field) => field.page === page.pageNumber)}
-                  selectedFieldId={selectedFieldId}
-                  recipients={recipients}
-                  onSelectField={setSelectedFieldId}
-                  onMoveField={(fieldId, x, y) => {
-                    setFields((current) =>
-                      current.map((field) =>
-                        field.id === fieldId
-                          ? {
-                              ...field,
-                              x: clamp(x, 0, Math.max(0, page.width - field.width)),
-                              y: clamp(y, 0, Math.max(0, page.height - field.height))
-                            }
-                          : field
-                      )
-                    );
-                  }}
-                  onPlaceField={(x, y) => placeField(page.pageNumber, page.width, page.height, x, y)}
-                />
-              ))
-            )}
-          </section>
         </section>
       </main>
     </div>

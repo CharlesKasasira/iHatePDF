@@ -196,14 +196,41 @@ export function EditorShell({
             </div>
           </div>
 
-          <EditorToolbar
-            tool={state.tool}
-            textDefaults={state.draftDefaults.text}
-            onToolSelect={handleToolSelection}
-            onTextDefaultsChange={onTextDefaultsChange}
-          />
-
           <section className="studio-workspace">
+            <aside className="studio-left-rail">
+              <EditorToolbar
+                tool={state.tool}
+                textDefaults={state.draftDefaults.text}
+                onToolSelect={handleToolSelection}
+                onTextDefaultsChange={onTextDefaultsChange}
+              />
+
+              <div className="studio-rail-card">
+                <div className="studio-panel__eyebrow">Placement</div>
+                <strong>{state.tool === "select" ? "Select and drag" : `Drop ${state.tool} on the page`}</strong>
+                <span>
+                  {state.pdfFile
+                    ? "Click the document surface to place the active tool. Use the inspector on the right for exact values."
+                    : "Open a PDF to enable the page surface."}
+                </span>
+              </div>
+            </aside>
+
+            <EditorCanvas
+              pdfFile={state.pdfFile}
+              sourceFileId={state.sourceFileId}
+              pages={state.pages}
+              layers={state.layers}
+              pageRotationMap={pageRotationMap}
+              pageNumbers={pageNumberConfig}
+              watermark={watermarkConfig}
+              activeTool={state.tool}
+              selectedLayerId={state.selection.layerId}
+              onSelectLayer={(layerId) => onSelectLayer(layerId)}
+              onMoveLayer={onMoveLayer}
+              onPlaceLayer={onPlaceLayer}
+            />
+
             <EditorSidebar
               state={state}
               selectedLayer={selectedLayer}
@@ -230,21 +257,6 @@ export function EditorShell({
               onRetentionHoursChange={onRetentionHoursChange}
               onExport={onExport}
               onReorderLayers={onReorderLayers}
-            />
-
-            <EditorCanvas
-              pdfFile={state.pdfFile}
-              sourceFileId={state.sourceFileId}
-              pages={state.pages}
-              layers={state.layers}
-              pageRotationMap={pageRotationMap}
-              pageNumbers={pageNumberConfig}
-              watermark={watermarkConfig}
-              activeTool={state.tool}
-              selectedLayerId={state.selection.layerId}
-              onSelectLayer={(layerId) => onSelectLayer(layerId)}
-              onMoveLayer={onMoveLayer}
-              onPlaceLayer={onPlaceLayer}
             />
           </section>
 
