@@ -14,6 +14,16 @@ import {
   type CreatedApiKey
 } from "../lib/pdf-api";
 
+type ExpirationPreset = "7" | "30" | "90" | "none" | "custom";
+
+const expirationPresets: Array<{ value: ExpirationPreset; label: string }> = [
+  { value: "7", label: "7 days" },
+  { value: "30", label: "30 days" },
+  { value: "90", label: "90 days" },
+  { value: "none", label: "No expiry" },
+  { value: "custom", label: "Custom" }
+];
+
 function formatDate(value: string | null): string {
   return value ? new Date(value).toLocaleString() : "Not set";
 }
@@ -22,10 +32,17 @@ function toIsoDateTime(value: string): string | undefined {
   return value ? new Date(value).toISOString() : undefined;
 }
 
+function addDaysIso(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+}
+
 export default function DeveloperPage(): React.JSX.Element {
   const { user, loading } = useAuth();
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [name, setName] = useState("");
+  const [expirationPreset, setExpirationPreset] = useState<ExpirationPreset>("30");
   const [expiresAt, setExpiresAt] = useState("");
   const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null);
   const [status, setStatus] = useState("Loading developer tools...");
@@ -59,15 +76,28 @@ export default function DeveloperPage(): React.JSX.Element {
       return;
     }
 
+    if (expirationPreset === "custom" && !expiresAt) {
+      setStatus("Choose a custom expiration date or select a preset.");
+      return;
+    }
+
+    const nextExpiresAt =
+      expirationPreset === "none"
+        ? undefined
+        : expirationPreset === "custom"
+          ? toIsoDateTime(expiresAt)
+          : addDaysIso(Number(expirationPreset));
+
     try {
       setCreating(true);
       setStatus("Creating API key...");
       const key = await createApiKey({
         name: name.trim(),
-        expiresAt: toIsoDateTime(expiresAt)
+        expiresAt: nextExpiresAt
       });
       setCreatedKey(key);
       setName("");
+      setExpirationPreset("30");
       setExpiresAt("");
       await loadKeys();
       setStatus("API key created. Copy it now; it will not be shown again.");
@@ -150,13 +180,38 @@ export default function DeveloperPage(): React.JSX.Element {
                 placeholder="Nightly document job"
               />
 
-              <label htmlFor="api-key-expiry">Expiration</label>
-              <input
-                id="api-key-expiry"
-                type="datetime-local"
-                value={expiresAt}
-                onChange={(event) => setExpiresAt(event.target.value)}
-              />
+              <fieldset className="token-expiry-fieldset">
+                <legend>Expiration</legend>
+                <div className="token-expiry-options">
+                  {expirationPresets.map((preset) => (
+                    <label
+                      className={`token-expiry-option ${expirationPreset === preset.value ? "is-selected" : ""}`}
+                      key={preset.value}
+                    >
+                      <input
+                        checked={expirationPreset === preset.value}
+                        name="api-key-expiration"
+                        onChange={() => setExpirationPreset(preset.value)}
+                        type="radio"
+                        value={preset.value}
+                      />
+                      <span>{preset.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {expirationPreset === "custom" ? (
+                <>
+                  <label htmlFor="api-key-expiry">Custom expiration</label>
+                  <input
+                    id="api-key-expiry"
+                    type="datetime-local"
+                    value={expiresAt}
+                    onChange={(event) => setExpiresAt(event.target.value)}
+                  />
+                </>
+              ) : null}
 
               <button className="start-process-btn" type="button" disabled={creating} onClick={() => void onCreate()}>
                 {creating ? "Creating..." : "Create API key"}
