@@ -64,6 +64,35 @@ export class QueueService implements OnModuleDestroy {
     return this.getQueue().add(name, payload);
   }
 
+  async getStatus(): Promise<{
+    name: string;
+    waiting: number;
+    active: number;
+    delayed: number;
+    completed: number;
+    failed: number;
+    paused: number;
+  }> {
+    const counts = await this.getQueue().getJobCounts(
+      "waiting",
+      "active",
+      "delayed",
+      "completed",
+      "failed",
+      "paused"
+    );
+
+    return {
+      name: PDF_TASK_QUEUE_NAME,
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      delayed: counts.delayed ?? 0,
+      completed: counts.completed ?? 0,
+      failed: counts.failed ?? 0,
+      paused: counts.paused ?? 0
+    };
+  }
+
   async onModuleDestroy(): Promise<void> {
     if (this.queue) {
       await this.queue.close();

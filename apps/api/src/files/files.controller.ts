@@ -298,6 +298,10 @@ export class FilesController {
       throw new GoneException("This signing workflow has been revoked.");
     }
 
+    if (!recipient.otpVerifiedAt || (recipient.passcodeHash && !recipient.passcodeVerifiedAt)) {
+      throw new GoneException("Verify your identity before downloading the final signed PDF.");
+    }
+
     await this.streamDownload(recipient.envelope.finalFile, reply);
   }
 
@@ -324,6 +328,10 @@ export class FilesController {
 
     if (envelope.status === SignatureEnvelopeStatus.revoked) {
       throw new GoneException("This signing workflow has been revoked.");
+    }
+
+    if (!recipient.otpVerifiedAt || (recipient.passcodeHash && !recipient.passcodeVerifiedAt)) {
+      throw new GoneException("Verify your identity before viewing this signing document.");
     }
 
     return recipient.envelope.sourceFile;

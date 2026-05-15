@@ -8,6 +8,9 @@ import {
   getSignaturePdfPagePreviewUrl,
   getSignatureRequest,
   pollTask,
+  requestSignatureOtp,
+  verifySignatureOtp,
+  verifySignaturePasscode,
   type PdfFileMetadataResponse,
   type SignatureRequestResponse
 } from "../../lib/pdf-api";
@@ -32,6 +35,43 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+function buildInitialFieldValues(nextRequest: SignatureRequestResponse): Record<string, FieldDraftValue> {
+  const initialValues: Record<string, FieldDraftValue> = {};
+  nextRequest.fields
+    .filter((field) => field.recipientId === nextRequest.recipient.id)
+    .forEach((field) => {
+      if (field.type === "checkbox") {
+        initialValues[field.id] = { checked: Boolean(field.value?.checked) };
+        return;
+      }
+      if (field.type === "signature") {
+        initialValues[field.id] = {
+          signatureDataUrl:
+            typeof field.value?.signatureDataUrl === "string"
+              ? String(field.value.signatureDataUrl)
+              : ""
+        };
+        return;
+      }
+
+      const fallbackText =
+        field.type === "date"
+          ? todayInputValue()
+          : field.type === "name"
+            ? nextRequest.recipient.name || ""
+            : "";
+
+      initialValues[field.id] = {
+        textValue:
+          typeof field.value?.text === "string"
+            ? String(field.value.text)
+            : fallbackText
+      };
+    });
+
+  return initialValues;
+}
+
 export default function SignRequestPage(): React.JSX.Element {
   const params = useParams<{ token: string }>();
   const token = params.token;
@@ -44,6 +84,8 @@ export default function SignRequestPage(): React.JSX.Element {
   const [status, setStatus] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
+  const [otp, setOtp] = useState("");
+  const [passcode, setPasscode] = useState("");
 
   useEffect(() => {
     if (!token) {
@@ -57,43 +99,14 @@ export default function SignRequestPage(): React.JSX.Element {
         setStatus("");
         const nextRequest = await getSignatureRequest(token);
         setRequest(nextRequest);
-        const metadata = await getSignaturePdfMetadata(token);
-        setPdfMeta(metadata);
+        if (nextRequest.verification.identityVerified) {
+          const metadata = await getSignaturePdfMetadata(token);
+          setPdfMeta(metadata);
+        } else {
+          setPdfMeta(null);
+        }
 
-        const initialValues: Record<string, FieldDraftValue> = {};
-        nextRequest.fields
-          .filter((field) => field.recipientId === nextRequest.recipient.id)
-          .forEach((field) => {
-            if (field.type === "checkbox") {
-              initialValues[field.id] = { checked: Boolean(field.value?.checked) };
-              return;
-            }
-            if (field.type === "signature") {
-              initialValues[field.id] = {
-                signatureDataUrl:
-                  typeof field.value?.signatureDataUrl === "string"
-                    ? String(field.value.signatureDataUrl)
-                    : ""
-              };
-              return;
-            }
-
-            const fallbackText =
-              field.type === "date"
-                ? todayInputValue()
-                : field.type === "name"
-                  ? nextRequest.recipient.name || ""
-                  : "";
-
-            initialValues[field.id] = {
-              textValue:
-                typeof field.value?.text === "string"
-                  ? String(field.value.text)
-                  : fallbackText
-            };
-          });
-
-        setFieldValues(initialValues);
+        setFieldValues(buildInitialFieldValues(nextRequest));
         setSelectedFieldId(
           nextRequest.fields.find((field) => field.recipientId === nextRequest.recipient.id)?.id ?? null
         );
@@ -106,6 +119,71 @@ export default function SignRequestPage(): React.JSX.Element {
 
     void load();
   }, [token]);
+
+  const reloadRequest = async (): Promise<void> => {
+    if (!token) {
+      return;
+    }
+    const nextRequest = await getSignatureRequest(token);
+    setRequest(nextRequest);
+    if (nextRequest.verification.identityVerified) {
+      setPdfMeta(await getSignaturePdfMetadata(token));
+      setFieldValues(buildInitialFieldValues(nextRequest));
+      setSelectedFieldId(
+        nextRequest.fields.find((field) => field.recipientId === nextRequest.recipient.id)?.id ?? null
+      );
+    }
+  };
+
+  const requestOtp = async (): Promise<void> => {
+    if (!token) {
+      return;
+    }
+    try {
+      setBusy(true);
+      const result = await requestSignatureOtp(token);
+      setStatus(`Verification code sent. It expires ${new Date(result.expiresAt).toLocaleTimeString()}.`);
+      await reloadRequest();
+    } catch (error) {
+      setStatus(`Could not send code: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyOtp = async (): Promise<void> => {
+    if (!token) {
+      return;
+    }
+    try {
+      setBusy(true);
+      await verifySignatureOtp(token, otp);
+      setOtp("");
+      setStatus("Email verified.");
+      await reloadRequest();
+    } catch (error) {
+      setStatus(`Verification failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyPasscode = async (): Promise<void> => {
+    if (!token) {
+      return;
+    }
+    try {
+      setBusy(true);
+      await verifySignaturePasscode(token, passcode);
+      setPasscode("");
+      setStatus("Passcode verified.");
+      await reloadRequest();
+    } catch (error) {
+      setStatus(`Passcode failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const assignedFields = useMemo(
     () =>
@@ -171,6 +249,64 @@ export default function SignRequestPage(): React.JSX.Element {
       {error ? <p className={styles.note}>{error}</p> : null}
 
       {request ? (
+        !request.verification.identityVerified ? (
+          <section className={styles.builderGrid}>
+            <aside className={styles.sidebar}>
+              <article className={styles.panel}>
+                <div className={styles.panelHeader}>
+                  <span className={styles.eyebrow}>Identity check</span>
+                  <strong>{request.recipient.email}</strong>
+                </div>
+                <p className={styles.panelCopy}>
+                  Verify your email before the document is shown. Some workflows also require a signer passcode.
+                </p>
+                {!request.verification.otpVerified ? (
+                  <div className={styles.fieldEditor}>
+                    <button className={styles.primaryButton} type="button" disabled={busy} onClick={() => void requestOtp()}>
+                      Send email code
+                    </button>
+                    <label>
+                      Email code
+                      <input value={otp} onChange={(event) => setOtp(event.target.value)} inputMode="numeric" />
+                    </label>
+                    <button className={styles.secondaryButton} type="button" disabled={busy || !otp.trim()} onClick={() => void verifyOtp()}>
+                      Verify email
+                    </button>
+                  </div>
+                ) : null}
+                {request.verification.otpVerified && request.verification.passcodeRequired && !request.verification.passcodeVerified ? (
+                  <div className={styles.fieldEditor}>
+                    <label>
+                      Signer passcode
+                      <input value={passcode} onChange={(event) => setPasscode(event.target.value)} type="password" />
+                    </label>
+                    <button className={styles.secondaryButton} type="button" disabled={busy || !passcode.trim()} onClick={() => void verifyPasscode()}>
+                      Verify passcode
+                    </button>
+                  </div>
+                ) : null}
+                <p className={styles.note}>{status}</p>
+              </article>
+              <article className={styles.panel}>
+                <div className={styles.panelHeader}>
+                  <span className={styles.eyebrow}>Trust</span>
+                  <strong>Signature evidence</strong>
+                </div>
+                <p className={styles.panelCopy}>
+                  Email verification, timestamps, IP address, browser details, and signer events are recorded in the audit certificate.
+                </p>
+                <a href="/legal-validity" target="_blank" rel="noreferrer">Legal validity</a>
+                <a href="/signature-levels" target="_blank" rel="noreferrer">Signature levels</a>
+              </article>
+            </aside>
+            <section className={styles.canvasStack}>
+              <div className={styles.emptyState}>
+                <strong>Verify your identity to open the document.</strong>
+                <span>The PDF and assigned fields stay locked until verification is complete.</span>
+              </div>
+            </section>
+          </section>
+        ) : (
         <section className={styles.builderGrid}>
           <aside className={styles.sidebar}>
             <article className={styles.panel}>
@@ -294,6 +430,11 @@ export default function SignRequestPage(): React.JSX.Element {
                   Download final signed PDF
                 </a>
               ) : null}
+              {request.auditCertificateUrl ? (
+                <a className={styles.secondaryButton} href={request.auditCertificateUrl} target="_blank" rel="noreferrer">
+                  Download audit certificate
+                </a>
+              ) : null}
             </article>
           </aside>
 
@@ -339,6 +480,7 @@ export default function SignRequestPage(): React.JSX.Element {
             ))}
           </section>
         </section>
+        )
       ) : null}
     </main>
   );

@@ -16,15 +16,22 @@ const scrypt = promisify(scryptCallback);
 const PASSWORD_HASH_PREFIX = "scrypt";
 const SESSION_TOKEN_BYTES = 32;
 const RESET_TOKEN_BYTES = 32;
+const API_KEY_BYTES = 32;
 const PASSWORD_SALT_BYTES = 16;
 const PASSWORD_HASH_BYTES = 64;
 const SESSION_LAST_USED_THROTTLE_MS = 10 * 60 * 1000;
+const API_KEY_PREFIX = "ihp";
 
 export type SafeUser = {
   id: string;
   email: string;
   name: string | null;
   createdAt: Date;
+};
+
+export type ApiKeyPrincipal = {
+  apiKeyId: string;
+  user: SafeUser;
 };
 
 function normalizeEmail(email: string): string {
@@ -57,6 +64,23 @@ function hashToken(token: string): string {
 
 function createOpaqueToken(byteLength: number): string {
   return randomBytes(byteLength).toString("base64url");
+}
+
+function extractApiKey(request: FastifyRequest): string | null {
+  const authorization = request.headers.authorization;
+  if (authorization) {
+    const [scheme, value] = authorization.split(/\s+/, 2);
+    if (value && ["bearer", "apikey"].includes(scheme.toLowerCase())) {
+      return value.trim();
+    }
+  }
+
+  const headerValue = request.headers["x-api-key"];
+  if (typeof headerValue === "string" && headerValue.trim()) {
+    return headerValue.trim();
+  }
+
+  return null;
 }
 
 function safeUser(user: Pick<User, "id" | "email" | "name" | "createdAt">): SafeUser {
@@ -121,7 +145,7 @@ export class AuthService {
     return parseCookieHeader(request.headers.cookie, env.AUTH_SESSION_COOKIE);
   }
 
-  async currentUser(request: FastifyRequest): Promise<SafeUser | null> {
+  async currentSessionUser(request: FastifyRequest): Promise<SafeUser | null> {
     const token = this.getSessionToken(request);
     if (!token) {
       return null;
@@ -148,6 +172,38 @@ export class AuthService {
     return safeUser(session.user);
   }
 
+  async currentApiKeyPrincipal(request: FastifyRequest): Promise<ApiKeyPrincipal | null> {
+    const apiKey = extractApiKey(request);
+    if (!apiKey) {
+      return null;
+    }
+
+    const record = await this.prisma.apiKey.findUnique({
+      where: { keyHash: hashToken(apiKey) },
+      include: { owner: true }
+    });
+
+    if (!record || record.revokedAt || (record.expiresAt && record.expiresAt.getTime() <= Date.now())) {
+      return null;
+    }
+
+    await this.prisma.apiKey
+      .update({
+        where: { id: record.id },
+        data: { lastUsedAt: new Date() }
+      })
+      .catch(() => undefined);
+
+    return {
+      apiKeyId: record.id,
+      user: safeUser(record.owner)
+    };
+  }
+
+  async currentUser(request: FastifyRequest): Promise<SafeUser | null> {
+    return (await this.currentSessionUser(request)) ?? (await this.currentApiKeyPrincipal(request))?.user ?? null;
+  }
+
   async requireUser(request: FastifyRequest): Promise<SafeUser> {
     const user = await this.currentUser(request);
     if (!user) {
@@ -155,6 +211,108 @@ export class AuthService {
     }
 
     return user;
+  }
+
+  async requireSessionUser(request: FastifyRequest): Promise<SafeUser> {
+    const user = await this.currentSessionUser(request);
+    if (!user) {
+      throw new UnauthorizedException("Sign in to continue.");
+    }
+
+    return user;
+  }
+
+  async requireApiKey(request: FastifyRequest): Promise<ApiKeyPrincipal> {
+    const principal = await this.currentApiKeyPrincipal(request);
+    if (!principal) {
+      throw new UnauthorizedException("Provide a valid API key in the Authorization: Bearer or X-API-Key header.");
+    }
+
+    return principal;
+  }
+
+  async createApiKey(
+    request: FastifyRequest,
+    input: { name: string; expiresAt?: string }
+  ): Promise<{
+    id: string;
+    name: string;
+    key: string;
+    keyPrefix: string;
+    expiresAt: Date | null;
+    createdAt: Date;
+  }> {
+    const user = await this.requireSessionUser(request);
+    const name = input.name.trim();
+    if (!name) {
+      throw new BadRequestException("API key name is required.");
+    }
+
+    const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
+    if (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) {
+      throw new BadRequestException("API key expiration must be a future date.");
+    }
+
+    const key = `${API_KEY_PREFIX}_${createOpaqueToken(API_KEY_BYTES)}`;
+    const created = await this.prisma.apiKey.create({
+      data: {
+        ownerId: user.id,
+        name,
+        keyPrefix: key.slice(0, 12),
+        keyHash: hashToken(key),
+        expiresAt
+      }
+    });
+
+    return {
+      id: created.id,
+      name: created.name,
+      key,
+      keyPrefix: created.keyPrefix,
+      expiresAt: created.expiresAt,
+      createdAt: created.createdAt
+    };
+  }
+
+  async listApiKeys(request: FastifyRequest): Promise<Array<{
+    id: string;
+    name: string;
+    keyPrefix: string;
+    lastUsedAt: Date | null;
+    expiresAt: Date | null;
+    revokedAt: Date | null;
+    createdAt: Date;
+  }>> {
+    const user = await this.requireSessionUser(request);
+    return this.prisma.apiKey.findMany({
+      where: { ownerId: user.id },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        keyPrefix: true,
+        lastUsedAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        createdAt: true
+      }
+    });
+  }
+
+  async revokeApiKey(request: FastifyRequest, id: string): Promise<{ ok: true }> {
+    const user = await this.requireSessionUser(request);
+    await this.prisma.apiKey.updateMany({
+      where: {
+        id,
+        ownerId: user.id,
+        revokedAt: null
+      },
+      data: {
+        revokedAt: new Date()
+      }
+    });
+
+    return { ok: true };
   }
 
   async signup(input: { email: string; password: string; name?: string }, reply: FastifyReply): Promise<SafeUser> {

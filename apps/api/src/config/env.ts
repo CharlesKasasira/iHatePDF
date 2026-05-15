@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+const BooleanFlagSchema = z.preprocess((value) => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
 const EnvSchema = z.object({
   API_PORT: z.coerce.number().default(4000),
   API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
@@ -16,6 +38,10 @@ const EnvSchema = z.object({
   AUTH_SESSION_COOKIE: z.string().min(1).default("ihatepdf_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(30),
   PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+  CLEANUP_ENABLED: BooleanFlagSchema.default(true),
+  CLEANUP_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
+  CLEANUP_BATCH_SIZE: z.coerce.number().int().positive().max(1000).default(100),
+  CLEANUP_WORKFLOW_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(50),
   QPDF_BIN: z.string().default("qpdf"),
   PDFTOPPM_BIN: z.string().default("pdftoppm"),

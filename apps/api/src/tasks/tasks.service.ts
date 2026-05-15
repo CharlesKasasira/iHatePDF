@@ -138,6 +138,8 @@ export interface TaskStatusView {
   progressPercent: number;
   progressMessage: string | null;
   errorMessage: string | null;
+  outputFileId: string | null;
+  outputExpiresAt: Date | null;
   outputDownloadUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -736,6 +738,8 @@ export class TasksService {
       progressPercent: task.progressPercent,
       progressMessage: task.progressMessage,
       errorMessage: task.errorMessage,
+      outputFileId: task.outputFile?.id ?? null,
+      outputExpiresAt: task.outputFile?.expiresAt ?? null,
       outputDownloadUrl,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt

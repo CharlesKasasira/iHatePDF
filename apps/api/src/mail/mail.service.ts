@@ -101,6 +101,33 @@ export class MailService {
     }
   }
 
+  async sendSigningOtpMail(input: {
+    to: string;
+    otp: string;
+    title?: string;
+    requesterEmail?: string;
+    expiresInMinutes: number;
+  }): Promise<void> {
+    try {
+      await this.transporter.sendMail({
+        from: env.MAIL_FROM,
+        to: input.to,
+        subject: "Your iHatePDF signing verification code",
+        text: [
+          `Your signing verification code is ${input.otp}.`,
+          input.title ? `Document: ${input.title}` : null,
+          input.requesterEmail ? `Requested by: ${input.requesterEmail}` : null,
+          `This code expires in ${input.expiresInMinutes} minutes.`,
+          "If you did not expect this request, you can ignore this email."
+        ]
+          .filter(Boolean)
+          .join("\n")
+      });
+    } catch (error) {
+      this.handleMailError("signing verification", input.to, error);
+    }
+  }
+
   async sendPasswordResetMail(input: {
     to: string;
     resetLink: string;

@@ -1,6 +1,7 @@
 "use client";
 
 import type { EditPageRotationInput } from "../../lib/pdf-api";
+import { ReorderableList, ReorderHandle } from "../reorderable-list";
 import { PAGE_NUMBER_POSITIONS, RETENTION_OPTIONS } from "./constants";
 import type {
   EditorDocumentState,
@@ -36,7 +37,8 @@ export function EditorSidebar({
   onOpenSignaturePicker,
   onOpenSignatureChooser,
   onRetentionHoursChange,
-  onExport
+  onExport,
+  onReorderLayers
 }: {
   state: EditorDocumentState;
   selectedLayer: EditorLayer | null;
@@ -62,6 +64,7 @@ export function EditorSidebar({
   onOpenSignatureChooser: () => void;
   onRetentionHoursChange: (retentionHours: number) => void;
   onExport: () => Promise<void>;
+  onReorderLayers: (layers: EditorLayer[]) => void;
 }): React.JSX.Element {
   return (
     <aside className="studio-sidebar">
@@ -92,21 +95,26 @@ export function EditorSidebar({
 
       <div className="studio-panel">
         <div className="studio-panel__eyebrow">Layers</div>
-        <div className="studio-layer-list">
-          {state.layers.length === 0 ? (
-            <p className="studio-empty-copy">
-              No layers yet. Pick a tool, then click directly on the PDF page to drop it in.
-            </p>
-          ) : (
-            state.layers.map((layer, index) => (
+        {state.layers.length === 0 ? (
+          <p className="studio-empty-copy">
+            No layers yet. Pick a tool, then click directly on the PDF page to drop it in.
+          </p>
+        ) : (
+          <ReorderableList
+            items={state.layers}
+            onReorder={onReorderLayers}
+            className="studio-layer-list"
+            disabled={state.busy}
+            keyForItem={(layer) => layer.id}
+            renderItem={(layer, index) => (
               <button
-                key={layer.id}
                 type="button"
                 className={`studio-layer-card ${
                   state.selection.layerId === layer.id ? "is-active" : ""
                 }`}
                 onClick={() => onSelectLayer(layer.id)}
               >
+                <ReorderHandle label="Drag layer to reorder stack" />
                 <span className="studio-layer-card__index">{index + 1}</span>
                 <span className="studio-layer-card__content">
                   <strong>
@@ -116,9 +124,9 @@ export function EditorSidebar({
                 </span>
                 <span className="studio-layer-card__meta">P{layer.page}</span>
               </button>
-            ))
-          )}
-        </div>
+            )}
+          />
+        )}
       </div>
 
       <div className="studio-panel">

@@ -1,8 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { SiteHeader } from "./site-header";
 import { pollTask, uploadPdf } from "../lib/pdf-api";
+import { TaskProgressState } from "./task-progress-state";
+import { UploadDropzone } from "./upload-dropzone";
 
 type PageRangeOperationPageProps = {
   active: React.ComponentProps<typeof SiteHeader>["active"];
@@ -35,7 +37,6 @@ export function PageRangeOperationPage({
   deriveOutputName,
   queueTask
 }: PageRangeOperationPageProps): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [pageRanges, setPageRanges] = useState("1");
   const [outputName, setOutputName] = useState("");
@@ -117,24 +118,14 @@ export function PageRangeOperationPage({
           <h1>{title}</h1>
           <p>{description}</p>
 
-          <div className="upload-center compact">
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-            >
-              Select PDF file
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              accept="application/pdf"
-              onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-            />
-          </div>
-          <p className="drop-hint">{file ? `Selected: ${file.name}` : "Choose one PDF file"}</p>
+          <UploadDropzone
+            label="Select PDF file"
+            hint={file ? `Selected: ${file.name}` : "Choose one PDF file or drop it here"}
+            accept="application/pdf"
+            compact
+            disabled={busy}
+            onFiles={(files) => onFileChange(files?.[0] ?? null)}
+          />
         </section>
 
         <section className="merge-workbench">
@@ -160,24 +151,19 @@ export function PageRangeOperationPage({
             {busy ? runningLabel : startLabel}
           </button>
 
-          {busy || progressPercent > 0 ? (
-            <div className="batch-task-progress">
-              <div className="batch-task-progress-row">
-                <span>{status}</span>
-                <strong>{progressPercent}%</strong>
-              </div>
-              <div className="task-progress-rail">
-                <span style={{ width: `${progressPercent}%` }} />
-              </div>
+          {!file ? (
+            <div className="tool-empty-state">
+              <strong>No PDF selected</strong>
+              <span>Upload one PDF to unlock range controls and export progress.</span>
             </div>
           ) : null}
 
-          <p className={status.toLowerCase().includes("failed") ? "error" : "small"}>{status}</p>
-          {downloadUrl ? (
-            <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-              {downloadLabel}
-            </a>
-          ) : null}
+          <TaskProgressState
+            status={status}
+            progressPercent={progressPercent}
+            downloadUrl={downloadUrl}
+            downloadLabel={downloadLabel}
+          />
         </section>
       </main>
     </div>

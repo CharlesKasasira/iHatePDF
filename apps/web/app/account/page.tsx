@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { CheckCircle2, Clock3, Download, FileText, FolderClock, PenLine, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { useAuth } from "../components/auth-provider";
@@ -12,6 +13,20 @@ function formatDate(value: string | null): string {
 
 function label(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function isErrorStatus(value: string): boolean {
+  return value === "failed" || value === "finalization_failed" || value === "expired" || value === "revoked";
+}
+
+function EmptyActivity({ title, body }: { title: string; body: string }): React.JSX.Element {
+  return (
+    <div className="account-empty-state">
+      <FolderClock aria-hidden="true" size={24} />
+      <strong>{title}</strong>
+      <span>{body}</span>
+    </div>
+  );
 }
 
 export default function AccountPage(): React.JSX.Element {
@@ -58,15 +73,28 @@ export default function AccountPage(): React.JSX.Element {
         {activity ? (
           <section className="account-grid">
             <article className="account-panel">
-              <h2>Recent tasks</h2>
-              {activity.tasks.length === 0 ? <p>No signed-in tasks yet.</p> : null}
+              <div className="account-panel-heading">
+                <span><Clock3 aria-hidden="true" size={18} /> Recent tasks</span>
+                <strong>{activity.tasks.length}</strong>
+              </div>
+              {activity.tasks.length === 0 ? (
+                <EmptyActivity title="No tasks yet" body="Signed-in exports and conversions will appear here." />
+              ) : null}
               {activity.tasks.map((task) => (
-                <div className="activity-card" key={task.id}>
-                  <strong>{label(task.type)}</strong>
-                  <span>{task.status} · {task.progressPercent}% · {formatDate(task.createdAt)}</span>
+                <div className={`activity-card ${isErrorStatus(task.status) ? "is-error" : ""}`} key={task.id}>
+                  <div className="activity-card__title">
+                    {isErrorStatus(task.status) ? (
+                      <TriangleAlert aria-hidden="true" size={18} />
+                    ) : (
+                      <CheckCircle2 aria-hidden="true" size={18} />
+                    )}
+                    <strong>{label(task.type)}</strong>
+                  </div>
+                  <span>{label(task.status)} · {task.progressPercent}% · {formatDate(task.createdAt)}</span>
                   {task.errorMessage ? <p>{task.errorMessage}</p> : null}
                   {task.outputDownloadUrl ? (
-                    <a href={task.outputDownloadUrl} target="_blank" rel="noreferrer">
+                    <a className="activity-action" href={task.outputDownloadUrl} target="_blank" rel="noreferrer">
+                      <Download aria-hidden="true" size={16} />
                       Download {task.outputFileName || "output"}
                     </a>
                   ) : (
@@ -77,15 +105,24 @@ export default function AccountPage(): React.JSX.Element {
             </article>
 
             <article className="account-panel">
-              <h2>Signature workflows</h2>
-              {activity.signatureEnvelopes.length === 0 ? <p>No signed-in signature workflows yet.</p> : null}
+              <div className="account-panel-heading">
+                <span><PenLine aria-hidden="true" size={18} /> Signature workflows</span>
+                <strong>{activity.signatureEnvelopes.length}</strong>
+              </div>
+              {activity.signatureEnvelopes.length === 0 ? (
+                <EmptyActivity title="No signing workflows" body="Sent signature packets will show routing, status, and final downloads." />
+              ) : null}
               {activity.signatureEnvelopes.map((workflow) => (
-                <div className="activity-card" key={workflow.id}>
-                  <strong>{workflow.title || workflow.fileName}</strong>
+                <div className={`activity-card ${isErrorStatus(workflow.status) ? "is-error" : ""}`} key={workflow.id}>
+                  <div className="activity-card__title">
+                    <PenLine aria-hidden="true" size={18} />
+                    <strong>{workflow.title || workflow.fileName}</strong>
+                  </div>
                   <span>{workflow.status.replace("_", " ")} · expires {formatDate(workflow.expiresAt)}</span>
-                  <a href={workflow.manageUrl}>Manage workflow</a>
+                  <a className="activity-action" href={workflow.manageUrl}>Manage workflow</a>
                   {workflow.finalDownloadUrl ? (
-                    <a href={workflow.finalDownloadUrl} target="_blank" rel="noreferrer">
+                    <a className="activity-action" href={workflow.finalDownloadUrl} target="_blank" rel="noreferrer">
+                      <Download aria-hidden="true" size={16} />
                       Download final PDF
                     </a>
                   ) : (
@@ -96,15 +133,26 @@ export default function AccountPage(): React.JSX.Element {
             </article>
 
             <article className="account-panel">
-              <h2>Recent files</h2>
-              {activity.files.length === 0 ? <p>No signed-in files yet.</p> : null}
+              <div className="account-panel-heading">
+                <span><FileText aria-hidden="true" size={18} /> Recent files</span>
+                <strong>{activity.files.length}</strong>
+              </div>
+              {activity.files.length === 0 ? (
+                <EmptyActivity title="No files yet" body="Signed-in uploads will appear here until their retention period ends." />
+              ) : null}
               {activity.files.map((file) => (
                 <div className="activity-card" key={file.id}>
-                  <strong>{file.fileName}</strong>
+                  <div className="activity-card__title">
+                    <FileText aria-hidden="true" size={18} />
+                    <strong>{file.fileName}</strong>
+                  </div>
                   <span>{file.mimeType} · uploaded {formatDate(file.createdAt)}</span>
                   {file.expiresAt ? <small>Expires {formatDate(file.expiresAt)}</small> : <small>No expiration set.</small>}
                   {file.downloadUrl ? (
-                    <a href={file.downloadUrl} target="_blank" rel="noreferrer">Download</a>
+                    <a className="activity-action" href={file.downloadUrl} target="_blank" rel="noreferrer">
+                      <Download aria-hidden="true" size={16} />
+                      Download
+                    </a>
                   ) : (
                     <small>Download unavailable or expired.</small>
                   )}

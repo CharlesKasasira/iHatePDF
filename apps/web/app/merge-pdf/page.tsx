@@ -1,15 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { pollTask, queueMerge, uploadPdf } from "../lib/pdf-api";
-
-function moveItem<T>(items: T[], from: number, to: number): T[] {
-  const next = [...items];
-  const [removed] = next.splice(from, 1);
-  next.splice(to, 0, removed);
-  return next;
-}
+import { ReorderableList, ReorderHandle, moveItem } from "../components/reorderable-list";
+import { TaskProgressState } from "../components/task-progress-state";
+import { UploadDropzone } from "../components/upload-dropzone";
 
 function filterPdfFiles(list: FileList | null): File[] {
   if (!list) {
@@ -20,14 +16,12 @@ function filterPdfFiles(list: FileList | null): File[] {
 }
 
 export default function MergePage(): React.JSX.Element {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [outputName, setOutputName] = useState("merged.pdf");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [progressPercent, setProgressPercent] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState("");
-  const [isDropActive, setIsDropActive] = useState(false);
 
   const addFiles = (incoming: File[]): void => {
     if (incoming.length === 0) {
@@ -95,47 +89,34 @@ export default function MergePage(): React.JSX.Element {
           <h1>Merge PDF files</h1>
           <p>Combine PDFs in the order you want with the easiest PDF merger available.</p>
 
-          <div
-            className={`upload-center upload-center--single ${isDropActive ? "is-drop-active" : ""}`}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setIsDropActive(true);
-            }}
-            onDragLeave={() => setIsDropActive(false)}
-            onDrop={(event) => {
-              event.preventDefault();
-              setIsDropActive(false);
-              addFiles(filterPdfFiles(event.dataTransfer.files));
-            }}
-          >
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={busy}
-            >
-              Select PDF files
-            </button>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/pdf"
-              multiple
-              hidden
-              onChange={(event) => addFiles(filterPdfFiles(event.target.files))}
-            />
-          </div>
-
-          <p className="drop-hint">or drop PDFs here</p>
+          <UploadDropzone
+            label="Select PDF files"
+            hint={files.length > 0 ? `${files.length} PDFs ready to order` : "Drop PDFs here"}
+            accept="application/pdf"
+            multiple
+            compact
+            disabled={busy}
+            onFiles={(fileList) => addFiles(filterPdfFiles(fileList))}
+          />
         </section>
 
-        {files.length > 0 ? (
-          <section className="merge-workbench">
-            <h2>Selected files</h2>
-            <div className="picked-files">
-              {files.map((file, index) => (
-                <article key={`${file.name}-${index}`} className="picked-file-row">
+        <section className="merge-workbench">
+          <h2>Selected files</h2>
+          {files.length === 0 ? (
+            <div className="tool-empty-state">
+              <strong>No PDFs selected</strong>
+              <span>Add at least two PDFs. Drag rows to set the merge order before exporting.</span>
+            </div>
+          ) : (
+            <ReorderableList
+              items={files}
+              onReorder={setFiles}
+              className="picked-files"
+              disabled={busy}
+              keyForItem={(file, index) => `${file.name}-${file.lastModified}-${index}`}
+              renderItem={(file, index) => (
+                <article className="picked-file-row">
+                  <ReorderHandle />
                   <div>
                     <strong>{index + 1}.</strong> {file.name}
                   </div>
@@ -163,8 +144,9 @@ export default function MergePage(): React.JSX.Element {
                     </button>
                   </div>
                 </article>
-              ))}
-            </div>
+              )}
+            />
+          )}
 
             <label htmlFor="merge-output">Output filename</label>
             <input
@@ -183,26 +165,13 @@ export default function MergePage(): React.JSX.Element {
               {busy ? "Merging..." : "Merge PDF"}
             </button>
 
-            {busy || progressPercent > 0 ? (
-              <div className="batch-task-progress">
-                <div className="batch-task-progress-row">
-                  <span>{status}</span>
-                  <strong>{progressPercent}%</strong>
-                </div>
-                <div className="task-progress-rail">
-                  <span style={{ width: `${progressPercent}%` }} />
-                </div>
-              </div>
-            ) : null}
-
-            <p className={status.toLowerCase().includes("failed") ? "error" : "small"}>{status}</p>
-            {downloadUrl ? (
-              <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-                Download merged PDF
-              </a>
-            ) : null}
+            <TaskProgressState
+              status={status}
+              progressPercent={progressPercent}
+              downloadUrl={downloadUrl}
+              downloadLabel="Download merged PDF"
+            />
           </section>
-        ) : null}
       </main>
     </div>
   );

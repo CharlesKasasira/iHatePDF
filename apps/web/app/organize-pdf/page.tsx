@@ -1,8 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { getPdfMetadata, pollTask, queueOrganizePdf, uploadPdf } from "../lib/pdf-api";
+import { ReorderableList, ReorderHandle, moveItem } from "../components/reorderable-list";
+import { TaskProgressState } from "../components/task-progress-state";
+import { UploadDropzone } from "../components/upload-dropzone";
 
 type LoadedPdf = {
   fileId: string;
@@ -13,13 +16,6 @@ type LoadedPdf = {
 function stripExtension(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".");
   return dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
-}
-
-function moveItem(items: number[], from: number, to: number): number[] {
-  const next = [...items];
-  const [removed] = next.splice(from, 1);
-  next.splice(to, 0, removed);
-  return next;
 }
 
 function duplicateItem(items: number[], index: number): number[] {
@@ -62,7 +58,6 @@ function pageOrderText(pageOrder: number[]): string {
 }
 
 export default function OrganizePdfPage(): React.JSX.Element {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [loadedPdf, setLoadedPdf] = useState<LoadedPdf | null>(null);
   const [pageOrder, setPageOrder] = useState<number[]>([]);
   const [pageOrderInput, setPageOrderInput] = useState("");
@@ -177,31 +172,18 @@ export default function OrganizePdfPage(): React.JSX.Element {
           <h1>Organize PDF</h1>
           <p>Reorder pages, duplicate the ones you need, and drop the rest before exporting a new PDF.</p>
 
-          <div className="upload-center compact">
-            <button
-              type="button"
-              className="select-files-btn"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-            >
-              Select PDF file
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              accept="application/pdf"
-              onChange={(event) => {
-                void onSelectFile(event.target.files?.[0] ?? null);
-                event.target.value = "";
-              }}
-            />
-          </div>
-          <p className="drop-hint">
-            {loadedPdf
-              ? `${loadedPdf.fileName} · ${loadedPdf.pageCount} original page(s)`
-              : "Upload a PDF to start organizing its page order"}
-          </p>
+          <UploadDropzone
+            label="Select PDF file"
+            hint={
+              loadedPdf
+                ? `${loadedPdf.fileName} · ${loadedPdf.pageCount} original page(s)`
+                : "Upload or drop a PDF to start organizing its page order"
+            }
+            accept="application/pdf"
+            compact
+            disabled={busy}
+            onFiles={(files) => void onSelectFile(files?.[0] ?? null)}
+          />
         </section>
 
         <section className="merge-workbench">
@@ -271,9 +253,21 @@ export default function OrganizePdfPage(): React.JSX.Element {
             placeholder="organized.pdf"
           />
 
-          <div className="organize-sequence">
-            {pageOrder.map((pageNumber, index) => (
-              <article key={`${pageNumber}-${index}`} className="organize-page-card">
+          {pageOrder.length === 0 ? (
+            <div className="tool-empty-state">
+              <strong>No page order yet</strong>
+              <span>Upload a PDF to create draggable page slots for the export.</span>
+            </div>
+          ) : (
+            <ReorderableList
+              items={pageOrder}
+              onReorder={syncPageOrder}
+              className="organize-sequence"
+              disabled={busy}
+              keyForItem={(pageNumber, index) => `${pageNumber}-${index}`}
+              renderItem={(pageNumber, index) => (
+              <article className="organize-page-card">
+                <ReorderHandle />
                 <div>
                   <strong>Slot {index + 1}</strong>
                   <p>Page {pageNumber}</p>
@@ -309,8 +303,9 @@ export default function OrganizePdfPage(): React.JSX.Element {
                   </button>
                 </div>
               </article>
-            ))}
-          </div>
+              )}
+            />
+          )}
 
           <button
             type="button"
@@ -321,32 +316,12 @@ export default function OrganizePdfPage(): React.JSX.Element {
             {busy ? "Organizing..." : "Organize PDF"}
           </button>
 
-          {busy || progressPercent > 0 ? (
-            <div className="batch-task-progress">
-              <div className="batch-task-progress-row">
-                <span>{status}</span>
-                <strong>{progressPercent}%</strong>
-              </div>
-              <div className="task-progress-rail">
-                <span style={{ width: `${progressPercent}%` }} />
-              </div>
-            </div>
-          ) : null}
-
-          <p
-            className={
-              status.toLowerCase().includes("failed") || status.toLowerCase().includes("error")
-                ? "error"
-                : "small"
-            }
-          >
-            {status}
-          </p>
-          {downloadUrl ? (
-            <a className="download" href={downloadUrl} target="_blank" rel="noreferrer">
-              Download organized PDF
-            </a>
-          ) : null}
+          <TaskProgressState
+            status={status}
+            progressPercent={progressPercent}
+            downloadUrl={downloadUrl}
+            downloadLabel="Download organized PDF"
+          />
         </section>
       </main>
     </div>

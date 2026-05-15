@@ -40,6 +40,7 @@ type AccountActivity = {
     completedAt: Date | null;
     manageUrl: string;
     finalDownloadUrl: string | null;
+    auditCertificateUrl: string | null;
   }>;
 };
 
@@ -122,6 +123,10 @@ export class AccountService {
         finalDownloadUrl:
           envelope.finalFile && isDownloadAvailable(envelope.finalFile)
             ? this.storageService.createDownloadUrl(envelope.finalFile.id)
+            : null,
+        auditCertificateUrl:
+          envelope.finalFile && isDownloadAvailable(envelope.finalFile)
+            ? `${env.API_PUBLIC_URL}/api/signature-requests/envelopes/${encodeURIComponent(envelope.id)}/audit-certificate`
             : null
       }))
     };

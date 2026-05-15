@@ -157,6 +157,7 @@ export type EditorAction =
   | { type: "set-selection"; layerId: string | null }
   | { type: "add-layer"; layer: EditorLayer; status: string }
   | { type: "update-layer"; layerId: string; updater: (layer: EditorLayer) => EditorLayer }
+  | { type: "set-layers"; layers: EditorLayer[]; status?: string }
   | { type: "remove-layer"; layerId: string }
   | { type: "set-status"; status: string }
   | { type: "set-busy"; busy: boolean }

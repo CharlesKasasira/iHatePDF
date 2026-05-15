@@ -102,6 +102,16 @@ export class StorageService implements OnModuleInit {
     };
   }
 
+  async deleteObject(objectKey: string): Promise<void> {
+    await unlink(this.resolveObjectPath(objectKey)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    });
+  }
+
   private sanitizeFileName(fileName: string): string {
     const safe = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
     return safe.length > 0 ? safe : `file-${randomUUID()}.pdf`;

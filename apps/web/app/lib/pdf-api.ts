@@ -48,6 +48,7 @@ export type AccountActivityResponse = {
     completedAt: string | null;
     manageUrl: string;
     finalDownloadUrl: string | null;
+    auditCertificateUrl: string | null;
   }>;
 };
 
@@ -76,11 +77,19 @@ export type SignatureRequestResponse = {
     | "expired"
     | "revoked";
   routing: "sequential" | "parallel";
-  fileId: string;
+  fileId: string | null;
   fileName: string;
   expiresAt: string;
   currentOrder: number | null;
   canSubmit: boolean;
+  verification: {
+    otpRequired: boolean;
+    otpVerified: boolean;
+    passcodeRequired: boolean;
+    passcodeVerified: boolean;
+    identityVerified: boolean;
+    otpExpiresAt: string | null;
+  };
   message: string | null;
   recipient: {
     id: string;
@@ -119,10 +128,17 @@ export type SignatureRequestResponse = {
     type:
       | "created"
       | "notification_sent"
+      | "otp_requested"
+      | "otp_verified"
+      | "otp_failed"
+      | "passcode_verified"
+      | "passcode_failed"
       | "viewed"
       | "reminded"
       | "completed"
       | "finalization_failed"
+      | "completion_email_sent"
+      | "completion_email_failed"
       | "reassigned"
       | "revoked"
       | "expired"
@@ -130,8 +146,11 @@ export type SignatureRequestResponse = {
     actorEmail: string | null;
     description: string;
     createdAt: string;
+    ipAddress: string | null;
+    userAgent: string | null;
   }>;
   finalDownloadUrl: string | null;
+  auditCertificateUrl: string | null;
 };
 
 export type SignatureEnvelopeResponse = {
@@ -155,6 +174,7 @@ export type SignatureEnvelopeResponse = {
   completedAt: string | null;
   revokedAt: string | null;
   finalDownloadUrl: string | null;
+  auditCertificateUrl: string | null;
   recipients: Array<{
     id: string;
     name: string | null;
@@ -186,10 +206,17 @@ export type SignatureEnvelopeResponse = {
     type:
       | "created"
       | "notification_sent"
+      | "otp_requested"
+      | "otp_verified"
+      | "otp_failed"
+      | "passcode_verified"
+      | "passcode_failed"
       | "viewed"
       | "reminded"
       | "completed"
       | "finalization_failed"
+      | "completion_email_sent"
+      | "completion_email_failed"
       | "reassigned"
       | "revoked"
       | "expired"
@@ -197,6 +224,39 @@ export type SignatureEnvelopeResponse = {
     actorEmail: string | null;
     description: string;
     createdAt: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+  }>;
+};
+
+export type SignatureEnvelopeTemplate = {
+  id: string;
+  name: string;
+  title: string | null;
+  requesterEmail: string | null;
+  message: string | null;
+  outputName: string;
+  routing: "sequential" | "parallel";
+  createdAt: string;
+  updatedAt: string;
+  recipients: Array<{
+    key: string;
+    name: string | null;
+    email: string | null;
+    role: string | null;
+    routingOrder: number;
+  }>;
+  fields: Array<{
+    recipientKey: string;
+    type: "signature" | "initials" | "name" | "date" | "checkbox" | "text";
+    label: string | null;
+    placeholder: string | null;
+    required: boolean;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
   }>;
 };
 
@@ -413,6 +473,7 @@ export async function createSignatureRequest(input: {
     email: string;
     role?: string;
     routingOrder: number;
+    passcode?: string;
   }>;
   fields: Array<{
     recipientKey: string;
@@ -475,6 +536,59 @@ export async function getSignatureEnvelope(envelopeId: string): Promise<Signatur
   return jsonFetch<SignatureEnvelopeResponse>(`/signature-requests/envelopes/${envelopeId}`);
 }
 
+export async function listSignatureTemplates(): Promise<SignatureEnvelopeTemplate[]> {
+  return jsonFetch<SignatureEnvelopeTemplate[]>("/signature-requests/templates");
+}
+
+export async function createSignatureTemplate(input: {
+  name: string;
+  title?: string;
+  requesterEmail?: string;
+  message?: string;
+  outputName: string;
+  routing: "sequential" | "parallel";
+  recipients: Array<{
+    key: string;
+    name?: string;
+    email?: string;
+    role?: string;
+    routingOrder: number;
+  }>;
+  fields: Array<{
+    recipientKey: string;
+    type: "signature" | "initials" | "name" | "date" | "checkbox" | "text";
+    label?: string;
+    placeholder?: string;
+    required?: boolean;
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
+}): Promise<SignatureEnvelopeTemplate> {
+  return jsonFetch<SignatureEnvelopeTemplate>("/signature-requests/templates", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function createSignatureTemplateFromEnvelope(
+  envelopeId: string,
+  name: string
+): Promise<SignatureEnvelopeTemplate> {
+  return jsonFetch<SignatureEnvelopeTemplate>(`/signature-requests/envelopes/${envelopeId}/templates`, {
+    method: "POST",
+    body: JSON.stringify({ name })
+  });
+}
+
+export async function deleteSignatureTemplate(templateId: string): Promise<{ ok: true }> {
+  return jsonFetch<{ ok: true }>(`/signature-requests/templates/${templateId}`, {
+    method: "DELETE"
+  });
+}
+
 export async function revokeSignatureEnvelope(envelopeId: string): Promise<{ ok: true }> {
   return jsonFetch<{ ok: true }>(`/signature-requests/envelopes/${envelopeId}/revoke`, {
     method: "POST"
@@ -520,6 +634,38 @@ export async function reassignSignatureRecipient(
 
 export async function getSignatureRequest(token: string): Promise<SignatureRequestResponse> {
   return jsonFetch<SignatureRequestResponse>(`/signature-requests/${token}`);
+}
+
+export async function requestSignatureOtp(token: string): Promise<{ ok: true; expiresAt: string }> {
+  return jsonFetch<{ ok: true; expiresAt: string }>(`/signature-requests/${token}/otp/request`, {
+    method: "POST"
+  });
+}
+
+export async function verifySignatureOtp(
+  token: string,
+  otp: string
+): Promise<{ ok: true; verification: SignatureRequestResponse["verification"] }> {
+  return jsonFetch<{ ok: true; verification: SignatureRequestResponse["verification"] }>(
+    `/signature-requests/${token}/otp/verify`,
+    {
+      method: "POST",
+      body: JSON.stringify({ otp })
+    }
+  );
+}
+
+export async function verifySignaturePasscode(
+  token: string,
+  passcode: string
+): Promise<{ ok: true; verification: SignatureRequestResponse["verification"] }> {
+  return jsonFetch<{ ok: true; verification: SignatureRequestResponse["verification"] }>(
+    `/signature-requests/${token}/passcode/verify`,
+    {
+      method: "POST",
+      body: JSON.stringify({ passcode })
+    }
+  );
 }
 
 export async function completeSignatureRequest(
