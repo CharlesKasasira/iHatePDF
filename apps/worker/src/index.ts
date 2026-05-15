@@ -3,6 +3,7 @@ import { Job, Worker } from "bullmq";
 import JSZip from "jszip";
 import nodemailer from "nodemailer";
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import sharp, { type Sharp } from "sharp";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -44,6 +45,8 @@ const POWERPOINT_MIME_TYPE =
 const EXCEL_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const JPEG_MIME_TYPE = "image/jpeg";
 const PNG_MIME_TYPE = "image/png";
+const WEBP_MIME_TYPE = "image/webp";
+const GIF_MIME_TYPE = "image/gif";
 const EMUS_PER_POINT = 12700;
 const TWIPS_PER_POINT = 20;
 
@@ -250,6 +253,89 @@ const ConvertPayloadSchema = z.object({
   outputName: z.string().min(1)
 });
 
+const ImageToolOperationSchema = z.enum([
+  "compress",
+  "resize",
+  "crop",
+  "rotate",
+  "convert_to_jpg",
+  "convert_from_jpg",
+  "watermark",
+  "meme"
+]);
+
+const ImageToolOptionsSchema = z.union([
+  z.object({
+    operation: z.literal("compress"),
+    quality: z.number().int().min(1).max(100).default(78)
+  }),
+  z
+    .object({
+      operation: z.literal("resize"),
+      mode: z.enum(["pixels", "percent"]).default("pixels"),
+      width: z.number().int().min(1).max(12000).optional(),
+      height: z.number().int().min(1).max(12000).optional(),
+      percent: z.number().int().min(1).max(500).optional()
+    })
+    .refine(
+      (value) =>
+        value.mode === "percent" ? Boolean(value.percent) : Boolean(value.width || value.height),
+      {
+        message: "Resize requires dimensions or a percent value."
+      }
+    ),
+  z.object({
+    operation: z.literal("crop"),
+    left: z.number().int().min(0),
+    top: z.number().int().min(0),
+    width: z.number().int().min(1).max(12000),
+    height: z.number().int().min(1).max(12000)
+  }),
+  z.object({
+    operation: z.literal("rotate"),
+    degrees: z.union([z.literal(90), z.literal(180), z.literal(270)])
+  }),
+  z.object({
+    operation: z.literal("convert_to_jpg"),
+    quality: z.number().int().min(1).max(100).default(88)
+  }),
+  z.object({
+    operation: z.literal("convert_from_jpg"),
+    format: z.enum(["png", "webp", "gif"]).default("png"),
+    quality: z.number().int().min(1).max(100).default(88)
+  }),
+  z.object({
+    operation: z.literal("watermark"),
+    text: z.string().min(1).max(120),
+    position: z.enum([
+      "top-left",
+      "top-center",
+      "top-right",
+      "center",
+      "bottom-left",
+      "bottom-center",
+      "bottom-right"
+    ]).default("bottom-right"),
+    fontSize: z.number().int().min(12).max(240).default(42),
+    color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/).default("#ffffff"),
+    opacity: z.number().min(0.05).max(1).default(0.72)
+  }),
+  z.object({
+    operation: z.literal("meme"),
+    topText: z.string().max(120).default(""),
+    bottomText: z.string().max(120).default(""),
+    fontSize: z.number().int().min(18).max(240).default(54)
+  })
+]);
+
+const ImageToolPayloadSchema = z.object({
+  taskId: z.string(),
+  fileKey: z.string(),
+  operation: ImageToolOperationSchema,
+  outputName: z.string().min(1),
+  options: z.record(z.unknown()).default({})
+});
+
 const EditTextSchema = z.object({
   page: z.number().int().min(1),
   x: z.number().min(0),
@@ -350,6 +436,7 @@ type CompressPayload = z.infer<typeof CompressPayloadSchema>;
 type ProtectPayload = z.infer<typeof ProtectPayloadSchema>;
 type UnlockPayload = z.infer<typeof UnlockPayloadSchema>;
 type ConvertPayload = z.infer<typeof ConvertPayloadSchema>;
+type ImageToolPayload = z.infer<typeof ImageToolPayloadSchema>;
 type EditPayload = z.infer<typeof EditPayloadSchema>;
 type ProgressReporter = (percent: number, message: string) => Promise<void>;
 
@@ -386,6 +473,10 @@ function safePdfName(name: string): string {
 
 function safeJpgName(name: string): string {
   return safeNameWithExtension(name, ".jpg");
+}
+
+function safeImageName(name: string, extension: string): string {
+  return safeNameWithExtension(name, extension);
 }
 
 function safeZipName(name: string): string {
@@ -2935,6 +3026,246 @@ async function runWordToPdf(payload: ConvertPayload, reportProgress: ProgressRep
   return saveOutputFile(fileName, "application/pdf", pdfBuffer);
 }
 
+type OutputImageFormat = "jpeg" | "png" | "webp" | "gif";
+
+function imageFormatFromMetadata(format: string | undefined): OutputImageFormat {
+  if (format === "jpeg" || format === "jpg") {
+    return "jpeg";
+  }
+  if (format === "webp") {
+    return "webp";
+  }
+  if (format === "gif") {
+    return "gif";
+  }
+  return "png";
+}
+
+function imageExtension(format: OutputImageFormat): string {
+  return format === "jpeg" ? ".jpg" : `.${format}`;
+}
+
+function imageMimeType(format: OutputImageFormat): string {
+  if (format === "jpeg") {
+    return JPEG_MIME_TYPE;
+  }
+  if (format === "webp") {
+    return WEBP_MIME_TYPE;
+  }
+  if (format === "gif") {
+    return GIF_MIME_TYPE;
+  }
+  return PNG_MIME_TYPE;
+}
+
+async function renderImage(image: Sharp, format: OutputImageFormat, quality = 88): Promise<Buffer> {
+  if (format === "jpeg") {
+    return image.flatten({ background: "#ffffff" }).jpeg({ quality, mozjpeg: true }).toBuffer();
+  }
+  if (format === "webp") {
+    return image.webp({ quality }).toBuffer();
+  }
+  if (format === "gif") {
+    return image.gif().toBuffer();
+  }
+  return image.png({ compressionLevel: 9 }).toBuffer();
+}
+
+function clampDimension(value: number, max: number): number {
+  return Math.max(1, Math.min(max, Math.round(value)));
+}
+
+function positionCoordinates(
+  position: string,
+  imageWidth: number,
+  imageHeight: number,
+  overlayWidth: number,
+  overlayHeight: number,
+  margin: number
+): { left: number; top: number } {
+  const horizontal =
+    position.endsWith("center") || position === "center"
+      ? Math.round((imageWidth - overlayWidth) / 2)
+      : position.endsWith("right")
+        ? imageWidth - overlayWidth - margin
+        : margin;
+  const vertical =
+    position.startsWith("bottom")
+      ? imageHeight - overlayHeight - margin
+      : position === "center"
+        ? Math.round((imageHeight - overlayHeight) / 2)
+        : margin;
+
+  return {
+    left: Math.max(0, horizontal),
+    top: Math.max(0, vertical)
+  };
+}
+
+function textOverlaySvg(input: {
+  width: number;
+  height: number;
+  text: string;
+  fontSize: number;
+  color: string;
+  opacity: number;
+  anchor: "start" | "middle" | "end";
+}): Buffer {
+  const x = input.anchor === "start" ? 0 : input.anchor === "end" ? input.width : input.width / 2;
+  const y = Math.round(input.height * 0.72);
+  return Buffer.from(
+    `<svg width="${input.width}" height="${input.height}" viewBox="0 0 ${input.width} ${input.height}" xmlns="http://www.w3.org/2000/svg">
+      <text x="${x}" y="${y}" text-anchor="${input.anchor}" font-family="Arial, Helvetica, sans-serif" font-size="${input.fontSize}" font-weight="800" fill="${xmlEscape(input.color)}" fill-opacity="${input.opacity}">${xmlEscape(input.text)}</text>
+    </svg>`
+  );
+}
+
+function memeOverlaySvg(width: number, height: number, topText: string, bottomText: string, fontSize: number): Buffer {
+  const top = xmlEscape(topText.toUpperCase());
+  const bottom = xmlEscape(bottomText.toUpperCase());
+  const safeFontSize = clampDimension(fontSize, Math.max(24, Math.floor(width / 4)));
+  return Buffer.from(
+    `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+      <style>
+        .meme { font-family: Impact, Arial Black, Arial, sans-serif; font-size: ${safeFontSize}px; font-weight: 900; fill: #fff; stroke: #111; stroke-width: ${Math.max(2, Math.round(safeFontSize / 14))}px; paint-order: stroke; text-anchor: middle; }
+      </style>
+      ${top ? `<text class="meme" x="${width / 2}" y="${safeFontSize + 18}">${top}</text>` : ""}
+      ${bottom ? `<text class="meme" x="${width / 2}" y="${height - 24}">${bottom}</text>` : ""}
+    </svg>`
+  );
+}
+
+async function runImageTool(payload: ImageToolPayload, reportProgress: ProgressReporter): Promise<string> {
+  const inputBuffer = await downloadObject(payload.fileKey);
+  const metadataProbe = sharp(inputBuffer, { animated: payload.operation === "compress" });
+  const metadata = await metadataProbe.metadata();
+  const inputFormat = imageFormatFromMetadata(metadata.format);
+  const parsedOptions = ImageToolOptionsSchema.parse({
+    operation: payload.operation,
+    ...payload.options
+  });
+  let image = sharp(inputBuffer, { animated: payload.operation === "compress" });
+  let outputFormat = inputFormat;
+  let quality = "quality" in parsedOptions ? parsedOptions.quality : 88;
+
+  await reportProgress(22, "Reading image...");
+
+  if (parsedOptions.operation === "compress") {
+    outputFormat = inputFormat;
+    quality = parsedOptions.quality;
+    await reportProgress(48, "Compressing image...");
+  } else if (parsedOptions.operation === "resize") {
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (parsedOptions.mode === "percent") {
+      if (!width || !height || !parsedOptions.percent) {
+        throw new Error("Percent resize requires a readable image size.");
+      }
+      image = image.resize({
+        width: clampDimension(width * (parsedOptions.percent / 100), 12000),
+        height: clampDimension(height * (parsedOptions.percent / 100), 12000)
+      });
+    } else {
+      image = image.resize({
+        width: parsedOptions.width,
+        height: parsedOptions.height,
+        fit: "inside",
+        withoutEnlargement: false
+      });
+    }
+    await reportProgress(52, "Resizing image...");
+  } else if (parsedOptions.operation === "crop") {
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (
+      !width ||
+      !height ||
+      parsedOptions.left + parsedOptions.width > width ||
+      parsedOptions.top + parsedOptions.height > height
+    ) {
+      throw new Error("Crop bounds must fit inside the source image.");
+    }
+    image = image.extract({
+      left: parsedOptions.left,
+      top: parsedOptions.top,
+      width: parsedOptions.width,
+      height: parsedOptions.height
+    });
+    await reportProgress(52, "Cropping image...");
+  } else if (parsedOptions.operation === "rotate") {
+    image = image.rotate(parsedOptions.degrees);
+    await reportProgress(52, "Rotating image...");
+  } else if (parsedOptions.operation === "convert_to_jpg") {
+    outputFormat = "jpeg";
+    quality = parsedOptions.quality;
+    await reportProgress(52, "Converting image to JPG...");
+  } else if (parsedOptions.operation === "convert_from_jpg") {
+    outputFormat = parsedOptions.format;
+    quality = parsedOptions.quality;
+    await reportProgress(52, `Converting JPG to ${parsedOptions.format.toUpperCase()}...`);
+  } else if (parsedOptions.operation === "watermark") {
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (!width || !height) {
+      throw new Error("Watermark requires a readable image size.");
+    }
+    const overlayWidth = Math.max(
+      1,
+      Math.min(Math.max(1, width - 24), Math.max(120, parsedOptions.text.length * parsedOptions.fontSize))
+    );
+    const overlayHeight = Math.max(40, Math.round(parsedOptions.fontSize * 1.4));
+    const margin = Math.max(12, Math.round(Math.min(width, height) * 0.04));
+    const anchor = parsedOptions.position.endsWith("right")
+      ? "end"
+      : parsedOptions.position.endsWith("center") || parsedOptions.position === "center"
+        ? "middle"
+        : "start";
+    const position = positionCoordinates(
+      parsedOptions.position,
+      width,
+      height,
+      overlayWidth,
+      overlayHeight,
+      margin
+    );
+    image = image.composite([
+      {
+        input: textOverlaySvg({
+          width: overlayWidth,
+          height: overlayHeight,
+          text: parsedOptions.text,
+          fontSize: parsedOptions.fontSize,
+          color: parsedOptions.color,
+          opacity: parsedOptions.opacity,
+          anchor
+        }),
+        ...position
+      }
+    ]);
+    await reportProgress(58, "Applying text watermark...");
+  } else if (parsedOptions.operation === "meme") {
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (!width || !height) {
+      throw new Error("Meme generator requires a readable image size.");
+    }
+    image = image.composite([
+      {
+        input: memeOverlaySvg(width, height, parsedOptions.topText, parsedOptions.bottomText, parsedOptions.fontSize),
+        left: 0,
+        top: 0
+      }
+    ]);
+    await reportProgress(58, "Adding meme text...");
+  }
+
+  await reportProgress(84, "Encoding output image...");
+  const outputBuffer = await renderImage(image, outputFormat, quality);
+  const fileName = safeImageName(payload.outputName, imageExtension(outputFormat));
+  await reportProgress(96, "Saving image output...");
+  return saveOutputFile(fileName, imageMimeType(outputFormat), outputBuffer);
+}
+
 async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): Promise<string> {
   await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
@@ -3266,6 +3597,14 @@ async function processJob(job: Job): Promise<void> {
     const payload = EditPayloadSchema.parse(data);
     await runTask(payload.taskId, "Preparing editor changes...", (reportProgress) =>
       runEdit(payload, reportProgress)
+    );
+    return;
+  }
+
+  if (name === "image-tool") {
+    const payload = ImageToolPayloadSchema.parse(data);
+    await runTask(payload.taskId, "Preparing image tool...", (reportProgress) =>
+      runImageTool(payload, reportProgress)
     );
     return;
   }

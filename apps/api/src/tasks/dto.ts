@@ -8,6 +8,7 @@ import {
   IsInt,
   IsNotEmpty,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   Matches,
@@ -182,6 +183,37 @@ export class ConvertPdfDto {
   @IsString()
   @IsNotEmpty()
   outputName!: string;
+}
+
+export const IMAGE_TOOL_OPERATIONS = [
+  "compress",
+  "resize",
+  "crop",
+  "rotate",
+  "convert_to_jpg",
+  "convert_from_jpg",
+  "watermark",
+  "meme"
+] as const;
+
+export type ImageToolOperation = (typeof IMAGE_TOOL_OPERATIONS)[number];
+
+export class ImageToolDto {
+  @IsString()
+  @IsNotEmpty()
+  fileId!: string;
+
+  @IsString()
+  @IsIn(IMAGE_TOOL_OPERATIONS)
+  operation!: ImageToolOperation;
+
+  @IsString()
+  @IsNotEmpty()
+  outputName!: string;
+
+  @IsOptional()
+  @IsObject()
+  options?: Record<string, unknown>;
 }
 
 export class EditTextDto {

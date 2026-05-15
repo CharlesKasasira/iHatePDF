@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, Get, Header, Post, Req, Res } from "@nestjs/common";
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from "class-validator";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { RateLimit } from "../rate-limit/rate-limit.decorator.js";
@@ -47,6 +47,7 @@ export class AuthController {
 
   @Post("signup")
   @RateLimit("signup")
+  @Header("Cache-Control", "no-store")
   signup(
     @Body() dto: SignupDto,
     @Res({ passthrough: true }) reply: FastifyReply
@@ -56,6 +57,7 @@ export class AuthController {
 
   @Post("login")
   @RateLimit("login")
+  @Header("Cache-Control", "no-store")
   login(
     @Body() dto: LoginDto,
     @Req() request: FastifyRequest,
@@ -65,6 +67,7 @@ export class AuthController {
   }
 
   @Post("logout")
+  @Header("Cache-Control", "no-store")
   logout(
     @Req() request: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply
@@ -73,6 +76,7 @@ export class AuthController {
   }
 
   @Get("me")
+  @Header("Cache-Control", "no-store")
   me(@Req() request: FastifyRequest): Promise<SafeUser | null> {
     return this.authService.currentUser(request);
   }

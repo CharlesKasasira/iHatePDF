@@ -149,6 +149,10 @@ function sessionCookie(value: string, maxAgeSeconds: number): string {
     `Max-Age=${maxAgeSeconds}`
   ];
 
+  if (maxAgeSeconds <= 0) {
+    parts.push("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+  }
+
   if (env.API_PUBLIC_URL.startsWith("https://") || env.APP_BASE_URL.startsWith("https://")) {
     parts.push("Secure");
   }

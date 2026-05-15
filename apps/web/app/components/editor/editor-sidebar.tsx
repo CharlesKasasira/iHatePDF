@@ -118,7 +118,13 @@ export function EditorSidebar({
                 <span className="studio-layer-card__index">{index + 1}</span>
                 <span className="studio-layer-card__content">
                   <strong>
-                    {layer.kind === "text" ? "Text" : layer.kind === "rectangle" ? "Block" : "Asset"}
+                    {layer.kind === "text"
+                      ? "Text"
+                      : layer.kind === "rectangle"
+                        ? layer.variant === "erase"
+                          ? "Erase"
+                          : "Block"
+                        : "Asset"}
                   </strong>
                   <small>{layerSummary(layer)}</small>
                 </span>
@@ -395,7 +401,7 @@ export function EditorSidebar({
               </div>
             ) : null}
 
-            {state.tool === "highlight" || state.tool === "shape" ? (
+            {state.tool === "highlight" || state.tool === "shape" || state.tool === "erase" ? (
               <div className="studio-form-grid">
                 <label>
                   Width
@@ -423,37 +429,51 @@ export function EditorSidebar({
                     }
                   />
                 </label>
-                <label>
-                  Color
-                  <input
-                    type="color"
-                    value={state.draftDefaults.rectangle.color}
-                    onChange={(event) => onRectangleDefaultsChange({ color: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Opacity
-                  <input
-                    type="number"
-                    min={0.05}
-                    max={1}
-                    step={0.05}
-                    value={state.draftDefaults.rectangle.opacity}
-                    onChange={(event) =>
-                      onRectangleDefaultsChange({
-                        opacity: normalizeNumber(Number(event.target.value), 0.22)
-                      })
-                    }
-                  />
-                </label>
-                <p>
-                  Shape defaults place a{" "}
-                  <strong>
-                    {state.draftDefaults.rectangle.width} x {state.draftDefaults.rectangle.height}
-                  </strong>{" "}
-                  block with{" "}
-                  <strong>{Math.round(state.draftDefaults.rectangle.opacity * 100)}%</strong> opacity.
-                </p>
+                {state.tool !== "erase" ? (
+                  <>
+                    <label>
+                      Color
+                      <input
+                        type="color"
+                        value={state.draftDefaults.rectangle.color}
+                        onChange={(event) => onRectangleDefaultsChange({ color: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Opacity
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        value={state.draftDefaults.rectangle.opacity}
+                        onChange={(event) =>
+                          onRectangleDefaultsChange({
+                            opacity: normalizeNumber(Number(event.target.value), 0.22)
+                          })
+                        }
+                      />
+                    </label>
+                  </>
+                ) : null}
+                {state.tool === "erase" ? (
+                  <p>
+                    Erase places a white{" "}
+                    <strong>
+                      {state.draftDefaults.rectangle.width} x {state.draftDefaults.rectangle.height}
+                    </strong>{" "}
+                    block over PDF content.
+                  </p>
+                ) : (
+                  <p>
+                    Shape defaults place a{" "}
+                    <strong>
+                      {state.draftDefaults.rectangle.width} x {state.draftDefaults.rectangle.height}
+                    </strong>{" "}
+                    block with{" "}
+                    <strong>{Math.round(state.draftDefaults.rectangle.opacity * 100)}%</strong> opacity.
+                  </p>
+                )}
               </div>
             ) : null}
 
@@ -549,8 +569,8 @@ export function EditorSidebar({
 
             {state.tool === "select" ? (
               <p>
-                Drag placed layers directly on the PDF to reposition them, or click one to edit its
-                exact values here.
+                Drag placed layers directly on the PDF to reposition them, pull a selected layer's
+                handles to resize it, or double-click text to edit it in place.
               </p>
             ) : null}
 
@@ -916,38 +936,42 @@ function RectangleLayerEditor({
           }
         />
       </label>
-      <label>
-        Color
-        <input
-          type="color"
-          value={layer.color}
-          onChange={(event) =>
-            onUpdateLayer(layer.id, (current) =>
-              current.kind === "rectangle" ? { ...current, color: event.target.value } : current
-            )
-          }
-        />
-      </label>
-      <label>
-        Opacity
-        <input
-          type="number"
-          min={0.05}
-          max={1}
-          step={0.05}
-          value={layer.opacity}
-          onChange={(event) =>
-            onUpdateLayer(layer.id, (current) =>
-              current.kind === "rectangle"
-                ? {
-                    ...current,
-                    opacity: normalizeNumber(Number(event.target.value), current.opacity)
-                  }
-                : current
-            )
-          }
-        />
-      </label>
+      {layer.variant !== "erase" ? (
+        <>
+          <label>
+            Color
+            <input
+              type="color"
+              value={layer.color}
+              onChange={(event) =>
+                onUpdateLayer(layer.id, (current) =>
+                  current.kind === "rectangle" ? { ...current, color: event.target.value } : current
+                )
+              }
+            />
+          </label>
+          <label>
+            Opacity
+            <input
+              type="number"
+              min={0.05}
+              max={1}
+              step={0.05}
+              value={layer.opacity}
+              onChange={(event) =>
+                onUpdateLayer(layer.id, (current) =>
+                  current.kind === "rectangle"
+                    ? {
+                        ...current,
+                        opacity: normalizeNumber(Number(event.target.value), current.opacity)
+                      }
+                    : current
+                )
+              }
+            />
+          </label>
+        </>
+      ) : null}
     </div>
   );
 }

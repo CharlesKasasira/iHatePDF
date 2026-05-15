@@ -10,7 +10,7 @@ import type {
 } from "../../lib/pdf-api";
 
 export type EditorMode = "edit" | "sign";
-export type EditorTool = "select" | "text" | "highlight" | "shape" | "sign" | "image";
+export type EditorTool = "select" | "text" | "highlight" | "shape" | "erase" | "sign" | "image";
 export type SignatureFlowStep = "closed" | "choose" | "request";
 
 export type EditorPage = {
@@ -27,7 +27,7 @@ export type EditorTextLayer = EditTextInput & {
 export type EditorRectangleLayer = EditRectangleInput & {
   id: string;
   kind: "rectangle";
-  variant: "highlight" | "shape";
+  variant: "highlight" | "shape" | "erase";
 };
 
 export type EditorImageLayer = EditImageInput & {

@@ -22,6 +22,7 @@ export type PdfTaskJobName =
   | "excel-to-pdf"
   | "powerpoint-to-pdf"
   | "edit"
+  | "image-tool"
   | "signature-request";
 
 function redisConnectionOptions(redisUrl: string): {

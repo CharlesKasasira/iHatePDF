@@ -60,7 +60,13 @@ export function layerSummary(layer: EditorLayer): string {
     return layer.text;
   }
   if (layer.kind === "rectangle") {
-    return layer.variant === "highlight" ? "Highlight band" : "Shape block";
+    if (layer.variant === "highlight") {
+      return "Highlight band";
+    }
+    if (layer.variant === "erase") {
+      return "Erase block";
+    }
+    return "Shape block";
   }
   return layer.variant === "sign" ? "Signature" : layer.fileName;
 }
@@ -86,7 +92,10 @@ export function toolStatusMessage(tool: EditorTool): string {
     return "Edit the text draft in the sidebar, then click the PDF page to place it.";
   }
   if (tool === "select") {
-    return "Select a layer to edit it, or drag it directly on the page to reposition it.";
+    return "Select a layer to edit it, drag it to reposition it, or pull its handles to resize it.";
+  }
+  if (tool === "erase") {
+    return "Click the PDF page to place a white block over content, then resize it with Select.";
   }
   return "";
 }
