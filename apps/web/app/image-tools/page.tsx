@@ -17,7 +17,7 @@ import {
   Wand2
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import {
   IMAGE_TOOL_CATEGORIES,
@@ -85,23 +85,12 @@ function stripExtension(fileName: string): string {
   return dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
 }
 
-function extensionFor(tool: ImageToolItem, convertFromFormat: string): string {
-  if (tool.operation === "convert_to_jpg") {
-    return "jpg";
-  }
-  if (tool.operation === "convert_from_jpg") {
-    return convertFromFormat;
-  }
-  return "png";
-}
-
 function isSingleImageTool(operation?: ImageToolOperation): boolean {
   return operation === "crop" || operation === "meme";
 }
 
-function deriveOutputName(file: File, tool: ImageToolItem, convertFromFormat: string): string {
-  const extension = extensionFor(tool, convertFromFormat);
-  return `${stripExtension(file.name)}-${tool.shortTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.${extension}`;
+function deriveOutputName(file: File, tool: ImageToolItem): string {
+  return `${stripExtension(file.name)}-${tool.shortTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
 
 function taskMessage(status: string | null | undefined): string {
@@ -137,17 +126,29 @@ export default function ImageToolsPage(): React.JSX.Element {
     [selectedFilter]
   );
   const SelectedIcon = TOOL_ICONS[selectedTool.key];
-  const previewUrl = items[0] ? URL.createObjectURL(items[0].file) : "";
+  const previewFile = items[0]?.file;
+  const previewUrl = useMemo(() => (previewFile ? URL.createObjectURL(previewFile) : ""), [previewFile]);
   const canUpload = selectedTool.status === "available";
   const singleImage = isSingleImageTool(selectedTool.operation);
   const acceptedMimeTypes =
     selectedTool.operation === "convert_from_jpg" ? ["image/jpeg", "image/jpg"] : IMAGE_MIME_TYPES;
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
 
   const updateItem = (id: string, patch: Partial<WorkItem>): void => {
     setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
   const selectTool = (tool: ImageToolItem): void => {
+    if (busy) {
+      return;
+    }
     setSelectedTool(tool);
     setItems([]);
     setNotice("");
@@ -224,25 +225,35 @@ export default function ImageToolsPage(): React.JSX.Element {
       return;
     }
 
-    updateItem(item.id, { phase: "uploading", progressPercent: 4, status: "Uploading image...", downloadUrl: "" });
-    const uploaded = await uploadImage(item.file);
-    const outputName = deriveOutputName(item.file, selectedTool, convertFromFormat);
-    updateItem(item.id, { phase: "queued", progressPercent: 12, status: "Queueing image task..." });
-    const { taskId } = await queueImageTool(uploaded.fileId, selectedTool.operation, outputName, buildOptions());
+    try {
+      updateItem(item.id, { phase: "uploading", progressPercent: 4, status: "Uploading image...", downloadUrl: "" });
+      const uploaded = await uploadImage(item.file);
+      const outputName = deriveOutputName(item.file, selectedTool);
+      updateItem(item.id, { phase: "queued", progressPercent: 12, status: "Queueing image task..." });
+      const { taskId } = await queueImageTool(uploaded.fileId, selectedTool.operation, outputName, buildOptions());
 
-    const done = await pollTask(taskId, {
-      onUpdate: (task) => {
-        updateItem(item.id, {
-          phase: task.status === "completed" ? "completed" : task.status === "failed" ? "failed" : "processing",
-          progressPercent: task.progressPercent,
-          status: taskMessage(task.progressMessage),
-          downloadUrl: task.outputDownloadUrl ?? ""
-        });
+      const done = await pollTask(taskId, {
+        onUpdate: (task) => {
+          updateItem(item.id, {
+            phase: task.status === "completed" ? "completed" : task.status === "failed" ? "failed" : "processing",
+            progressPercent: task.progressPercent,
+            status: taskMessage(task.progressMessage),
+            downloadUrl: task.outputDownloadUrl ?? ""
+          });
+        }
+      });
+
+      if (done.status === "failed") {
+        throw new Error(done.errorMessage ?? "Image task failed.");
       }
-    });
-
-    if (done.status === "failed") {
-      throw new Error(done.errorMessage ?? "Image task failed.");
+    } catch (error) {
+      updateItem(item.id, {
+        phase: "failed",
+        progressPercent: 100,
+        status: (error as Error).message,
+        downloadUrl: ""
+      });
+      throw error;
     }
   };
 
@@ -302,6 +313,7 @@ export default function ImageToolsPage(): React.JSX.Element {
               className={`filter-chip ${selectedFilter === filter ? "is-selected" : ""}`}
               onClick={() => setSelectedFilter(filter)}
               aria-pressed={selectedFilter === filter}
+              disabled={busy}
             >
               {filterLabel(filter)}
             </button>
@@ -318,6 +330,7 @@ export default function ImageToolsPage(): React.JSX.Element {
                   type="button"
                   className={`image-tool-card ${selectedTool.key === tool.key ? "is-selected" : ""}`}
                   onClick={() => selectTool(tool)}
+                  disabled={busy}
                 >
                   <span className="image-tool-card__icon">
                     <Icon aria-hidden="true" size={24} />

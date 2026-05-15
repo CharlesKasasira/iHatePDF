@@ -3260,7 +3260,11 @@ async function runImageTool(payload: ImageToolPayload, reportProgress: ProgressR
   }
 
   await reportProgress(84, "Encoding output image...");
-  const outputBuffer = await renderImage(image, outputFormat, quality);
+  const encodedBuffer = await renderImage(image, outputFormat, quality);
+  const outputBuffer =
+    parsedOptions.operation === "compress" && outputFormat === inputFormat && encodedBuffer.byteLength > inputBuffer.byteLength
+      ? inputBuffer
+      : encodedBuffer;
   const fileName = safeImageName(payload.outputName, imageExtension(outputFormat));
   await reportProgress(96, "Saving image output...");
   return saveOutputFile(fileName, imageMimeType(outputFormat), outputBuffer);
