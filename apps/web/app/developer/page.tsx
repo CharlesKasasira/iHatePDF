@@ -1,0 +1,224 @@
+"use client";
+
+import Link from "next/link";
+import { Copy, KeyRound, Plus, Terminal, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { SiteHeader } from "../components/site-header";
+import { useAuth } from "../components/auth-provider";
+import {
+  API_BASE_URL,
+  createApiKey,
+  listApiKeys,
+  revokeApiKey,
+  type ApiKeyItem,
+  type CreatedApiKey
+} from "../lib/pdf-api";
+
+function formatDate(value: string | null): string {
+  return value ? new Date(value).toLocaleString() : "Not set";
+}
+
+function toIsoDateTime(value: string): string | undefined {
+  return value ? new Date(value).toISOString() : undefined;
+}
+
+export default function DeveloperPage(): React.JSX.Element {
+  const { user, loading } = useAuth();
+  const [keys, setKeys] = useState<ApiKeyItem[]>([]);
+  const [name, setName] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null);
+  const [status, setStatus] = useState("Loading developer tools...");
+  const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const activeKeys = useMemo(() => keys.filter((key) => !key.revokedAt), [keys]);
+
+  const loadKeys = async (): Promise<void> => {
+    setKeys(await listApiKeys());
+    setStatus("");
+  };
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    if (!user) {
+      setKeys([]);
+      setStatus("Sign in to create API keys.");
+      return;
+    }
+
+    void loadKeys().catch((error) => setStatus((error as Error).message));
+  }, [user, loading]);
+
+  const onCreate = async (): Promise<void> => {
+    if (!name.trim()) {
+      setStatus("Name the API key first.");
+      return;
+    }
+
+    try {
+      setCreating(true);
+      setStatus("Creating API key...");
+      const key = await createApiKey({
+        name: name.trim(),
+        expiresAt: toIsoDateTime(expiresAt)
+      });
+      setCreatedKey(key);
+      setName("");
+      setExpiresAt("");
+      await loadKeys();
+      setStatus("API key created. Copy it now; it will not be shown again.");
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const onRevoke = async (keyId: string): Promise<void> => {
+    try {
+      setBusyKeyId(keyId);
+      setStatus("Revoking API key...");
+      await revokeApiKey(keyId);
+      await loadKeys();
+      setStatus("API key revoked.");
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setBusyKeyId(null);
+    }
+  };
+
+  const copyText = async (value: string, message: string): Promise<void> => {
+    await navigator.clipboard.writeText(value);
+    setStatus(message);
+  };
+
+  const curlExample = `curl -X POST "${API_BASE_URL}/v1/files" \\
+  -H "Authorization: Bearer $IHATEPDF_API_KEY" \\
+  -F "file=@contract.pdf"`;
+
+  return (
+    <div className="site-shell">
+      <SiteHeader />
+      <main className="account-page">
+        <section className="account-hero">
+          <span className="auth-eyebrow">Developer</span>
+          <h1>API keys and automation access</h1>
+          <p>Create scoped API keys for scripts, integrations, batch jobs, and internal document pipelines.</p>
+          <div className="account-hero-actions">
+            {!loading && !user ? <Link className="auth-submit account-login-link" href="/login">Log in</Link> : null}
+            <Link className="auth-submit account-login-link" href="/automation">Manage webhooks</Link>
+          </div>
+        </section>
+
+        {status ? <p className="auth-status">{status}</p> : null}
+
+        {createdKey ? (
+          <section className="developer-secret-panel">
+            <div>
+              <strong>New API key</strong>
+              <span>Store this secret now. The server only keeps a hash after creation.</span>
+            </div>
+            <code>{createdKey.key}</code>
+            <button
+              className="activity-action-button"
+              type="button"
+              onClick={() => void copyText(createdKey.key, "API key copied.")}
+            >
+              <Copy aria-hidden="true" size={16} />
+              Copy key
+            </button>
+          </section>
+        ) : null}
+
+        {user ? (
+          <section className="account-grid account-grid--tools">
+            <article className="account-panel">
+              <div className="account-panel-heading">
+                <span><Plus aria-hidden="true" size={18} /> Create API key</span>
+                <strong>{activeKeys.length}</strong>
+              </div>
+              <label htmlFor="api-key-name">Key name</label>
+              <input
+                id="api-key-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Nightly document job"
+              />
+
+              <label htmlFor="api-key-expiry">Expiration</label>
+              <input
+                id="api-key-expiry"
+                type="datetime-local"
+                value={expiresAt}
+                onChange={(event) => setExpiresAt(event.target.value)}
+              />
+
+              <button className="start-process-btn" type="button" disabled={creating} onClick={() => void onCreate()}>
+                {creating ? "Creating..." : "Create API key"}
+              </button>
+            </article>
+
+            <article className="account-panel">
+              <div className="account-panel-heading">
+                <span><Terminal aria-hidden="true" size={18} /> Quick request</span>
+                <strong>v1</strong>
+              </div>
+              <p>Use API keys with the stable versioned endpoints under <code>/api/v1</code>.</p>
+              <pre className="developer-code"><code>{curlExample}</code></pre>
+              <button
+                className="activity-action-button"
+                type="button"
+                onClick={() => void copyText(curlExample, "Upload example copied.")}
+              >
+                <Copy aria-hidden="true" size={16} />
+                Copy example
+              </button>
+            </article>
+
+            <article className="account-panel account-panel--wide">
+              <div className="account-panel-heading">
+                <span><KeyRound aria-hidden="true" size={18} /> API keys</span>
+                <strong>{keys.length}</strong>
+              </div>
+              {keys.length === 0 ? (
+                <div className="account-empty-state">
+                  <KeyRound aria-hidden="true" size={24} />
+                  <strong>No API keys yet</strong>
+                  <span>Create a key to start using upload, queue, status, and signing endpoints from scripts.</span>
+                </div>
+              ) : null}
+              {keys.map((key) => (
+                <div className={`activity-card ${key.revokedAt ? "is-error" : ""}`} key={key.id}>
+                  <div className="activity-card__title">
+                    <KeyRound aria-hidden="true" size={18} />
+                    <strong>{key.name}</strong>
+                  </div>
+                  <span>{key.keyPrefix} - created {formatDate(key.createdAt)}</span>
+                  <small>Last used {formatDate(key.lastUsedAt)} - expires {formatDate(key.expiresAt)}</small>
+                  {key.revokedAt ? (
+                    <small>Revoked {formatDate(key.revokedAt)}</small>
+                  ) : (
+                    <button
+                      className="activity-action-button"
+                      type="button"
+                      disabled={busyKeyId === key.id}
+                      onClick={() => void onRevoke(key.id)}
+                    >
+                      <Trash2 aria-hidden="true" size={16} />
+                      {busyKeyId === key.id ? "Revoking..." : "Revoke"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </article>
+          </section>
+        ) : null}
+      </main>
+    </div>
+  );
+}

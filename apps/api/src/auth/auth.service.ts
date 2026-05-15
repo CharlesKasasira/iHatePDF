@@ -2,11 +2,13 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   OnModuleInit,
   UnauthorizedException
 } from "@nestjs/common";
-import type { User } from "@prisma/client";
+import { Prisma, UserSecurityEventType, type User } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
@@ -26,12 +28,17 @@ const API_KEY_PREFIX = "ihp";
 const DEFAULT_ADMIN_EMAIL = "ckasasira@renu.ac.ug";
 const DEFAULT_ADMIN_PASSWORD = "password123#";
 const DEFAULT_ADMIN_NAME = "Default Admin";
+const AUTO_LOCK_FAILED_LOGIN_THRESHOLD = 5;
+const AUTO_LOCK_WINDOW_MS = 15 * 60 * 1000;
 
 export type SafeUser = {
   id: string;
   email: string;
   name: string | null;
   isAdmin: boolean;
+  suspendedAt: Date | null;
+  lockedAt: Date | null;
+  lockReason: string | null;
   createdAt: Date;
 };
 
@@ -89,14 +96,48 @@ function extractApiKey(request: FastifyRequest): string | null {
   return null;
 }
 
-function safeUser(user: Pick<User, "id" | "email" | "name" | "isAdmin" | "createdAt">): SafeUser {
+function safeUser(
+  user: Pick<User, "id" | "email" | "name" | "isAdmin" | "suspendedAt" | "lockedAt" | "lockReason" | "createdAt">
+): SafeUser {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     isAdmin: user.isAdmin,
+    suspendedAt: user.suspendedAt,
+    lockedAt: user.lockedAt,
+    lockReason: user.lockReason,
     createdAt: user.createdAt
   };
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function requestIp(request: FastifyRequest): string {
+  const forwardedFor = firstHeaderValue(request.headers["x-forwarded-for"]);
+  if (forwardedFor) {
+    const [firstIp] = forwardedFor.split(",");
+    if (firstIp?.trim()) {
+      return firstIp.trim();
+    }
+  }
+
+  return (
+    firstHeaderValue(request.headers["cf-connecting-ip"]) ??
+    firstHeaderValue(request.headers["x-real-ip"]) ??
+    request.ip ??
+    "unknown"
+  );
+}
+
+function requestUserAgent(request: FastifyRequest): string | null {
+  return firstHeaderValue(request.headers["user-agent"]);
 }
 
 function sessionCookie(value: string, maxAgeSeconds: number): string {
@@ -167,7 +208,13 @@ export class AuthService implements OnModuleInit {
       include: { user: true }
     });
 
-    if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+    if (
+      !session ||
+      session.revokedAt ||
+      session.expiresAt.getTime() <= Date.now() ||
+      session.user.suspendedAt ||
+      session.user.lockedAt
+    ) {
       return null;
     }
 
@@ -194,7 +241,14 @@ export class AuthService implements OnModuleInit {
       include: { owner: true }
     });
 
-    if (!record || record.revokedAt || (record.expiresAt && record.expiresAt.getTime() <= Date.now())) {
+    if (
+      !record ||
+      record.revokedAt ||
+      record.rateLimitedAt ||
+      record.owner.suspendedAt ||
+      record.owner.lockedAt ||
+      (record.expiresAt && record.expiresAt.getTime() <= Date.now())
+    ) {
       return null;
     }
 
@@ -245,6 +299,22 @@ export class AuthService implements OnModuleInit {
   async requireApiKey(request: FastifyRequest): Promise<ApiKeyPrincipal> {
     const principal = await this.currentApiKeyPrincipal(request);
     if (!principal) {
+      const apiKey = extractApiKey(request);
+      if (apiKey) {
+        const record = await this.prisma.apiKey.findUnique({
+          where: { keyHash: hashToken(apiKey) },
+          select: {
+            rateLimitedAt: true,
+            rateLimitReason: true
+          }
+        });
+        if (record?.rateLimitedAt) {
+          throw new HttpException(
+            record.rateLimitReason || "This API key is temporarily rate limited.",
+            HttpStatus.TOO_MANY_REQUESTS
+          );
+        }
+      }
       throw new UnauthorizedException("Provide a valid API key in the Authorization: Bearer or X-API-Key header.");
     }
 
@@ -358,14 +428,130 @@ export class AuthService implements OnModuleInit {
     return safeUser(user);
   }
 
-  async login(input: { email: string; password: string }, reply: FastifyReply): Promise<SafeUser> {
+  private async recordSecurityEvent(input: {
+    type: UserSecurityEventType;
+    userId?: string;
+    email?: string;
+    actorEmail?: string;
+    description: string;
+    request?: FastifyRequest;
+    metadata?: Prisma.InputJsonValue;
+  }): Promise<void> {
+    await this.prisma.userSecurityEvent
+      .create({
+        data: {
+          type: input.type,
+          userId: input.userId,
+          email: input.email,
+          actorEmail: input.actorEmail,
+          ipAddress: input.request ? requestIp(input.request) : undefined,
+          userAgent: input.request ? requestUserAgent(input.request) : undefined,
+          description: input.description,
+          metadata: input.metadata
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  private async maybeAutoLockAccount(user: Pick<User, "id" | "email" | "isAdmin">, request: FastifyRequest): Promise<void> {
+    if (user.isAdmin) {
+      const activeAdminCount = await this.prisma.user.count({
+        where: {
+          isAdmin: true,
+          suspendedAt: null,
+          lockedAt: null
+        }
+      });
+      if (activeAdminCount <= 1) {
+        return;
+      }
+    }
+
+    const since = new Date(Date.now() - AUTO_LOCK_WINDOW_MS);
+    const failedAttempts = await this.prisma.userSecurityEvent.count({
+      where: {
+        userId: user.id,
+        type: UserSecurityEventType.login_failed,
+        createdAt: { gte: since }
+      }
+    });
+
+    if (failedAttempts < AUTO_LOCK_FAILED_LOGIN_THRESHOLD) {
+      return;
+    }
+
+    const reason = `${failedAttempts} failed login attempts within ${Math.floor(AUTO_LOCK_WINDOW_MS / 60000)} minutes.`;
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lockedAt: new Date(),
+        lockReason: reason
+      }
+    });
+    await this.prisma.userSession.updateMany({
+      where: {
+        userId: user.id,
+        revokedAt: null
+      },
+      data: { revokedAt: new Date() }
+    });
+    await this.recordSecurityEvent({
+      type: UserSecurityEventType.account_auto_locked,
+      userId: user.id,
+      email: user.email,
+      request,
+      description: `Account automatically locked after suspicious login activity.`,
+      metadata: {
+        failedAttempts,
+        windowMinutes: Math.floor(AUTO_LOCK_WINDOW_MS / 60000)
+      }
+    });
+  }
+
+  async login(input: { email: string; password: string }, request: FastifyRequest, reply: FastifyReply): Promise<SafeUser> {
     const email = normalizeEmail(input.email);
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user || !(await this.verifyPassword(input.password, user.passwordHash))) {
+    if (!user) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        email,
+        request,
+        description: `Login failed for unknown account ${email}.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (user.suspendedAt || user.lockedAt) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: user.lockedAt ? `Login blocked for locked account.` : `Login blocked for suspended account.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (!(await this.verifyPassword(input.password, user.passwordHash))) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: `Login failed for ${email}.`
+      });
+      await this.maybeAutoLockAccount(user, request);
       throw new UnauthorizedException("Invalid email or password.");
     }
 
     await this.createSession(user.id, reply);
+    await this.recordSecurityEvent({
+      type: UserSecurityEventType.login_success,
+      userId: user.id,
+      email,
+      request,
+      description: `Login succeeded for ${email}.`
+    });
     return safeUser(user);
   }
 
@@ -412,12 +598,18 @@ export class AuthService implements OnModuleInit {
         email,
         name: DEFAULT_ADMIN_NAME,
         passwordHash,
-        isAdmin: true
+        isAdmin: true,
+        suspendedAt: null,
+        lockedAt: null,
+        lockReason: null
       },
       update: {
         name: DEFAULT_ADMIN_NAME,
         passwordHash,
-        isAdmin: true
+        isAdmin: true,
+        suspendedAt: null,
+        lockedAt: null,
+        lockReason: null
       }
     });
   }

@@ -58,9 +58,10 @@ export class AuthController {
   @RateLimit("login")
   login(
     @Body() dto: LoginDto,
+    @Req() request: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply
   ): Promise<SafeUser> {
-    return this.authService.login(dto, reply);
+    return this.authService.login(dto, request, reply);
   }
 
   @Post("logout")
