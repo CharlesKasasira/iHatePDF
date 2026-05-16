@@ -34,6 +34,16 @@ const EnvSchema = z.object({
 });
 
 const env = EnvSchema.parse(process.env);
+const EAT_TIME_ZONE = "Africa/Kampala";
+const eatDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: EAT_TIME_ZONE,
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
 const storageRoot = resolve(env.STORAGE_DIR);
 const queueName = "pdf-tasks";
 const STARTUP_RETRY_ATTEMPTS = 15;
@@ -73,6 +83,10 @@ const redisConnection = (() => {
     maxRetriesPerRequest: null as null
   };
 })();
+
+function formatEatDateTime(value: Date): string {
+  return `${eatDateFormatter.format(value)} EAT`;
+}
 
 function matchesWebhookEvent(events: unknown, eventType: string): boolean {
   return Array.isArray(events) && (events.includes("*") || events.includes(eventType));
@@ -560,8 +574,8 @@ async function buildAuditCertificate(envelope: any, finalBuffer: Buffer): Promis
     `Final output: ${envelope.outputName}`,
     `Requester: ${envelope.requesterEmail}`,
     `Status: ${envelope.status}`,
-    `Created: ${envelope.createdAt.toISOString()}`,
-    `Completed: ${envelope.completedAt ? envelope.completedAt.toISOString() : "Not completed"}`,
+    `Created: ${formatEatDateTime(envelope.createdAt)}`,
+    `Completed: ${envelope.completedAt ? formatEatDateTime(envelope.completedAt) : "Not completed"}`,
     `Final file ID: ${envelope.finalFileId ?? "Not available"}`,
     `Final PDF SHA-256: ${sha256(finalBuffer)}`,
     "",
@@ -570,14 +584,14 @@ async function buildAuditCertificate(envelope: any, finalBuffer: Buffer): Promis
 
   for (const recipient of envelope.recipients) {
     lines.push(
-      `- ${recipient.name ?? recipient.email} <${recipient.email}> | ${recipient.role ?? "Signer"} | ${recipient.status} | OTP verified: ${recipient.otpVerifiedAt ? recipient.otpVerifiedAt.toISOString() : "no"} | passcode: ${recipient.passcodeHash ? (recipient.passcodeVerifiedAt ? "verified" : "required") : "not required"}`
+      `- ${recipient.name ?? recipient.email} <${recipient.email}> | ${recipient.role ?? "Signer"} | ${recipient.status} | OTP verified: ${recipient.otpVerifiedAt ? formatEatDateTime(recipient.otpVerifiedAt) : "no"} | passcode: ${recipient.passcodeHash ? (recipient.passcodeVerifiedAt ? "verified" : "required") : "not required"}`
     );
   }
 
   lines.push("", "Event Log");
   for (const event of envelope.events) {
     const evidence = [event.actorEmail, event.ipAddress, event.userAgent].filter(Boolean).join(" | ");
-    lines.push(`- ${event.createdAt.toISOString()} | ${event.type} | ${event.description}${evidence ? ` | ${evidence}` : ""}`);
+    lines.push(`- ${formatEatDateTime(event.createdAt)} | ${event.type} | ${event.description}${evidence ? ` | ${evidence}` : ""}`);
   }
 
   let page = pdf.addPage();
@@ -865,12 +879,18 @@ async function sendCompletionEmailsForTask(taskId: string, outputFileId: string)
           to: recipient.email,
           subject: envelope.title ? `Completed signature packet: ${envelope.title}` : "Completed signed PDF",
           text: [
+            "Hello,",
+            "",
             `The signing workflow${envelope.title ? ` for "${envelope.title}"` : ""} is complete.`,
             canAttachFinal
               ? "The final signed PDF is attached."
-              : `The final signed PDF is available here: ${recipient.link}`,
-            `Audit certificate: attached.`,
-            `Envelope ID: ${envelope.id}`
+              : "Use the secure link below to download the final signed PDF:",
+            canAttachFinal ? null : recipient.link,
+            "The audit certificate is attached.",
+            `Envelope ID: ${envelope.id}`,
+            "",
+            "Regards,",
+            "RENU 360"
           ].join("\n"),
           attachments: [
             ...(canAttachFinal

@@ -27,6 +27,7 @@ import {
   type SignatureEnvelopeTemplate,
   uploadPdfWithRetention
 } from "../lib/pdf-api";
+import { addDaysEatInputValue, dateOnlyToEatEndOfDayIso, formatEatDateTime } from "../lib/time";
 import { useAuth } from "./auth-provider";
 import { ReorderableList, ReorderHandle } from "./reorderable-list";
 import { SiteHeader } from "./site-header";
@@ -84,10 +85,8 @@ function buildSignedName(fileName: string): string {
   return `${stripped || "document"}-signed.pdf`;
 }
 
-function tomorrowIsoDate(): string {
-  const date = new Date();
-  date.setDate(date.getDate() + 3);
-  return date.toISOString().slice(0, 10);
+function defaultExpiryDate(): string {
+  return addDaysEatInputValue(3);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -112,7 +111,7 @@ export function SignatureWorkflowStudio({
   const [message, setMessage] = useState("Please review and complete your assigned fields.");
   const [outputName, setOutputName] = useState("signed-document.pdf");
   const [routing, setRouting] = useState<SigningRouting>("sequential");
-  const [expiresAt, setExpiresAt] = useState(tomorrowIsoDate());
+  const [expiresAt, setExpiresAt] = useState(defaultExpiryDate());
 
   const [recipients, setRecipients] = useState<DraftRecipient[]>([
     {
@@ -329,7 +328,7 @@ export function SignatureWorkflowStudio({
         message: message.trim() || undefined,
         outputName: outputName.trim(),
         routing,
-        expiresAt: new Date(`${expiresAt}T23:59:59`).toISOString(),
+        expiresAt: dateOnlyToEatEndOfDayIso(expiresAt),
         recipients: recipients.map((recipient, index) => ({
           key: recipient.key,
           name: recipient.name.trim() || undefined,
@@ -498,7 +497,7 @@ export function SignatureWorkflowStudio({
                 <strong>{envelope.routing === "sequential" ? "Ordered routing" : "Parallel routing"}</strong>
               </div>
               <p className={styles.panelCopy}>
-                Expires {new Date(envelope.expiresAt).toLocaleString()}. Output file: {envelope.outputName}.
+                Expires {formatEatDateTime(envelope.expiresAt)}. Output file: {envelope.outputName}.
               </p>
               <p className={styles.panelCopy}>Requester: {envelope.requesterEmail}</p>
               {envelope.finalDownloadUrl ? (
@@ -651,7 +650,7 @@ export function SignatureWorkflowStudio({
                   <div key={event.id} className={styles.auditItem}>
                     <strong>{event.description}</strong>
                     <span>
-                      {new Date(event.createdAt).toLocaleString()}
+                      {formatEatDateTime(event.createdAt)}
                       {event.actorEmail ? ` · ${event.actorEmail}` : ""}
                       {event.ipAddress ? ` · ${event.ipAddress}` : ""}
                     </span>

@@ -19,9 +19,10 @@ import { useEffect, useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { useAuth } from "../components/auth-provider";
 import { getAccountActivity, retryTask, type AccountActivityResponse } from "../lib/pdf-api";
+import { formatEatDateTime } from "../lib/time";
 
 function formatDate(value: string | null): string {
-  return value ? new Date(value).toLocaleString() : "Not set";
+  return formatEatDateTime(value);
 }
 
 function formatBytes(value: string): string {

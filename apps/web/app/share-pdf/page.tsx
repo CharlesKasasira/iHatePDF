@@ -10,6 +10,7 @@ import {
   uploadPdf,
   type FileShareResponse
 } from "../lib/pdf-api";
+import { formatEatDateTime } from "../lib/time";
 
 const EXPIRY_OPTIONS = [
   { value: 24, label: "24 hours" },
@@ -170,7 +171,7 @@ export default function SharePdfPage(): React.JSX.Element {
             <div className="share-result">
               <div>
                 <strong>{share.fileName}</strong>
-                <span>Expires {new Date(share.expiresAt).toLocaleString()}</span>
+                <span>Expires {formatEatDateTime(share.expiresAt)}</span>
               </div>
               <input readOnly value={share.shareUrl} aria-label="Share link" />
               <div className="row-actions">

@@ -24,6 +24,21 @@ import { PrismaService } from "../prisma/prisma.service.js";
 import { QueueService } from "../queue/queue.service.js";
 import { StorageService } from "../storage/storage.service.js";
 
+const EAT_TIME_ZONE = "Africa/Kampala";
+const eatDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: EAT_TIME_ZONE,
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
+function formatEatDateTime(value: Date): string {
+  return `${eatDateFormatter.format(value)} EAT`;
+}
+
 interface CreateRecipientInput {
   key: string;
   name?: string;
@@ -1565,29 +1580,29 @@ export class SignatureRequestsService {
     lines.push(`Requester: ${envelope.requesterEmail}`);
     lines.push(`Status: ${envelope.status}`);
     lines.push(`Routing: ${envelope.routing}`);
-    lines.push(`Created: ${envelope.createdAt.toISOString()}`);
-    lines.push(`Completed: ${envelope.completedAt ? envelope.completedAt.toISOString() : "Not completed"}`);
+    lines.push(`Created: ${formatEatDateTime(envelope.createdAt)}`);
+    lines.push(`Completed: ${envelope.completedAt ? formatEatDateTime(envelope.completedAt) : "Not completed"}`);
     lines.push(`Final file ID: ${envelope.finalFileId ?? "Not available"}`);
     lines.push(`Final PDF SHA-256: ${finalHash ?? "Not available"}`);
     lines.push("");
     lines.push("Recipients");
     for (const recipient of envelope.recipients) {
       lines.push(
-        `- ${recipient.name ?? recipient.email} <${recipient.email}> | ${recipient.role ?? "Signer"} | ${recipient.status} | OTP verified: ${recipient.otpVerifiedAt ? recipient.otpVerifiedAt.toISOString() : "no"} | passcode: ${recipient.passcodeHash ? (recipient.passcodeVerifiedAt ? "verified" : "required") : "not required"}`
+        `- ${recipient.name ?? recipient.email} <${recipient.email}> | ${recipient.role ?? "Signer"} | ${recipient.status} | OTP verified: ${recipient.otpVerifiedAt ? formatEatDateTime(recipient.otpVerifiedAt) : "no"} | passcode: ${recipient.passcodeHash ? (recipient.passcodeVerifiedAt ? "verified" : "required") : "not required"}`
       );
     }
     lines.push("");
     lines.push("Field Completion");
     for (const field of envelope.fields) {
       lines.push(
-        `- ${field.label ?? field.type} | ${field.type} | page ${field.page} | signer ${field.recipient.email} | completed: ${field.value ? field.value.completedAt.toISOString() : "no"}`
+        `- ${field.label ?? field.type} | ${field.type} | page ${field.page} | signer ${field.recipient.email} | completed: ${field.value ? formatEatDateTime(field.value.completedAt) : "no"}`
       );
     }
     lines.push("");
     lines.push("Event Log");
     for (const event of envelope.events) {
       const evidence = [event.actorEmail, event.ipAddress, event.userAgent].filter(Boolean).join(" | ");
-      lines.push(`- ${event.createdAt.toISOString()} | ${event.type} | ${event.description}${evidence ? ` | ${evidence}` : ""}`);
+      lines.push(`- ${formatEatDateTime(event.createdAt)} | ${event.type} | ${event.description}${evidence ? ` | ${evidence}` : ""}`);
     }
 
     let page = pdf.addPage();

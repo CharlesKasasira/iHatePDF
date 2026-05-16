@@ -6,6 +6,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      TZ: ${TZ:-Africa/Kampala}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,6 +22,8 @@ services:
   valkey:
     image: valkey/valkey:8.0-alpine
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Africa/Kampala}
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -33,6 +36,7 @@ services:
       dockerfile: apps/api/Dockerfile
     restart: "no"
     environment:
+      TZ: ${TZ:-Africa/Kampala}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
     depends_on:
       postgres:
@@ -45,6 +49,7 @@ services:
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Africa/Kampala}
       API_PORT: ${API_PORT:-4000}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:4000}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
@@ -78,6 +83,7 @@ services:
       dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Africa/Kampala}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       REDIS_URL: redis://valkey:6379
       NODE_ENV: production
@@ -101,6 +107,7 @@ services:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000/api}
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Africa/Kampala}
       NODE_ENV: production
     depends_on:
       api:

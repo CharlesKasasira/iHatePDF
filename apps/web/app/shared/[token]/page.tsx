@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { SiteHeader } from "../../components/site-header";
 import { getSharedFile, type SharedFileMetadataResponse } from "../../lib/pdf-api";
+import { formatEatDateTime } from "../../lib/time";
 
 function bytesLabel(value: string): string {
   const bytes = Number(value);
@@ -72,7 +73,7 @@ export default function SharedPdfPage(): React.JSX.Element {
               <div>
                 <h2>{file.fileName}</h2>
                 <p className="small">
-                  {bytesLabel(file.sizeBytes)} · Expires {new Date(file.expiresAt).toLocaleString()}
+                  {bytesLabel(file.sizeBytes)} · Expires {formatEatDateTime(file.expiresAt)}
                 </p>
               </div>
               <a className="download shared-file-card__download" href={file.downloadUrl}>
