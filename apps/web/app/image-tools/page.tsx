@@ -17,7 +17,8 @@ import {
   Wand2
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { SiteHeader } from "../components/site-header";
 import {
   IMAGE_TOOL_CATEGORIES,
@@ -39,9 +40,21 @@ import {
 
 const FILTERS = ["all", ...IMAGE_TOOL_CATEGORIES.map((category) => category.id)] as const;
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/svg+xml"] as const;
+const MIN_CROP_SIZE = 24;
 type Filter = (typeof FILTERS)[number];
 
 type TaskPhase = "idle" | "uploading" | "queued" | "processing" | "completed" | "failed";
+type ImageSize = {
+  width: number;
+  height: number;
+};
+type CropBounds = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+type CropInteraction = "move" | "n" | "e" | "s" | "w" | "nw" | "ne" | "se" | "sw";
 type WorkItem = {
   id: string;
   file: File;
@@ -97,10 +110,44 @@ function taskMessage(status: string | null | undefined): string {
   return status || "Processing image...";
 }
 
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
+}
+
+function roundCropBounds(bounds: CropBounds): CropBounds {
+  return {
+    left: Math.round(bounds.left),
+    top: Math.round(bounds.top),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height)
+  };
+}
+
+function fitCropBounds(bounds: CropBounds, imageSize: ImageSize): CropBounds {
+  const maxWidth = Math.max(1, imageSize.width);
+  const maxHeight = Math.max(1, imageSize.height);
+  const width = clamp(bounds.width, 1, maxWidth);
+  const height = clamp(bounds.height, 1, maxHeight);
+  const left = clamp(bounds.left, 0, maxWidth - width);
+  const top = clamp(bounds.top, 0, maxHeight - height);
+  const roundedWidth = clamp(Math.round(width), 1, maxWidth);
+  const roundedHeight = clamp(Math.round(height), 1, maxHeight);
+  return {
+    left: clamp(Math.round(left), 0, maxWidth - roundedWidth),
+    top: clamp(Math.round(top), 0, maxHeight - roundedHeight),
+    width: roundedWidth,
+    height: roundedHeight
+  };
+}
+
 export default function ImageToolsPage(): React.JSX.Element {
   const [selectedFilter, setSelectedFilter] = useState<Filter>("all");
   const [selectedTool, setSelectedTool] = useState<ImageToolItem>(IMAGE_TOOLS[0]);
   const [items, setItems] = useState<WorkItem[]>([]);
+  const cropStageRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [quality, setQuality] = useState(78);
@@ -112,6 +159,7 @@ export default function ImageToolsPage(): React.JSX.Element {
   const [cropTop, setCropTop] = useState(0);
   const [cropWidth, setCropWidth] = useState(800);
   const [cropHeight, setCropHeight] = useState(600);
+  const [imageSize, setImageSize] = useState<ImageSize | null>(null);
   const [rotation, setRotation] = useState<90 | 180 | 270>(90);
   const [convertFromFormat, setConvertFromFormat] = useState<"png" | "webp" | "gif">("png");
   const [watermarkText, setWatermarkText] = useState("iHatePDF");
@@ -132,6 +180,18 @@ export default function ImageToolsPage(): React.JSX.Element {
   const singleImage = isSingleImageTool(selectedTool.operation);
   const acceptedMimeTypes =
     selectedTool.operation === "convert_from_jpg" ? ["image/jpeg", "image/jpg"] : IMAGE_MIME_TYPES;
+  const cropBounds = imageSize
+    ? fitCropBounds({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight }, imageSize)
+    : null;
+  const cropBoxStyle: CSSProperties | undefined =
+    cropBounds && imageSize
+      ? {
+          left: `${(cropBounds.left / imageSize.width) * 100}%`,
+          top: `${(cropBounds.top / imageSize.height) * 100}%`,
+          width: `${(cropBounds.width / imageSize.width) * 100}%`,
+          height: `${(cropBounds.height / imageSize.height) * 100}%`
+        }
+      : undefined;
 
   useEffect(() => {
     return () => {
@@ -167,6 +227,10 @@ export default function ImageToolsPage(): React.JSX.Element {
       return;
     }
 
+    if (singleImage) {
+      setImageSize(null);
+    }
+
     setItems((current) => [
       ...(singleImage ? [] : current),
       ...accepted.slice(0, singleImage ? 1 : accepted.length).map((file) => ({
@@ -179,6 +243,88 @@ export default function ImageToolsPage(): React.JSX.Element {
       }))
     ]);
     setNotice(`${accepted.length} image(s) added.${selected.length > accepted.length ? " Some files were skipped." : ""}`);
+  };
+
+  const setCropBoundsFromImage = (bounds: CropBounds, size = imageSize): void => {
+    const next = size ? fitCropBounds(bounds, size) : roundCropBounds(bounds);
+    setCropLeft(next.left);
+    setCropTop(next.top);
+    setCropWidth(next.width);
+    setCropHeight(next.height);
+  };
+
+  const handlePreviewImageLoad = (event: React.SyntheticEvent<HTMLImageElement>): void => {
+    const nextSize = {
+      width: event.currentTarget.naturalWidth,
+      height: event.currentTarget.naturalHeight
+    };
+
+    setImageSize(nextSize);
+    if (selectedTool.operation === "crop") {
+      setCropBoundsFromImage({ left: 0, top: 0, width: nextSize.width, height: nextSize.height }, nextSize);
+    }
+  };
+
+  const startCropInteraction = (event: ReactPointerEvent<HTMLElement>, interaction: CropInteraction): void => {
+    if (!cropBounds || !imageSize || !cropStageRef.current || busy) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const stageRect = cropStageRef.current.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startBounds = cropBounds;
+    const scaleX = imageSize.width / stageRect.width;
+    const scaleY = imageSize.height / stageRect.height;
+
+    const updateCrop = (moveEvent: PointerEvent): void => {
+      const deltaX = (moveEvent.clientX - startX) * scaleX;
+      const deltaY = (moveEvent.clientY - startY) * scaleY;
+      const right = startBounds.left + startBounds.width;
+      const bottom = startBounds.top + startBounds.height;
+      const minWidth = Math.min(MIN_CROP_SIZE, imageSize.width);
+      const minHeight = Math.min(MIN_CROP_SIZE, imageSize.height);
+      let next = { ...startBounds };
+
+      if (interaction === "move") {
+        next = {
+          ...next,
+          left: clamp(startBounds.left + deltaX, 0, imageSize.width - startBounds.width),
+          top: clamp(startBounds.top + deltaY, 0, imageSize.height - startBounds.height)
+        };
+      } else {
+        if (interaction.includes("w")) {
+          const nextLeft = clamp(startBounds.left + deltaX, 0, right - minWidth);
+          next.left = nextLeft;
+          next.width = right - nextLeft;
+        }
+        if (interaction.includes("e")) {
+          next.width = clamp(startBounds.width + deltaX, minWidth, imageSize.width - startBounds.left);
+        }
+        if (interaction.includes("n")) {
+          const nextTop = clamp(startBounds.top + deltaY, 0, bottom - minHeight);
+          next.top = nextTop;
+          next.height = bottom - nextTop;
+        }
+        if (interaction.includes("s")) {
+          next.height = clamp(startBounds.height + deltaY, minHeight, imageSize.height - startBounds.top);
+        }
+      }
+
+      setCropBoundsFromImage(next);
+    };
+
+    const endCrop = (): void => {
+      window.removeEventListener("pointermove", updateCrop);
+      window.removeEventListener("pointerup", endCrop);
+      window.removeEventListener("pointercancel", endCrop);
+    };
+
+    window.addEventListener("pointermove", updateCrop);
+    window.addEventListener("pointerup", endCrop);
+    window.addEventListener("pointercancel", endCrop);
   };
 
   const buildOptions = (): Record<string, unknown> => {
@@ -195,7 +341,10 @@ export default function ImageToolsPage(): React.JSX.Element {
           };
     }
     if (selectedTool.operation === "crop") {
-      return { left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight };
+      const bounds = imageSize
+        ? fitCropBounds({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight }, imageSize)
+        : roundCropBounds({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight });
+      return bounds;
     }
     if (selectedTool.operation === "rotate") {
       return { degrees: rotation };
@@ -389,9 +538,68 @@ export default function ImageToolsPage(): React.JSX.Element {
                 />
 
                 {previewUrl && singleImage ? (
-                  <div className="image-preview-frame">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={previewUrl} alt="Selected image preview" />
+                  <div className={`image-preview-frame ${selectedTool.operation === "crop" ? "image-preview-frame--crop" : ""}`}>
+                    {selectedTool.operation === "crop" ? (
+                      <div className="image-crop-stage" ref={cropStageRef}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={previewUrl} alt="Selected image preview" draggable={false} onLoad={handlePreviewImageLoad} />
+                        {cropBoxStyle ? (
+                          <div className="image-crop-overlay" aria-hidden="true">
+                            <span className="image-crop-shade image-crop-shade--top" style={{ height: cropBoxStyle.top }} />
+                            <span
+                              className="image-crop-shade image-crop-shade--right"
+                              style={{
+                                left: `calc(${cropBoxStyle.left} + ${cropBoxStyle.width})`,
+                                top: cropBoxStyle.top,
+                                width: `calc(100% - (${cropBoxStyle.left} + ${cropBoxStyle.width}))`,
+                                height: cropBoxStyle.height
+                              }}
+                            />
+                            <span
+                              className="image-crop-shade image-crop-shade--bottom"
+                              style={{
+                                top: `calc(${cropBoxStyle.top} + ${cropBoxStyle.height})`,
+                                height: `calc(100% - (${cropBoxStyle.top} + ${cropBoxStyle.height}))`
+                              }}
+                            />
+                            <span
+                              className="image-crop-shade image-crop-shade--left"
+                              style={{
+                                top: cropBoxStyle.top,
+                                width: cropBoxStyle.left,
+                                height: cropBoxStyle.height
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        {cropBoxStyle ? (
+                          <div
+                            className="image-crop-box"
+                            style={cropBoxStyle}
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Drag crop area"
+                            onPointerDown={(event) => startCropInteraction(event, "move")}
+                          >
+                            {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as CropInteraction[]).map((handle) => (
+                              <span
+                                key={handle}
+                                className={`image-crop-handle image-crop-handle--${handle}`}
+                                onPointerDown={(event) => {
+                                  event.stopPropagation();
+                                  startCropInteraction(event, handle);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={previewUrl} alt="Selected image preview" draggable={false} onLoad={handlePreviewImageLoad} />
+                      </>
+                    )}
                   </div>
                 ) : null}
 
@@ -399,13 +607,16 @@ export default function ImageToolsPage(): React.JSX.Element {
                   {(selectedTool.operation === "compress" || selectedTool.operation?.startsWith("convert")) && (
                     <label>
                       Quality
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={quality}
-                        onChange={(event) => setQuality(Number(event.target.value))}
-                      />
+                      <span className="image-control-row">
+                        <input
+                          type="range"
+                          min={1}
+                          max={100}
+                          value={quality}
+                          onChange={(event) => setQuality(Number(event.target.value))}
+                        />
+                        <strong>{quality}%</strong>
+                      </span>
                     </label>
                   )}
 
@@ -413,10 +624,19 @@ export default function ImageToolsPage(): React.JSX.Element {
                     <>
                       <label>
                         Mode
-                        <select value={resizeMode} onChange={(event) => setResizeMode(event.target.value as "pixels" | "percent")}>
-                          <option value="pixels">Pixels</option>
-                          <option value="percent">Percent</option>
-                        </select>
+                        <span className="image-segmented-control">
+                          {(["pixels", "percent"] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              className={resizeMode === mode ? "is-selected" : ""}
+                              onClick={() => setResizeMode(mode)}
+                              aria-pressed={resizeMode === mode}
+                            >
+                              {mode === "pixels" ? "Pixels" : "Percent"}
+                            </button>
+                          ))}
+                        </span>
                       </label>
                       {resizeMode === "pixels" ? (
                         <div className="image-tool-options__pair">
@@ -432,41 +652,70 @@ export default function ImageToolsPage(): React.JSX.Element {
                       ) : (
                         <label>
                           Percent
-                          <input type="number" min={1} max={500} value={resizePercent} onChange={(event) => setResizePercent(Number(event.target.value))} />
+                          <span className="image-control-row">
+                            <input type="range" min={1} max={500} value={resizePercent} onChange={(event) => setResizePercent(Number(event.target.value))} />
+                            <strong>{resizePercent}%</strong>
+                          </span>
                         </label>
                       )}
                     </>
                   ) : null}
 
                   {selectedTool.operation === "crop" ? (
-                    <div className="image-tool-options__grid">
-                      <label>
-                        Left
-                        <input type="number" min={0} value={cropLeft} onChange={(event) => setCropLeft(Number(event.target.value))} />
-                      </label>
-                      <label>
-                        Top
-                        <input type="number" min={0} value={cropTop} onChange={(event) => setCropTop(Number(event.target.value))} />
-                      </label>
-                      <label>
-                        Width
-                        <input type="number" min={1} value={cropWidth} onChange={(event) => setCropWidth(Number(event.target.value))} />
-                      </label>
-                      <label>
-                        Height
-                        <input type="number" min={1} value={cropHeight} onChange={(event) => setCropHeight(Number(event.target.value))} />
-                      </label>
+                    <div className="image-crop-summary">
+                      <div>
+                        <span>Crop area</span>
+                        <strong>{cropBounds ? `${cropBounds.width} x ${cropBounds.height} px` : "Select an image to start"}</strong>
+                      </div>
+                      <div className="image-crop-actions">
+                        <button
+                          type="button"
+                          disabled={!imageSize || busy}
+                          onClick={() => {
+                            if (imageSize) {
+                              const size = Math.min(imageSize.width, imageSize.height);
+                              setCropBoundsFromImage({
+                                left: (imageSize.width - size) / 2,
+                                top: (imageSize.height - size) / 2,
+                                width: size,
+                                height: size
+                              });
+                            }
+                          }}
+                        >
+                          Square
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!imageSize || busy}
+                          onClick={() => {
+                            if (imageSize) {
+                              setCropBoundsFromImage({ left: 0, top: 0, width: imageSize.width, height: imageSize.height });
+                            }
+                          }}
+                        >
+                          Full image
+                        </button>
+                      </div>
                     </div>
                   ) : null}
 
                   {selectedTool.operation === "rotate" ? (
                     <label>
                       Rotation
-                      <select value={rotation} onChange={(event) => setRotation(Number(event.target.value) as 90 | 180 | 270)}>
-                        <option value={90}>90 degrees</option>
-                        <option value={180}>180 degrees</option>
-                        <option value={270}>270 degrees</option>
-                      </select>
+                      <span className="image-segmented-control">
+                        {[90, 180, 270].map((degrees) => (
+                          <button
+                            key={degrees}
+                            type="button"
+                            className={rotation === degrees ? "is-selected" : ""}
+                            onClick={() => setRotation(degrees as 90 | 180 | 270)}
+                            aria-pressed={rotation === degrees}
+                          >
+                            {degrees}°
+                          </button>
+                        ))}
+                      </span>
                     </label>
                   ) : null}
 
@@ -502,7 +751,10 @@ export default function ImageToolsPage(): React.JSX.Element {
                         </label>
                         <label>
                           Opacity
-                          <input type="number" min={0.05} max={1} step={0.05} value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                          <span className="image-control-row">
+                            <input type="range" min={0.05} max={1} step={0.05} value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                            <strong>{Math.round(watermarkOpacity * 100)}%</strong>
+                          </span>
                         </label>
                       </div>
                     </>
@@ -524,7 +776,10 @@ export default function ImageToolsPage(): React.JSX.Element {
                   {(selectedTool.operation === "watermark" || selectedTool.operation === "meme") ? (
                     <label>
                       Text size
-                      <input type="number" min={12} max={240} value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} />
+                      <span className="image-control-row">
+                        <input type="range" min={12} max={240} value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} />
+                        <strong>{fontSize}px</strong>
+                      </span>
                     </label>
                   ) : null}
                 </div>

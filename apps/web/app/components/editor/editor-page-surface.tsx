@@ -30,6 +30,7 @@ export function EditorPageSurface({
   activeTool,
   selectedLayerId,
   onSelectLayer,
+  onCreateUndoCheckpoint,
   onUpdateLayer,
   onMoveLayer,
   onPlaceLayer
@@ -44,8 +45,13 @@ export function EditorPageSurface({
   activeTool: EditorTool;
   selectedLayerId: string | null;
   onSelectLayer: (layerId: string) => void;
-  onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
-  onMoveLayer: (layerId: string, x: number, y: number) => void;
+  onCreateUndoCheckpoint: () => void;
+  onUpdateLayer: (
+    layerId: string,
+    updater: (layer: EditorLayer) => EditorLayer,
+    trackHistory?: boolean
+  ) => void;
+  onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onPlaceLayer: (x: number, y: number) => void;
 }): React.JSX.Element {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -140,6 +146,7 @@ export function EditorPageSurface({
     const offsetBottom = layerRect.bottom - event.clientY;
     const layerWidth = layerRect.width / scale;
     const layerHeight = layerRect.height / scale;
+    let hasUndoCheckpoint = false;
 
     const updatePosition = (clientX: number, clientY: number): void => {
       const visualLeft = clamp(
@@ -159,7 +166,12 @@ export function EditorPageSurface({
         Math.max(0, page.height - layerHeight)
       );
 
-      onMoveLayer(layer.id, x, y);
+      if (!hasUndoCheckpoint && (Math.abs(x - layer.x) > 0.1 || Math.abs(y - layer.y) > 0.1)) {
+        onCreateUndoCheckpoint();
+        hasUndoCheckpoint = true;
+      }
+
+      onMoveLayer(layer.id, x, y, false);
     };
 
     onSelectLayer(layer.id);
@@ -207,6 +219,7 @@ export function EditorPageSurface({
       height: layer.height
     };
     const minSize = layer.kind === "image" ? 24 : 12;
+    let hasUndoCheckpoint = false;
 
     const resize = (clientX: number, clientY: number): void => {
       const pointerX = clamp((clientX - surfaceRect.left) / scale, 0, page.width);
@@ -233,8 +246,22 @@ export function EditorPageSurface({
         next.height = clamp(pointerY - initial.y, minSize, Math.max(minSize, page.height - initial.y));
       }
 
-      onUpdateLayer(layer.id, (current) =>
-        current.kind === "rectangle" || current.kind === "image" ? { ...current, ...next } : current
+      const changed =
+        Math.abs(next.x - initial.x) > 0.1 ||
+        Math.abs(next.y - initial.y) > 0.1 ||
+        Math.abs(next.width - initial.width) > 0.1 ||
+        Math.abs(next.height - initial.height) > 0.1;
+
+      if (!hasUndoCheckpoint && changed) {
+        onCreateUndoCheckpoint();
+        hasUndoCheckpoint = true;
+      }
+
+      onUpdateLayer(
+        layer.id,
+        (current) =>
+          current.kind === "rectangle" || current.kind === "image" ? { ...current, ...next } : current,
+        false
       );
     };
 

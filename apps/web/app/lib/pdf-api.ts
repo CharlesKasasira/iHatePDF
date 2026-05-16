@@ -485,6 +485,24 @@ export type PdfFileMetadataResponse = {
   }>;
 };
 
+export type FileShareResponse = {
+  id: string;
+  token: string;
+  fileName: string;
+  shareUrl: string;
+  downloadUrl: string;
+  expiresAt: string;
+  emailSent: boolean;
+};
+
+export type SharedFileMetadataResponse = {
+  fileName: string;
+  mimeType: string;
+  sizeBytes: string;
+  expiresAt: string;
+  downloadUrl: string;
+};
+
 async function readError(response: Response): Promise<string> {
   const text = await response.text();
   if (!text) {
@@ -508,14 +526,16 @@ async function readError(response: Response): Promise<string> {
 }
 
 export async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && init.body !== null && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     cache: init?.cache ?? "no-store",
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
+    headers
   });
 
   if (!response.ok) {
@@ -621,6 +641,28 @@ export async function uploadPdfWithRetention(
 
 export async function getPdfMetadata(fileId: string): Promise<PdfFileMetadataResponse> {
   return jsonFetch<PdfFileMetadataResponse>(`/files/${fileId}/metadata`);
+}
+
+export async function createFileShare(input: {
+  fileId: string;
+  email?: string;
+  message?: string;
+  expiresInHours?: number;
+  mode?: "download" | "editor";
+}): Promise<FileShareResponse> {
+  return jsonFetch<FileShareResponse>(`/files/${input.fileId}/share`, {
+    method: "POST",
+    body: JSON.stringify({
+      email: input.email || undefined,
+      message: input.message || undefined,
+      expiresInHours: input.expiresInHours,
+      mode: input.mode
+    })
+  });
+}
+
+export async function getSharedFile(token: string): Promise<SharedFileMetadataResponse> {
+  return jsonFetch<SharedFileMetadataResponse>(`/files/shared/${encodeURIComponent(token)}`);
 }
 
 export function getPdfPagePreviewUrl(fileId: string, pageNumber: number): string {

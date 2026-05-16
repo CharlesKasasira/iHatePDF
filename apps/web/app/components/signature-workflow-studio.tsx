@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   CheckSquare,
+  LoaderCircle,
   PenLine,
   Type,
   UserRound,
@@ -670,8 +671,6 @@ export function SignatureWorkflowStudio({
       <main className={styles.shell}>
         <section className={styles.hero}>
           <div>
-            <span className={styles.eyebrow}>Dedicated Signing Workflow</span>
-            <h1>Turn PDF signing into an operational workflow</h1>
             <p>
               Define recipients, route them in sequence or parallel, place every field on the document,
               and send a signing packet that can be reminded, reassigned, revoked, and finalized into an
@@ -680,8 +679,8 @@ export function SignatureWorkflowStudio({
           </div>
           <div className={styles.heroActions}>
             <UploadDropzone
-              label={pdfFile ? "Replace PDF" : "Upload PDF"}
-              hint={pdfFile ? pdfFile.name : "Drop a PDF here to start"}
+              label={uploading ? "Preparing PDF..." : pdfFile ? "Replace PDF" : "Upload PDF"}
+              hint={uploading && pdfFile ? `Uploading ${pdfFile.name}` : pdfFile ? pdfFile.name : "Drop a PDF here to start"}
               accept="application/pdf"
               compact
               disabled={uploading || busy}
@@ -824,9 +823,19 @@ export function SignatureWorkflowStudio({
 
           <section className={styles.canvasStack}>
             {!pdfMeta ? (
-              <div className={styles.emptyState}>
-                <strong>Upload a PDF to map the workflow.</strong>
-                <span>Each page becomes a signing surface where you can assign fields to specific recipients.</span>
+              <div className={`${styles.emptyState} ${uploading ? styles.loadingState : ""}`} role={uploading ? "status" : undefined} aria-live="polite">
+                {uploading ? (
+                  <>
+                    <LoaderCircle className={styles.loadingIcon} aria-hidden="true" />
+                    <strong>Preparing PDF for field mapping...</strong>
+                    <span>Uploading the file and reading page layout. Large PDFs can take a moment.</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>Upload a PDF to map the workflow.</strong>
+                    <span>Each page becomes a signing surface where you can assign fields to specific recipients.</span>
+                  </>
+                )}
               </div>
             ) : (
               pages.map((page) => (
@@ -1086,6 +1095,11 @@ function SigningCanvasPage({
   onPlaceField: (x: number, y: number) => void;
 }): React.JSX.Element {
   const pageRef = useRef<HTMLDivElement>(null);
+  const [previewLoaded, setPreviewLoaded] = useState(false);
+
+  useEffect(() => {
+    setPreviewLoaded(false);
+  }, [fileId, page.pageNumber]);
 
   const startMoveField = (event: React.PointerEvent<HTMLButtonElement>, field: DraftField): void => {
     event.preventDefault();
@@ -1142,7 +1156,15 @@ function SigningCanvasPage({
             src={getPdfPagePreviewUrl(fileId, page.pageNumber)}
             alt={`${fileName} page ${page.pageNumber}`}
             draggable={false}
+            onLoad={() => setPreviewLoaded(true)}
+            onError={() => setPreviewLoaded(true)}
           />
+        ) : null}
+        {fileId && !previewLoaded ? (
+          <div className={styles.pagePreviewLoading} role="status" aria-live="polite">
+            <LoaderCircle className={styles.loadingIcon} aria-hidden="true" />
+            <span>Loading page preview...</span>
+          </div>
         ) : null}
         {fields.map((field) => {
           const recipient = recipients.find((item) => item.key === field.recipientKey);

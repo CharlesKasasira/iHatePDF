@@ -64,7 +64,7 @@ export const IMAGE_TOOLS: ImageToolItem[] = [
     key: "crop-image",
     title: "Crop Image",
     shortTitle: "Crop",
-    description: "Crop by pixel bounds for a focused output.",
+    description: "Drag crop boundaries for a focused output.",
     category: "modify",
     status: "available",
     operation: "crop"

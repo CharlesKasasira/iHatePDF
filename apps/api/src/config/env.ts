@@ -35,6 +35,7 @@ const EnvSchema = z.object({
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().min(1),
   SIGN_TOKEN_TTL_HOURS: z.coerce.number().int().positive().default(72),
+  FILE_SHARE_TTL_HOURS: z.coerce.number().int().positive().default(72),
   AUTH_SESSION_COOKIE: z.string().min(1).default("ihatepdf_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(30),
   PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().default(30),
@@ -53,6 +54,8 @@ const EnvSchema = z.object({
   RATE_LIMIT_UPLOAD_WINDOW_SECONDS: z.coerce.number().int().positive().default(60 * 60),
   RATE_LIMIT_TASK_QUEUE_MAX: z.coerce.number().int().positive().default(60),
   RATE_LIMIT_TASK_QUEUE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60 * 60),
+  RATE_LIMIT_SHARE_MAX: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_SHARE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60 * 60),
   QPDF_BIN: z.string().default("qpdf"),
   PDFTOPPM_BIN: z.string().default("pdftoppm"),
   PDF_RENDER_DPI: z.coerce.number().int().min(72).max(300).default(144)

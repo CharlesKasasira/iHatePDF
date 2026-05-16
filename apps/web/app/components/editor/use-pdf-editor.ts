@@ -8,6 +8,7 @@ import type {
   EditorAssetState,
   EditorDocumentState,
   EditorDraftDefaults,
+  EditorHistorySnapshot,
   EditorLayer,
   EditorMode,
   EditorPage,
@@ -22,6 +23,8 @@ import {
   toolStatusMessage
 } from "./utils";
 import { getPageNumbersConfig, getWatermarkConfig, hasAnyEdits } from "./adapter";
+
+const HISTORY_LIMIT = 100;
 
 function createInitialDraftDefaults(): EditorDraftDefaults {
   return {
@@ -92,6 +95,10 @@ function createInitialState(mode: EditorMode): EditorDocumentState {
       opacity: 0.14,
       rotation: -32
     },
+    history: {
+      past: [],
+      future: []
+    },
     signatureRequest: {
       requesterEmail: "",
       signerName: "",
@@ -112,6 +119,42 @@ function createInitialState(mode: EditorMode): EditorDocumentState {
   };
 }
 
+function createHistorySnapshot(state: EditorDocumentState): EditorHistorySnapshot {
+  return {
+    layers: state.layers,
+    selection: state.selection,
+    pageRotations: state.pageRotations,
+    pageNumbers: state.pageNumbers,
+    watermark: state.watermark
+  };
+}
+
+function withUndoCheckpoint(state: EditorDocumentState, nextState: EditorDocumentState): EditorDocumentState {
+  return {
+    ...nextState,
+    history: {
+      past: [...state.history.past, createHistorySnapshot(state)].slice(-HISTORY_LIMIT),
+      future: []
+    }
+  };
+}
+
+function restoreHistorySnapshot(
+  state: EditorDocumentState,
+  snapshot: EditorHistorySnapshot,
+  status: string
+): EditorDocumentState {
+  return {
+    ...state,
+    layers: snapshot.layers,
+    selection: snapshot.selection,
+    pageRotations: snapshot.pageRotations,
+    pageNumbers: snapshot.pageNumbers,
+    watermark: snapshot.watermark,
+    status
+  };
+}
+
 function reducer(state: EditorDocumentState, action: EditorAction): EditorDocumentState {
   switch (action.type) {
     case "reset-for-pdf":
@@ -126,6 +169,7 @@ function reducer(state: EditorDocumentState, action: EditorAction): EditorDocume
         pageRotations: [],
         rotationPage: 1,
         selection: { layerId: null },
+        history: { past: [], future: [] },
         downloadUrl: "",
         outputName: action.outputName,
         signatureRequest: {
@@ -167,34 +211,41 @@ function reducer(state: EditorDocumentState, action: EditorAction): EditorDocume
       return { ...state, tool: action.tool, selection: { layerId: null } };
     case "set-selection":
       return { ...state, selection: { layerId: action.layerId } };
+    case "commit-history":
+      return withUndoCheckpoint(state, {
+        ...state,
+        status: action.status ?? state.status
+      });
     case "add-layer":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         layers: [...state.layers, action.layer],
         selection: { layerId: action.layer.id },
         status: action.status
-      };
-    case "update-layer":
-      return {
+      });
+    case "update-layer": {
+      const nextState = {
         ...state,
         layers: state.layers.map((layer) =>
           layer.id === action.layerId ? action.updater(layer) : layer
         )
       };
+      return action.trackHistory === false ? nextState : withUndoCheckpoint(state, nextState);
+    }
     case "set-layers":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         layers: action.layers,
         status: action.status ?? state.status
-      };
+      });
     case "remove-layer":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         layers: state.layers.filter((layer) => layer.id !== action.layerId),
         selection: {
           layerId: state.selection.layerId === action.layerId ? null : state.selection.layerId
         }
-      };
+      });
     case "set-status":
       return { ...state, status: action.status };
     case "set-busy":
@@ -246,31 +297,59 @@ function reducer(state: EditorDocumentState, action: EditorAction): EditorDocume
         }
       };
     case "set-page-rotations":
-      return { ...state, pageRotations: action.pageRotations };
+      return withUndoCheckpoint(state, { ...state, pageRotations: action.pageRotations });
     case "set-rotation-page":
       return { ...state, rotationPage: action.rotationPage };
     case "set-rotation-degrees":
       return { ...state, rotationDegrees: action.rotationDegrees };
     case "set-page-numbers-enabled":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         pageNumbers: { ...state.pageNumbers, enabled: action.enabled }
-      };
+      });
     case "set-page-numbers":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         pageNumbers: { ...state.pageNumbers, ...action.patch }
-      };
+      });
     case "set-watermark-enabled":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         watermark: { ...state.watermark, enabled: action.enabled }
-      };
+      });
     case "set-watermark":
-      return {
+      return withUndoCheckpoint(state, {
         ...state,
         watermark: { ...state.watermark, ...action.patch }
+      });
+    case "undo": {
+      const previous = state.history.past.at(-1);
+      if (!previous) {
+        return state;
+      }
+
+      return {
+        ...restoreHistorySnapshot(state, previous, "Undid the last studio edit."),
+        history: {
+          past: state.history.past.slice(0, -1),
+          future: [createHistorySnapshot(state), ...state.history.future].slice(0, HISTORY_LIMIT)
+        }
       };
+    }
+    case "redo": {
+      const next = state.history.future[0];
+      if (!next) {
+        return state;
+      }
+
+      return {
+        ...restoreHistorySnapshot(state, next, "Redid the last studio edit."),
+        history: {
+          past: [...state.history.past, createHistorySnapshot(state)].slice(-HISTORY_LIMIT),
+          future: state.history.future.slice(1)
+        }
+      };
+    }
     case "set-signature-request":
       return {
         ...state,
@@ -373,22 +452,27 @@ export function usePdfEditor(mode: EditorMode) {
   }, []);
 
   const updateLayer = useCallback(
-    (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => {
-      dispatch({ type: "update-layer", layerId, updater });
+    (layerId: string, updater: (layer: EditorLayer) => EditorLayer, trackHistory = true) => {
+      dispatch({ type: "update-layer", layerId, updater, trackHistory });
     },
     []
   );
 
   const moveLayer = useCallback(
-    (layerId: string, x: number, y: number) => {
+    (layerId: string, x: number, y: number, trackHistory = true) => {
       dispatch({
         type: "update-layer",
         layerId,
-        updater: (layer) => ({ ...layer, x, y })
+        updater: (layer) => ({ ...layer, x, y }),
+        trackHistory
       });
     },
     []
   );
+
+  const createUndoCheckpoint = useCallback((status?: string) => {
+    dispatch({ type: "commit-history", status });
+  }, []);
 
   const reorderLayers = useCallback((layers: EditorLayer[]) => {
     dispatch({ type: "set-layers", layers, status: "Layer stack order updated." });
@@ -586,6 +670,14 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "remove-layer", layerId: state.selection.layerId });
   }, [state.selection.layerId]);
 
+  const undo = useCallback(() => {
+    dispatch({ type: "undo" });
+  }, []);
+
+  const redo = useCallback(() => {
+    dispatch({ type: "redo" });
+  }, []);
+
   const selectedLayer = useMemo(
     () => state.layers.find((layer) => layer.id === state.selection.layerId) ?? null,
     [state.layers, state.selection.layerId]
@@ -615,11 +707,13 @@ export function usePdfEditor(mode: EditorMode) {
     hasAnyEdits: hasEdits,
     actions: {
       createLayerAt,
+      createUndoCheckpoint,
       loadPreviewFailed,
       loadPreviewStarted,
       loadPreviewSucceeded,
       moveLayer,
       queuePageRotation,
+      redo,
       removePageRotation,
       removeSelectedLayer,
       reorderLayers,
@@ -647,6 +741,7 @@ export function usePdfEditor(mode: EditorMode) {
       setTool,
       setWatermark,
       setWatermarkEnabled,
+      undo,
       updateLayer
     }
   };

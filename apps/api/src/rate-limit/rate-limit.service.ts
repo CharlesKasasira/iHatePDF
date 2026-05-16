@@ -61,6 +61,12 @@ const RATE_LIMIT_POLICIES: Record<RateLimitProfile, RateLimitPolicy> = {
     windowSeconds: env.RATE_LIMIT_TASK_QUEUE_WINDOW_SECONDS,
     scopes: ["actor", "ip"],
     message: "Too many queued tasks. Try again later."
+  },
+  share: {
+    limit: env.RATE_LIMIT_SHARE_MAX,
+    windowSeconds: env.RATE_LIMIT_SHARE_WINDOW_SECONDS,
+    scopes: ["actor", "ip", "email"],
+    message: "Too many share attempts. Try again later."
   }
 };
 

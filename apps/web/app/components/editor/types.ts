@@ -74,6 +74,19 @@ export type EditorSelection = {
   layerId: string | null;
 };
 
+export type EditorHistorySnapshot = {
+  layers: EditorLayer[];
+  selection: EditorSelection;
+  pageRotations: EditPageRotationInput[];
+  pageNumbers: EditorPageNumbersState;
+  watermark: EditorWatermarkState;
+};
+
+export type EditorHistoryState = {
+  past: EditorHistorySnapshot[];
+  future: EditorHistorySnapshot[];
+};
+
 export type EditorViewport = {
   zoom: number;
   fitMode: "fit-width";
@@ -136,6 +149,7 @@ export type EditorDocumentState = {
   rotationDegrees: EditPageRotationInput["degrees"];
   pageNumbers: EditorPageNumbersState;
   watermark: EditorWatermarkState;
+  history: EditorHistoryState;
   signatureRequest: EditorSignatureRequestState;
   signatureFlowStep: SignatureFlowStep;
   viewport: EditorViewport;
@@ -155,8 +169,14 @@ export type EditorAction =
   | { type: "load-preview-failed"; message: string }
   | { type: "set-tool"; tool: EditorTool }
   | { type: "set-selection"; layerId: string | null }
+  | { type: "commit-history"; status?: string }
   | { type: "add-layer"; layer: EditorLayer; status: string }
-  | { type: "update-layer"; layerId: string; updater: (layer: EditorLayer) => EditorLayer }
+  | {
+      type: "update-layer";
+      layerId: string;
+      updater: (layer: EditorLayer) => EditorLayer;
+      trackHistory?: boolean;
+    }
   | { type: "set-layers"; layers: EditorLayer[]; status?: string }
   | { type: "remove-layer"; layerId: string }
   | { type: "set-status"; status: string }
@@ -176,6 +196,8 @@ export type EditorAction =
   | { type: "set-page-numbers"; patch: Partial<EditorPageNumbersState> }
   | { type: "set-watermark-enabled"; enabled: boolean }
   | { type: "set-watermark"; patch: Partial<EditorWatermarkState> }
+  | { type: "undo" }
+  | { type: "redo" }
   | { type: "set-signature-request"; patch: Partial<EditorSignatureRequestState> }
   | { type: "set-signature-request-feedback"; status: string; link?: string }
   | { type: "set-signature-flow-step"; step: SignatureFlowStep }

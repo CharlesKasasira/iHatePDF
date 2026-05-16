@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import { SiteHeader } from "../site-header";
+import type { FileShareResponse } from "../../lib/pdf-api";
 import type {
   EditorDocumentState,
   EditorDraftDefaults,
@@ -30,6 +31,7 @@ export function EditorShell({
   onImageDefaultsChange,
   onSignatureDefaultsChange,
   onSelectLayer,
+  onCreateUndoCheckpoint,
   onUpdateLayer,
   onRemoveSelectedLayer,
   onOutputNameChange,
@@ -52,7 +54,13 @@ export function EditorShell({
   onSendSignatureRequest,
   onMoveLayer,
   onReorderLayers,
-  onPlaceLayer
+  onPlaceLayer,
+  invite,
+  onInviteEmailChange,
+  onInviteMessageChange,
+  onInviteExpiresInHoursChange,
+  onCreateEditorInvite,
+  onCopyEditorInvite
 }: {
   mode: EditorMode;
   state: EditorDocumentState;
@@ -69,7 +77,12 @@ export function EditorShell({
   onImageDefaultsChange: (patch: Partial<EditorDraftDefaults["image"]>) => void;
   onSignatureDefaultsChange: (patch: Partial<EditorDraftDefaults["signature"]>) => void;
   onSelectLayer: (layerId: string | null) => void;
-  onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
+  onCreateUndoCheckpoint: () => void;
+  onUpdateLayer: (
+    layerId: string,
+    updater: (layer: EditorLayer) => EditorLayer,
+    trackHistory?: boolean
+  ) => void;
   onRemoveSelectedLayer: () => void;
   onOutputNameChange: (outputName: string) => void;
   onRotationPageChange: (page: number) => void;
@@ -89,9 +102,23 @@ export function EditorShell({
   onBackSignatureRequest: () => void;
   onSignatureRequestChange: (patch: Partial<EditorDocumentState["signatureRequest"]>) => void;
   onSendSignatureRequest: () => Promise<void>;
-  onMoveLayer: (layerId: string, x: number, y: number) => void;
+  onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onReorderLayers: (layers: EditorLayer[]) => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
+  invite: {
+    email: string;
+    message: string;
+    expiresInHours: number;
+    expiryOptions: Array<{ value: number; label: string }>;
+    busy: boolean;
+    status: string;
+    share: FileShareResponse | null;
+  };
+  onInviteEmailChange: (email: string) => void;
+  onInviteMessageChange: (message: string) => void;
+  onInviteExpiresInHoursChange: (expiresInHours: number) => void;
+  onCreateEditorInvite: () => void;
+  onCopyEditorInvite: () => void;
 }): React.JSX.Element {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -227,6 +254,7 @@ export function EditorShell({
               activeTool={state.tool}
               selectedLayerId={state.selection.layerId}
               onSelectLayer={(layerId) => onSelectLayer(layerId)}
+              onCreateUndoCheckpoint={onCreateUndoCheckpoint}
               onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
               onPlaceLayer={onPlaceLayer}
@@ -258,6 +286,12 @@ export function EditorShell({
               onRetentionHoursChange={onRetentionHoursChange}
               onExport={onExport}
               onReorderLayers={onReorderLayers}
+              invite={invite}
+              onInviteEmailChange={onInviteEmailChange}
+              onInviteMessageChange={onInviteMessageChange}
+              onInviteExpiresInHoursChange={onInviteExpiresInHoursChange}
+              onCreateEditorInvite={onCreateEditorInvite}
+              onCopyEditorInvite={onCopyEditorInvite}
             />
           </section>
 
