@@ -4,12 +4,17 @@ import {
   BadgeAlert,
   Brush,
   ChevronsUp,
+  Circle,
   Crop,
+  Download,
   Droplets,
   FileImage,
   Image as ImageIcon,
   ImageOff,
   Images,
+  MousePointer2,
+  PenLine,
+  RectangleHorizontal,
   RotateCw,
   Shield,
   Sparkles,
@@ -55,6 +60,21 @@ type CropBounds = {
   height: number;
 };
 type CropInteraction = "move" | "n" | "e" | "s" | "w" | "nw" | "ne" | "se" | "sw";
+type StudioTool = "select" | "crop" | "text" | "rectangle" | "ellipse" | "brush";
+type StudioLayerKind = "text" | "rectangle" | "ellipse" | "brush";
+type StudioLayer = {
+  id: string;
+  kind: StudioLayerKind;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  opacity: number;
+  text?: string;
+  fontSize?: number;
+};
 type WorkItem = {
   id: string;
   file: File;
@@ -79,6 +99,19 @@ const TOOL_ICONS: Record<ImageToolKey, LucideIcon> = {
   "watermark-image": Shield,
   "blur-face": BadgeAlert
 };
+
+const STUDIO_TOOLS: Array<{
+  id: StudioTool;
+  label: string;
+  icon: LucideIcon;
+}> = [
+  { id: "select", label: "Select", icon: MousePointer2 },
+  { id: "crop", label: "Crop", icon: Crop },
+  { id: "text", label: "Text", icon: Type },
+  { id: "rectangle", label: "Rectangle", icon: RectangleHorizontal },
+  { id: "ellipse", label: "Ellipse", icon: Circle },
+  { id: "brush", label: "Brush", icon: PenLine }
+];
 
 function filterLabel(filter: Filter): string {
   if (filter === "all") {
@@ -108,6 +141,15 @@ function deriveOutputName(file: File, tool: ImageToolItem): string {
 
 function taskMessage(status: string | null | undefined): string {
   return status || "Processing image...";
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not read image.")));
+    reader.readAsDataURL(file);
+  });
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -143,11 +185,26 @@ function fitCropBounds(bounds: CropBounds, imageSize: ImageSize): CropBounds {
   };
 }
 
+function studioFilter(brightness: number, contrast: number, saturation: number, blur: number): string {
+  return `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) blur(${blur}px)`;
+}
+
+function studioLayerLabel(layer: StudioLayer): string {
+  if (layer.kind === "text") {
+    return layer.text || layer.name;
+  }
+  if (layer.kind === "brush") {
+    return "Brush mark";
+  }
+  return layer.kind === "ellipse" ? "Ellipse" : "Rectangle";
+}
+
 export default function ImageToolsPage(): React.JSX.Element {
   const [selectedFilter, setSelectedFilter] = useState<Filter>("all");
   const [selectedTool, setSelectedTool] = useState<ImageToolItem>(IMAGE_TOOLS[0]);
   const [items, setItems] = useState<WorkItem[]>([]);
   const cropStageRef = useRef<HTMLDivElement | null>(null);
+  const studioStageRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [quality, setQuality] = useState(78);
@@ -168,6 +225,18 @@ export default function ImageToolsPage(): React.JSX.Element {
   const [memeTopText, setMemeTopText] = useState("TOP TEXT");
   const [memeBottomText, setMemeBottomText] = useState("BOTTOM TEXT");
   const [fontSize, setFontSize] = useState(54);
+  const [studioTool, setStudioTool] = useState<StudioTool>("select");
+  const [studioZoom, setStudioZoom] = useState(78);
+  const [studioBrightness, setStudioBrightness] = useState(100);
+  const [studioContrast, setStudioContrast] = useState(100);
+  const [studioSaturation, setStudioSaturation] = useState(100);
+  const [studioBlur, setStudioBlur] = useState(0);
+  const [studioForeground, setStudioForeground] = useState("#0e8f90");
+  const [studioBackground, setStudioBackground] = useState("#ffffff");
+  const [studioLayers, setStudioLayers] = useState<StudioLayer[]>([]);
+  const [selectedStudioLayerId, setSelectedStudioLayerId] = useState<string | null>(null);
+  const [studioHistory, setStudioHistory] = useState<string[]>(["Open studio"]);
+  const [studioImageDataUrl, setStudioImageDataUrl] = useState("");
 
   const visibleTools = useMemo(
     () => (selectedFilter === "all" ? IMAGE_TOOLS : imageToolsForCategory(selectedFilter as ImageToolCategoryId)),
@@ -176,10 +245,13 @@ export default function ImageToolsPage(): React.JSX.Element {
   const SelectedIcon = TOOL_ICONS[selectedTool.key];
   const previewFile = items[0]?.file;
   const previewUrl = useMemo(() => (previewFile ? URL.createObjectURL(previewFile) : ""), [previewFile]);
+  const photoEditorSelected = selectedTool.key === "photo-editor";
   const canUpload = selectedTool.status === "available";
-  const singleImage = isSingleImageTool(selectedTool.operation);
+  const singleImage = photoEditorSelected || isSingleImageTool(selectedTool.operation);
   const acceptedMimeTypes =
     selectedTool.operation === "convert_from_jpg" ? ["image/jpeg", "image/jpg"] : IMAGE_MIME_TYPES;
+  const selectedStudioLayer = studioLayers.find((layer) => layer.id === selectedStudioLayerId) ?? null;
+  const studioFilterValue = studioFilter(studioBrightness, studioContrast, studioSaturation, studioBlur);
   const cropBounds = imageSize
     ? fitCropBounds({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight }, imageSize)
     : null;
@@ -201,6 +273,33 @@ export default function ImageToolsPage(): React.JSX.Element {
     };
   }, [previewUrl]);
 
+  useEffect(() => {
+    if (!photoEditorSelected || !previewFile) {
+      if (!previewFile) {
+        setStudioImageDataUrl("");
+      }
+      return;
+    }
+
+    let active = true;
+    readFileAsDataUrl(previewFile)
+      .then((dataUrl) => {
+        if (active) {
+          setStudioImageDataUrl(dataUrl);
+          setStudioHistory((current) => [`Open ${previewFile.name}`, ...current.filter((entry) => !entry.startsWith("Open ")).slice(0, 7)]);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setNotice((error as Error).message);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [photoEditorSelected, previewFile]);
+
   const updateItem = (id: string, patch: Partial<WorkItem>): void => {
     setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
@@ -212,6 +311,7 @@ export default function ImageToolsPage(): React.JSX.Element {
     setSelectedTool(tool);
     setItems([]);
     setNotice("");
+    setImageSize(null);
   };
 
   const addFiles = (fileList: FileList | null): void => {
@@ -229,6 +329,15 @@ export default function ImageToolsPage(): React.JSX.Element {
 
     if (singleImage) {
       setImageSize(null);
+      setSelectedStudioLayerId(null);
+      if (photoEditorSelected) {
+        setStudioLayers([]);
+        setStudioBrightness(100);
+        setStudioContrast(100);
+        setStudioSaturation(100);
+        setStudioBlur(0);
+        setStudioHistory(["Open studio"]);
+      }
     }
 
     setItems((current) => [
@@ -325,6 +434,225 @@ export default function ImageToolsPage(): React.JSX.Element {
     window.addEventListener("pointermove", updateCrop);
     window.addEventListener("pointerup", endCrop);
     window.addEventListener("pointercancel", endCrop);
+  };
+
+  const pushStudioHistory = (entry: string): void => {
+    setStudioHistory((current) => [entry, ...current].slice(0, 8));
+  };
+
+  const updateStudioLayer = (layerId: string, patch: Partial<StudioLayer>): void => {
+    setStudioLayers((current) => current.map((layer) => (layer.id === layerId ? { ...layer, ...patch } : layer)));
+  };
+
+  const stagePointToImagePoint = (clientX: number, clientY: number): { x: number; y: number } | null => {
+    if (!imageSize || !studioStageRef.current) {
+      return null;
+    }
+    const rect = studioStageRef.current.getBoundingClientRect();
+    return {
+      x: clamp(((clientX - rect.left) / rect.width) * imageSize.width, 0, imageSize.width),
+      y: clamp(((clientY - rect.top) / rect.height) * imageSize.height, 0, imageSize.height)
+    };
+  };
+
+  const addStudioLayer = (tool: StudioTool, x: number, y: number): void => {
+    if (!imageSize) {
+      return;
+    }
+
+    const id = createItemId();
+    const common = {
+      id,
+      x,
+      y,
+      color: studioForeground,
+      opacity: 0.92
+    };
+    let layer: StudioLayer;
+
+    if (tool === "text") {
+      layer = {
+        ...common,
+        kind: "text",
+        name: "Text",
+        text: "Text",
+        fontSize: 64,
+        width: Math.min(320, imageSize.width),
+        height: 84
+      };
+    } else if (tool === "ellipse") {
+      layer = {
+        ...common,
+        kind: "ellipse",
+        name: "Ellipse",
+        width: Math.min(220, imageSize.width),
+        height: Math.min(150, imageSize.height)
+      };
+    } else if (tool === "brush") {
+      layer = {
+        ...common,
+        kind: "brush",
+        name: "Brush",
+        width: Math.min(72, imageSize.width),
+        height: Math.min(72, imageSize.height),
+        opacity: 0.78
+      };
+    } else {
+      layer = {
+        ...common,
+        kind: "rectangle",
+        name: "Rectangle",
+        width: Math.min(240, imageSize.width),
+        height: Math.min(150, imageSize.height)
+      };
+    }
+
+    layer.x = clamp(layer.x - layer.width / 2, 0, Math.max(0, imageSize.width - layer.width));
+    layer.y = clamp(layer.y - layer.height / 2, 0, Math.max(0, imageSize.height - layer.height));
+    setStudioLayers((current) => [...current, layer]);
+    setSelectedStudioLayerId(id);
+    setStudioTool("select");
+    pushStudioHistory(`Add ${studioLayerLabel(layer)}`);
+  };
+
+  const handleStudioStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (studioTool === "select" || studioTool === "crop") {
+      setSelectedStudioLayerId(null);
+      return;
+    }
+
+    const point = stagePointToImagePoint(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+    addStudioLayer(studioTool, point.x, point.y);
+  };
+
+  const beginStudioLayerMove = (event: ReactPointerEvent<HTMLElement>, layer: StudioLayer): void => {
+    if (!imageSize || studioTool !== "select") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedStudioLayerId(layer.id);
+
+    const startPoint = stagePointToImagePoint(event.clientX, event.clientY);
+    if (!startPoint) {
+      return;
+    }
+    const startLayer = { ...layer };
+
+    const moveLayer = (moveEvent: PointerEvent): void => {
+      const nextPoint = stagePointToImagePoint(moveEvent.clientX, moveEvent.clientY);
+      if (!nextPoint) {
+        return;
+      }
+      updateStudioLayer(layer.id, {
+        x: clamp(startLayer.x + (nextPoint.x - startPoint.x), 0, Math.max(0, imageSize.width - startLayer.width)),
+        y: clamp(startLayer.y + (nextPoint.y - startPoint.y), 0, Math.max(0, imageSize.height - startLayer.height))
+      });
+    };
+
+    const stopMove = (): void => {
+      pushStudioHistory(`Move ${studioLayerLabel(layer)}`);
+      window.removeEventListener("pointermove", moveLayer);
+      window.removeEventListener("pointerup", stopMove);
+      window.removeEventListener("pointercancel", stopMove);
+    };
+
+    window.addEventListener("pointermove", moveLayer);
+    window.addEventListener("pointerup", stopMove);
+    window.addEventListener("pointercancel", stopMove);
+  };
+
+  const beginStudioLayerResize = (event: ReactPointerEvent<HTMLElement>, layer: StudioLayer): void => {
+    if (!imageSize || studioTool !== "select") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedStudioLayerId(layer.id);
+
+    const startPoint = stagePointToImagePoint(event.clientX, event.clientY);
+    if (!startPoint) {
+      return;
+    }
+    const startLayer = { ...layer };
+    const minSize = layer.kind === "text" ? 40 : 24;
+
+    const resizeLayer = (moveEvent: PointerEvent): void => {
+      const nextPoint = stagePointToImagePoint(moveEvent.clientX, moveEvent.clientY);
+      if (!nextPoint) {
+        return;
+      }
+      updateStudioLayer(layer.id, {
+        width: clamp(startLayer.width + (nextPoint.x - startPoint.x), minSize, imageSize.width - startLayer.x),
+        height: clamp(startLayer.height + (nextPoint.y - startPoint.y), minSize, imageSize.height - startLayer.y)
+      });
+    };
+
+    const stopResize = (): void => {
+      pushStudioHistory(`Resize ${studioLayerLabel(layer)}`);
+      window.removeEventListener("pointermove", resizeLayer);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", resizeLayer);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  };
+
+  const exportStudioImage = async (): Promise<void> => {
+    if (!studioImageDataUrl || !imageSize) {
+      setNotice("Select an image first.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = imageSize.width;
+    canvas.height = imageSize.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setNotice("This browser cannot export the image.");
+      return;
+    }
+
+    const image = new window.Image();
+    image.src = studioImageDataUrl;
+    await image.decode();
+
+    context.fillStyle = studioBackground;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.filter = studioFilterValue;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    context.filter = "none";
+
+    studioLayers.forEach((layer) => {
+      context.save();
+      context.globalAlpha = layer.opacity;
+      context.fillStyle = layer.color;
+      if (layer.kind === "text") {
+        context.font = `${layer.fontSize ?? 64}px Avenir Next, Segoe UI, sans-serif`;
+        context.textBaseline = "top";
+        context.fillText(layer.text ?? "Text", layer.x, layer.y, layer.width);
+      } else if (layer.kind === "ellipse" || layer.kind === "brush") {
+        context.beginPath();
+        context.ellipse(layer.x + layer.width / 2, layer.y + layer.height / 2, layer.width / 2, layer.height / 2, 0, 0, Math.PI * 2);
+        context.fill();
+      } else {
+        context.fillRect(layer.x, layer.y, layer.width, layer.height);
+      }
+      context.restore();
+    });
+
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `${stripExtension(previewFile?.name ?? "image")}-edited.png`;
+    link.click();
+    pushStudioHistory("Export PNG");
   };
 
   const buildOptions = (): Record<string, unknown> => {
@@ -469,7 +797,7 @@ export default function ImageToolsPage(): React.JSX.Element {
           ))}
         </section>
 
-        <section className="image-tools-layout">
+        <section className={`image-tools-layout ${photoEditorSelected ? "image-tools-layout--studio" : ""}`}>
           <div className="image-tool-grid" aria-label="Image tools">
             {visibleTools.map((tool) => {
               const Icon = TOOL_ICONS[tool.key];
@@ -493,7 +821,7 @@ export default function ImageToolsPage(): React.JSX.Element {
             })}
           </div>
 
-          <aside className="image-tool-workbench" aria-label={`${selectedTool.title} workbench`}>
+          <aside className={`image-tool-workbench ${photoEditorSelected ? "image-tool-workbench--studio" : ""}`} aria-label={`${selectedTool.title} workbench`}>
             <div className="image-tool-workbench__header">
               <span className="image-tool-workbench__icon">
                 <SelectedIcon aria-hidden="true" size={24} />
@@ -514,6 +842,229 @@ export default function ImageToolsPage(): React.JSX.Element {
                 <button type="button" disabled>
                   Processing disabled
                 </button>
+              </div>
+            ) : photoEditorSelected ? (
+              <div className="image-studio">
+                <UploadDropzone
+                  label="Open image"
+                  hint={items.length > 0 ? items[0].file.name : "Drop a JPG, PNG, WebP, GIF, or SVG file"}
+                  accept=".jpg,.jpeg,.png,.webp,.gif,.svg,image/jpeg,image/png,image/webp,image/gif,image/svg+xml"
+                  multiple={false}
+                  disabled={busy}
+                  compact
+                  onFiles={addFiles}
+                />
+
+                <div className="image-studio-menu" aria-label="Editor menu">
+                  {["File", "Edit", "Image", "Layer", "Select", "Filter", "View", "Window"].map((label) => (
+                    <button key={label} type="button">
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="image-studio-options">
+                  <label className="image-studio-check">
+                    <input type="checkbox" defaultChecked />
+                    <span>Auto-select</span>
+                  </label>
+                  <label className="image-studio-check">
+                    <input type="checkbox" defaultChecked />
+                    <span>Transform controls</span>
+                  </label>
+                  <label className="image-studio-inline">
+                    Zoom
+                    <input type="range" min={25} max={180} value={studioZoom} onChange={(event) => setStudioZoom(Number(event.target.value))} />
+                    <strong>{studioZoom}%</strong>
+                  </label>
+                  <button type="button" className="image-studio-export" disabled={!studioImageDataUrl} onClick={exportStudioImage}>
+                    <Download aria-hidden="true" size={16} />
+                    Export PNG
+                  </button>
+                </div>
+
+                <div className="image-studio-shell">
+                  <aside className="image-studio-rail" aria-label="Studio tools">
+                    {STUDIO_TOOLS.map((tool) => {
+                      const ToolIcon = tool.icon;
+                      return (
+                        <button
+                          key={tool.id}
+                          type="button"
+                          className={studioTool === tool.id ? "is-active" : ""}
+                          onClick={() => setStudioTool(tool.id)}
+                          aria-pressed={studioTool === tool.id}
+                          title={tool.label}
+                        >
+                          <ToolIcon aria-hidden="true" size={21} />
+                          <span>{tool.label}</span>
+                        </button>
+                      );
+                    })}
+                    <div className="image-studio-colors" aria-label="Studio colors">
+                      <input type="color" value={studioForeground} onChange={(event) => setStudioForeground(event.target.value)} title="Foreground color" />
+                      <input type="color" value={studioBackground} onChange={(event) => setStudioBackground(event.target.value)} title="Background color" />
+                    </div>
+                  </aside>
+
+                  <section className="image-studio-canvas" aria-label="Image editor canvas">
+                    {previewUrl ? (
+                      <div
+                        className="image-studio-stage"
+                        ref={studioStageRef}
+                        onPointerDown={handleStudioStagePointerDown}
+                        style={{
+                          width: imageSize ? `${imageSize.width * (studioZoom / 100)}px` : "640px",
+                          height: imageSize ? `${imageSize.height * (studioZoom / 100)}px` : "360px"
+                        }}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={previewUrl}
+                          alt="Studio image"
+                          draggable={false}
+                          onLoad={handlePreviewImageLoad}
+                          style={{ filter: studioFilterValue }}
+                        />
+                        {imageSize ? studioLayers.map((layer) => {
+                          const scale = studioZoom / 100;
+                          const isSelected = selectedStudioLayerId === layer.id;
+                          return (
+                            <button
+                              key={layer.id}
+                              type="button"
+                              className={`image-studio-layer image-studio-layer--${layer.kind} ${isSelected ? "is-selected" : ""}`}
+                              style={{
+                                left: `${layer.x * scale}px`,
+                                top: `${layer.y * scale}px`,
+                                width: `${layer.width * scale}px`,
+                                height: `${layer.height * scale}px`,
+                                color: layer.color,
+                                background: layer.kind === "text" ? "transparent" : layer.color,
+                                opacity: layer.opacity,
+                                fontSize: `${(layer.fontSize ?? 64) * scale}px`
+                              }}
+                              onPointerDown={(event) => beginStudioLayerMove(event, layer)}
+                            >
+                              {layer.kind === "text" ? layer.text : null}
+                              {isSelected ? (
+                                <span
+                                  className="image-studio-layer__handle"
+                                  onPointerDown={(event) => beginStudioLayerResize(event, layer)}
+                                />
+                              ) : null}
+                            </button>
+                          );
+                        }) : null}
+                      </div>
+                    ) : (
+                      <div className="image-studio-empty">
+                        <strong>New project</strong>
+                        <span>1280 x 720 px</span>
+                      </div>
+                    )}
+                  </section>
+
+                  <aside className="image-studio-panels">
+                    <section className="image-studio-panel">
+                      <div className="image-studio-panel__tabs">
+                        <strong>History</strong>
+                        <span>Swatches</span>
+                      </div>
+                      <div className="image-studio-history">
+                        {studioHistory.map((entry) => (
+                          <span key={entry}>{entry}</span>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="image-studio-panel">
+                      <div className="image-studio-panel__tabs">
+                        <strong>Layers</strong>
+                        <span>Channels</span>
+                        <span>Paths</span>
+                      </div>
+                      <button type="button" className="image-studio-layer-row is-base">
+                        <span />
+                        <strong>Background</strong>
+                        <small>Locked</small>
+                      </button>
+                      {[...studioLayers].reverse().map((layer) => (
+                        <button
+                          key={layer.id}
+                          type="button"
+                          className={`image-studio-layer-row ${selectedStudioLayerId === layer.id ? "is-active" : ""}`}
+                          onClick={() => setSelectedStudioLayerId(layer.id)}
+                        >
+                          <span style={{ background: layer.kind === "text" ? "transparent" : layer.color, color: layer.color }}>
+                            {layer.kind === "text" ? "T" : ""}
+                          </span>
+                          <strong>{studioLayerLabel(layer)}</strong>
+                          <small>{Math.round(layer.opacity * 100)}%</small>
+                        </button>
+                      ))}
+                    </section>
+
+                    <section className="image-studio-panel">
+                      <div className="image-studio-panel__tabs">
+                        <strong>Properties</strong>
+                      </div>
+                      <div className="image-studio-properties">
+                        {selectedStudioLayer ? (
+                          <>
+                            {selectedStudioLayer.kind === "text" ? (
+                              <label>
+                                Text
+                                <input
+                                  value={selectedStudioLayer.text ?? ""}
+                                  onChange={(event) => updateStudioLayer(selectedStudioLayer.id, { text: event.target.value })}
+                                />
+                              </label>
+                            ) : null}
+                            <label>
+                              Opacity
+                              <input
+                                type="range"
+                                min={0.1}
+                                max={1}
+                                step={0.05}
+                                value={selectedStudioLayer.opacity}
+                                onChange={(event) => updateStudioLayer(selectedStudioLayer.id, { opacity: Number(event.target.value) })}
+                              />
+                            </label>
+                            <label>
+                              Color
+                              <input
+                                type="color"
+                                value={selectedStudioLayer.color}
+                                onChange={(event) => updateStudioLayer(selectedStudioLayer.id, { color: event.target.value })}
+                              />
+                            </label>
+                          </>
+                        ) : (
+                          <>
+                            <label>
+                              Brightness
+                              <input type="range" min={40} max={180} value={studioBrightness} onChange={(event) => setStudioBrightness(Number(event.target.value))} />
+                            </label>
+                            <label>
+                              Contrast
+                              <input type="range" min={40} max={180} value={studioContrast} onChange={(event) => setStudioContrast(Number(event.target.value))} />
+                            </label>
+                            <label>
+                              Saturation
+                              <input type="range" min={0} max={220} value={studioSaturation} onChange={(event) => setStudioSaturation(Number(event.target.value))} />
+                            </label>
+                            <label>
+                              Blur
+                              <input type="range" min={0} max={12} step={0.5} value={studioBlur} onChange={(event) => setStudioBlur(Number(event.target.value))} />
+                            </label>
+                          </>
+                        )}
+                      </div>
+                    </section>
+                  </aside>
+                </div>
               </div>
             ) : (
               <>
