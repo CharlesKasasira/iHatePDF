@@ -8,7 +8,7 @@ import { AppModule } from "./app.module.js";
 import { env } from "./config/env.js";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter());
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), { bodyParser: false });
   const multipartPlugin = multipart as unknown as Parameters<NestFastifyApplication["register"]>[0];
   const fastify = app.getHttpAdapter().getInstance();
 

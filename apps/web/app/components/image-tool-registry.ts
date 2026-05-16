@@ -82,10 +82,9 @@ export const IMAGE_TOOLS: ImageToolItem[] = [
     key: "photo-editor",
     title: "Photo Editor",
     shortTitle: "Editor",
-    description: "A richer editor surface for filters and annotations.",
+    description: "Layer text, shapes, and filters in a browser studio.",
     category: "modify",
-    status: "gated",
-    betaLabel: "Gated beta"
+    status: "available"
   },
   {
     key: "upscale-image",
