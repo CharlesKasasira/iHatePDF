@@ -5,6 +5,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      TZ: ${TZ:-Africa/Kampala}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -17,6 +18,8 @@ services:
 
   valkey:
     image: valkey/valkey:8.0-alpine
+    environment:
+      TZ: ${TZ:-Africa/Kampala}
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -27,6 +30,8 @@ services:
 
   mailpit:
     image: axllent/mailpit:v1.21.8
+    environment:
+      TZ: ${TZ:-Africa/Kampala}
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"

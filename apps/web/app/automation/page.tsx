@@ -15,6 +15,7 @@ import {
   type CreatedWebhookEndpoint,
   type WebhookEndpointItem
 } from "../lib/pdf-api";
+import { formatEatDateTime } from "../lib/time";
 
 type WebhookDraft = {
   url: string;
@@ -24,7 +25,7 @@ type WebhookDraft = {
 };
 
 function formatDate(value: string): string {
-  return new Date(value).toLocaleString();
+  return formatEatDateTime(value);
 }
 
 function eventsFromUnknown(value: unknown): string[] {

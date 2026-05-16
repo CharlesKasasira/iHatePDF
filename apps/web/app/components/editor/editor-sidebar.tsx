@@ -1,6 +1,7 @@
 "use client";
 
 import type { EditPageRotationInput, FileShareResponse } from "../../lib/pdf-api";
+import { formatEatDateTime } from "../../lib/time";
 import { ReorderableList, ReorderHandle } from "../reorderable-list";
 import { PAGE_NUMBER_POSITIONS, RETENTION_OPTIONS } from "./constants";
 import type {
@@ -715,7 +716,7 @@ export function EditorSidebar({
           <div className="share-result">
             <div>
               <strong>{invite.share.fileName}</strong>
-              <span>Expires {new Date(invite.share.expiresAt).toLocaleString()}</span>
+              <span>Expires {formatEatDateTime(invite.share.expiresAt)}</span>
             </div>
             <input readOnly value={invite.share.shareUrl} aria-label="Editor invite link" />
             <div className="row-actions">

@@ -2,6 +2,21 @@ import { Injectable, Logger, ServiceUnavailableException } from "@nestjs/common"
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
 
+const EAT_TIME_ZONE = "Africa/Kampala";
+const eatDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: EAT_TIME_ZONE,
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
+function formatEatDateTime(value: Date): string {
+  return `${eatDateFormatter.format(value)} EAT`;
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -52,16 +67,26 @@ export class MailService {
         to: input.to,
         subject: input.title ? `Signature request: ${input.title}` : "Signature request",
         text: [
-          `You have a signature request${input.title ? ` for "${input.title}"` : ""}.`,
+          "Hello,",
+          "",
+          `You have been asked to review and sign${input.title ? ` "${input.title}"` : " a document"}.`,
           input.signerName ? `Signer: ${input.signerName}` : null,
           input.role ? `Role: ${input.role}` : null,
           input.requesterEmail ? `Requested by: ${input.requesterEmail}` : null,
           typeof input.routingOrder === "number" ? `Signing order: ${input.routingOrder}` : null,
-          input.expiresAt ? `Expires: ${input.expiresAt.toISOString()}` : null,
-          `Open the secure link: ${input.signingLink}`,
-          input.message ? `Message: ${input.message}` : null
+          input.expiresAt ? `Expires: ${formatEatDateTime(input.expiresAt)}` : null,
+          "",
+          "Use the secure link below to complete your assigned fields:",
+          input.signingLink,
+          input.message ? "" : null,
+          input.message ? `Message from the requester: ${input.message}` : null,
+          "",
+          "Please complete this request before the expiry time.",
+          "",
+          "Regards,",
+          "RENU 360"
         ]
-          .filter(Boolean)
+          .filter((line): line is string => line !== null)
           .join("\n")
       });
     } catch (error) {
@@ -85,15 +110,23 @@ export class MailService {
         to: input.to,
         subject: input.title ? `Reminder: sign ${input.title}` : "Reminder: pending signature",
         text: [
+          "Hello,",
+          "",
           `This is a reminder to complete your signature request${input.title ? ` for "${input.title}"` : ""}.`,
           input.signerName ? `Signer: ${input.signerName}` : null,
           input.role ? `Role: ${input.role}` : null,
           input.requesterEmail ? `Requested by: ${input.requesterEmail}` : null,
-          input.expiresAt ? `Expires: ${input.expiresAt.toISOString()}` : null,
-          `Open the secure link: ${input.signingLink}`,
-          input.message ? `Message: ${input.message}` : null
+          input.expiresAt ? `Expires: ${formatEatDateTime(input.expiresAt)}` : null,
+          "",
+          "Use the secure link below to complete your assigned fields:",
+          input.signingLink,
+          input.message ? "" : null,
+          input.message ? `Message from the requester: ${input.message}` : null,
+          "",
+          "Regards,",
+          "RENU 360"
         ]
-          .filter(Boolean)
+          .filter((line): line is string => line !== null)
           .join("\n")
       });
     } catch (error) {
@@ -114,13 +147,19 @@ export class MailService {
         to: input.to,
         subject: "Your iHatePDF signing verification code",
         text: [
+          "Hello,",
+          "",
           `Your signing verification code is ${input.otp}.`,
           input.title ? `Document: ${input.title}` : null,
           input.requesterEmail ? `Requested by: ${input.requesterEmail}` : null,
           `This code expires in ${input.expiresInMinutes} minutes.`,
-          "If you did not expect this request, you can ignore this email."
+          "",
+          "If you did not expect this request, you can ignore this email.",
+          "",
+          "Regards,",
+          "RENU 360"
         ]
-          .filter(Boolean)
+          .filter((line): line is string => line !== null)
           .join("\n")
       });
     } catch (error) {
@@ -145,16 +184,23 @@ export class MailService {
           ? `PDF editor invitation: ${input.fileName}`
           : `PDF shared with you: ${input.fileName}`,
         text: [
+          "Hello,",
+          "",
           isEditorInvite
-            ? `You have been invited to edit this PDF: ${input.fileName}.`
-            : `A PDF has been shared with you: ${input.fileName}.`,
+            ? `You have been invited to edit the PDF "${input.fileName}".`
+            : `A PDF has been shared with you: "${input.fileName}".`,
           isEditorInvite
-            ? `Open the editor invite link: ${input.shareLink}`
-            : `Open the shared link: ${input.shareLink}`,
-          `This link expires: ${input.expiresAt.toISOString()}`,
-          input.message ? `Message: ${input.message}` : null
+            ? "Use the editor invite link below:"
+            : "Use the secure link below:",
+          input.shareLink,
+          `This link expires: ${formatEatDateTime(input.expiresAt)}`,
+          input.message ? "" : null,
+          input.message ? `Message from the sender: ${input.message}` : null,
+          "",
+          "Regards,",
+          "RENU 360"
         ]
-          .filter(Boolean)
+          .filter((line): line is string => line !== null)
           .join("\n")
       });
     } catch (error) {
@@ -175,10 +221,16 @@ export class MailService {
         subject: "Reset your iHatePDF password",
         text: [
           input.name ? `Hello ${input.name},` : "Hello,",
+          "",
           "A password reset was requested for your iHatePDF account.",
-          `Reset your password: ${input.resetLink}`,
+          "Use the secure link below to reset your password:",
+          input.resetLink,
           `This link expires in ${input.expiresInMinutes} minutes.`,
-          "If you did not request this, you can ignore this email."
+          "",
+          "If you did not request this, you can ignore this email.",
+          "",
+          "Regards,",
+          "RENU 360"
         ].join("\n")
       });
     } catch (error) {

@@ -13,6 +13,7 @@ import {
   type ApiKeyItem,
   type CreatedApiKey
 } from "../lib/pdf-api";
+import { dateTimeLocalToEatIso, formatEatDateTime } from "../lib/time";
 
 type ExpirationPreset = "7" | "30" | "90" | "none" | "custom";
 
@@ -25,11 +26,11 @@ const expirationPresets: Array<{ value: ExpirationPreset; label: string }> = [
 ];
 
 function formatDate(value: string | null): string {
-  return value ? new Date(value).toLocaleString() : "Not set";
+  return formatEatDateTime(value);
 }
 
 function toIsoDateTime(value: string): string | undefined {
-  return value ? new Date(value).toISOString() : undefined;
+  return dateTimeLocalToEatIso(value);
 }
 
 function addDaysIso(days: number): string {

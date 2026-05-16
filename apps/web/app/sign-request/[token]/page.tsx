@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   completeSignatureRequest,
@@ -14,6 +15,7 @@ import {
   type PdfFileMetadataResponse,
   type SignatureRequestResponse
 } from "../../lib/pdf-api";
+import { formatEatDateTime, formatEatTime, todayEatInputValue } from "../../lib/time";
 import styles from "../../components/signature-workflow-studio.module.css";
 
 type FieldDraftValue = {
@@ -22,8 +24,10 @@ type FieldDraftValue = {
   signatureDataUrl?: string;
 };
 
+type SignatureInputMode = "draw" | "upload" | "mobile";
+
 function todayInputValue(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayEatInputValue();
 }
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -33,6 +37,242 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onload = () => resolve(String(reader.result));
     reader.readAsDataURL(file);
   });
+}
+
+function SignatureFieldInput({
+  value,
+  signingUrl,
+  onChange
+}: {
+  value?: string;
+  signingUrl: string;
+  onChange: (signatureDataUrl?: string) => void;
+}): React.JSX.Element {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+  const drewRef = useRef(false);
+  const [mode, setMode] = useState<SignatureInputMode>("draw");
+  const [hasDrawing, setHasDrawing] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
+  const prepareCanvas = (): void => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+    canvas.height = Math.max(1, Math.floor(154 * ratio));
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.lineWidth = 2.8;
+    context.strokeStyle = "#17324d";
+  };
+
+  useEffect(() => {
+    if (mode !== "draw") {
+      return;
+    }
+    prepareCanvas();
+    window.addEventListener("resize", prepareCanvas);
+    return () => window.removeEventListener("resize", prepareCanvas);
+  }, [mode]);
+
+  useEffect(() => {
+    if (!signingUrl) {
+      setQrDataUrl("");
+      return;
+    }
+
+    let cancelled = false;
+    void QRCode.toDataURL(signingUrl, {
+      margin: 1,
+      scale: 7,
+      color: {
+        dark: "#17324d",
+        light: "#ffffff"
+      }
+    }).then((dataUrl) => {
+      if (!cancelled) {
+        setQrDataUrl(dataUrl);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [signingUrl]);
+
+  const pointerPosition = (event: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
+    const canvas = event.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top
+    };
+  };
+
+  const startDrawing = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = event.currentTarget;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const point = pointerPosition(event);
+    drawingRef.current = true;
+    drewRef.current = false;
+    canvas.setPointerCapture(event.pointerId);
+    context.beginPath();
+    context.moveTo(point.x, point.y);
+  };
+
+  const draw = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (!drawingRef.current) {
+      return;
+    }
+
+    const context = event.currentTarget.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const point = pointerPosition(event);
+    context.lineTo(point.x, point.y);
+    context.stroke();
+    drewRef.current = true;
+    setHasDrawing(true);
+  };
+
+  const stopDrawing = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (!drawingRef.current) {
+      return;
+    }
+    drawingRef.current = false;
+    if (drewRef.current) {
+      onChange(event.currentTarget.toDataURL("image/png"));
+    }
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const useDrawnSignature = (): void => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasDrawing) {
+      return;
+    }
+    onChange(canvas.toDataURL("image/png"));
+  };
+
+  const clearSignature = (): void => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (canvas && context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    setHasDrawing(false);
+    onChange(undefined);
+  };
+
+  const copySigningUrl = async (): Promise<void> => {
+    if (signingUrl) {
+      await navigator.clipboard.writeText(signingUrl);
+    }
+  };
+
+  return (
+    <div className={styles.signatureInput}>
+      <div className={styles.signatureModeTabs} role="tablist" aria-label="Signature options">
+        <button
+          type="button"
+          className={mode === "draw" ? styles.signatureModeActive : ""}
+          onClick={() => setMode("draw")}
+        >
+          Open to sign
+        </button>
+        <button
+          type="button"
+          className={mode === "upload" ? styles.signatureModeActive : ""}
+          onClick={() => setMode("upload")}
+        >
+          Upload image
+        </button>
+        <button
+          type="button"
+          className={mode === "mobile" ? styles.signatureModeActive : ""}
+          onClick={() => setMode("mobile")}
+        >
+          Mobile QR
+        </button>
+      </div>
+
+      {mode === "draw" ? (
+        <div className={styles.signatureDrawPanel}>
+          <canvas
+            ref={canvasRef}
+            className={styles.signatureCanvas}
+            aria-label="Draw signature"
+            onPointerDown={startDrawing}
+            onPointerMove={draw}
+            onPointerUp={stopDrawing}
+            onPointerCancel={stopDrawing}
+          />
+          <div className={styles.compactActions}>
+            <button type="button" disabled={!hasDrawing} onClick={useDrawnSignature}>
+              Use signature
+            </button>
+            <button type="button" onClick={clearSignature}>
+              Clear
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {mode === "upload" ? (
+        <label className={styles.signatureUpload}>
+          <span>Signature image</span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg"
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file) {
+                return;
+              }
+              onChange(await fileToDataUrl(file));
+            }}
+          />
+        </label>
+      ) : null}
+
+      {mode === "mobile" ? (
+        <div className={styles.signatureQrPanel}>
+          {qrDataUrl ? <img src={qrDataUrl} alt="QR code for mobile signing" /> : null}
+          <div className={styles.compactActions}>
+            <a href={signingUrl} target="_blank" rel="noreferrer">
+              Open link
+            </a>
+            <button type="button" onClick={() => void copySigningUrl()}>
+              Copy link
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {value ? (
+        <div className={styles.signaturePreview}>
+          <span>Current signature</span>
+          <img src={value} alt="Signature preview" />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function buildInitialFieldValues(nextRequest: SignatureRequestResponse): Record<string, FieldDraftValue> {
@@ -86,6 +326,7 @@ export default function SignRequestPage(): React.JSX.Element {
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [otp, setOtp] = useState("");
   const [passcode, setPasscode] = useState("");
+  const [signingUrl, setSigningUrl] = useState("");
 
   useEffect(() => {
     if (!token) {
@@ -120,6 +361,10 @@ export default function SignRequestPage(): React.JSX.Element {
     void load();
   }, [token]);
 
+  useEffect(() => {
+    setSigningUrl(window.location.href);
+  }, []);
+
   const reloadRequest = async (): Promise<void> => {
     if (!token) {
       return;
@@ -142,7 +387,7 @@ export default function SignRequestPage(): React.JSX.Element {
     try {
       setBusy(true);
       const result = await requestSignatureOtp(token);
-      setStatus(`Verification code sent. It expires ${new Date(result.expiresAt).toLocaleTimeString()}.`);
+      setStatus(`Verification code sent. It expires ${formatEatTime(result.expiresAt)}.`);
       await reloadRequest();
     } catch (error) {
       setStatus(`Could not send code: ${(error as Error).message}`);
@@ -317,7 +562,7 @@ export default function SignRequestPage(): React.JSX.Element {
               <p className={styles.panelCopy}>
                 {request.recipient.role || "Signer"} · order {request.recipient.routingOrder}
               </p>
-              <p className={styles.panelCopy}>Expires {new Date(request.expiresAt).toLocaleString()}</p>
+              <p className={styles.panelCopy}>Expires {formatEatDateTime(request.expiresAt)}</p>
               {request.message ? <p className={styles.panelCopy}>{request.message}</p> : null}
               {!request.canSubmit ? (
                 <p className={styles.note}>
@@ -344,33 +589,19 @@ export default function SignRequestPage(): React.JSX.Element {
                     </button>
 
                     {field.type === "signature" ? (
-                      <div className={styles.fieldEditor}>
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg"
-                          onChange={async (event) => {
-                            const file = event.target.files?.[0];
-                            if (!file) {
-                              return;
+                      <SignatureFieldInput
+                        value={fieldValues[field.id]?.signatureDataUrl}
+                        signingUrl={signingUrl}
+                        onChange={(signatureDataUrl) =>
+                          setFieldValues((current) => ({
+                            ...current,
+                            [field.id]: {
+                              ...current[field.id],
+                              signatureDataUrl
                             }
-                            const signatureDataUrl = await fileToDataUrl(file);
-                            setFieldValues((current) => ({
-                              ...current,
-                              [field.id]: {
-                                ...current[field.id],
-                                signatureDataUrl
-                              }
-                            }));
-                          }}
-                        />
-                        {fieldValues[field.id]?.signatureDataUrl ? (
-                          <img
-                            src={fieldValues[field.id]?.signatureDataUrl}
-                            alt="Signature preview"
-                            style={{ maxWidth: "100%", borderRadius: 12 }}
-                          />
-                        ) : null}
-                      </div>
+                          }))
+                        }
+                      />
                     ) : null}
 
                     {field.type === "checkbox" ? (
