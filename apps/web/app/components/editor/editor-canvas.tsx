@@ -16,6 +16,7 @@ export function EditorCanvas({
   activeTool,
   selectedLayerId,
   onSelectLayer,
+  onCreateUndoCheckpoint,
   onUpdateLayer,
   onMoveLayer,
   onPlaceLayer
@@ -30,8 +31,13 @@ export function EditorCanvas({
   activeTool: EditorTool;
   selectedLayerId: string | null;
   onSelectLayer: (layerId: string) => void;
-  onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
-  onMoveLayer: (layerId: string, x: number, y: number) => void;
+  onCreateUndoCheckpoint: () => void;
+  onUpdateLayer: (
+    layerId: string,
+    updater: (layer: EditorLayer) => EditorLayer,
+    trackHistory?: boolean
+  ) => void;
+  onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
 }): React.JSX.Element {
   return (
@@ -61,6 +67,7 @@ export function EditorCanvas({
               activeTool={activeTool}
               selectedLayerId={selectedLayerId}
               onSelectLayer={onSelectLayer}
+              onCreateUndoCheckpoint={onCreateUndoCheckpoint}
               onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
               onPlaceLayer={(x, y) => onPlaceLayer(page.pageNumber, x, y)}

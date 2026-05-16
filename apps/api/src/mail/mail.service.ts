@@ -128,6 +128,40 @@ export class MailService {
     }
   }
 
+  async sendPdfShareMail(input: {
+    to: string;
+    fileName: string;
+    shareLink: string;
+    message?: string;
+    expiresAt: Date;
+    mode?: "download" | "editor";
+  }): Promise<void> {
+    try {
+      const isEditorInvite = input.mode === "editor";
+      await this.transporter.sendMail({
+        from: env.MAIL_FROM,
+        to: input.to,
+        subject: isEditorInvite
+          ? `PDF editor invitation: ${input.fileName}`
+          : `PDF shared with you: ${input.fileName}`,
+        text: [
+          isEditorInvite
+            ? `You have been invited to edit this PDF: ${input.fileName}.`
+            : `A PDF has been shared with you: ${input.fileName}.`,
+          isEditorInvite
+            ? `Open the editor invite link: ${input.shareLink}`
+            : `Open the shared link: ${input.shareLink}`,
+          `This link expires: ${input.expiresAt.toISOString()}`,
+          input.message ? `Message: ${input.message}` : null
+        ]
+          .filter(Boolean)
+          .join("\n")
+      });
+    } catch (error) {
+      this.handleMailError("PDF share", input.to, error);
+    }
+  }
+
   async sendPasswordResetMail(input: {
     to: string;
     resetLink: string;

@@ -10,6 +10,22 @@ import { env } from "./config/env.js";
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter());
   const multipartPlugin = multipart as unknown as Parameters<NestFastifyApplication["register"]>[0];
+  const fastify = app.getHttpAdapter().getInstance();
+
+  fastify.removeContentTypeParser("application/json");
+  fastify.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) => {
+    const source = typeof body === "string" ? body : body.toString();
+    if (source.length === 0) {
+      done(null, {});
+      return;
+    }
+
+    try {
+      done(null, JSON.parse(source) as unknown);
+    } catch (error) {
+      done(error as Error);
+    }
+  });
 
   await app.register(multipartPlugin, {
     limits: {

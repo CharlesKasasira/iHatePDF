@@ -118,11 +118,32 @@ model FileObject {
 
   tasksAsInput Task[]             @relation("taskInputFile")
   tasksAsOutput Task[]            @relation("taskOutputFile")
+  shares FileShare[]
   signatureRequests SignatureRequest[]
   signatureEnvelopesAsSource SignatureEnvelope[] @relation("signatureEnvelopeSource")
   signatureEnvelopesAsFinal SignatureEnvelope[]  @relation("signatureEnvelopeFinal")
 
   @@index([ownerId, createdAt])
+}
+
+model FileShare {
+  id             String    @id @default(cuid())
+  token          String    @unique
+  recipientEmail String?
+  message        String?
+  expiresAt      DateTime
+  lastAccessedAt DateTime?
+  downloadCount  Int       @default(0)
+  createdAt      DateTime  @default(now())
+
+  fileId         String
+  createdById    String?
+  file           FileObject @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  createdBy      User?      @relation("fileShareCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([fileId, createdAt])
+  @@index([createdById, createdAt])
+  @@index([expiresAt])
 }
 
 model Task {
@@ -219,6 +240,7 @@ model User {
   securityEvents    UserSecurityEvent[]
   passwordResetTokens PasswordResetToken[]
   files             FileObject[]        @relation("fileOwner")
+  fileShares        FileShare[]         @relation("fileShareCreator")
   tasks             Task[]              @relation("taskOwner")
   signatureRequests SignatureRequest[]  @relation("signatureRequestOwner")
   signatureEnvelopes SignatureEnvelope[] @relation("signatureEnvelopeOwner")

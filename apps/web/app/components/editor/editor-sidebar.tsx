@@ -1,6 +1,6 @@
 "use client";
 
-import type { EditPageRotationInput } from "../../lib/pdf-api";
+import type { EditPageRotationInput, FileShareResponse } from "../../lib/pdf-api";
 import { ReorderableList, ReorderHandle } from "../reorderable-list";
 import { PAGE_NUMBER_POSITIONS, RETENTION_OPTIONS } from "./constants";
 import type {
@@ -38,7 +38,13 @@ export function EditorSidebar({
   onOpenSignatureChooser,
   onRetentionHoursChange,
   onExport,
-  onReorderLayers
+  onReorderLayers,
+  invite,
+  onInviteEmailChange,
+  onInviteMessageChange,
+  onInviteExpiresInHoursChange,
+  onCreateEditorInvite,
+  onCopyEditorInvite
 }: {
   state: EditorDocumentState;
   selectedLayer: EditorLayer | null;
@@ -65,6 +71,20 @@ export function EditorSidebar({
   onRetentionHoursChange: (retentionHours: number) => void;
   onExport: () => Promise<void>;
   onReorderLayers: (layers: EditorLayer[]) => void;
+  invite: {
+    email: string;
+    message: string;
+    expiresInHours: number;
+    expiryOptions: Array<{ value: number; label: string }>;
+    busy: boolean;
+    status: string;
+    share: FileShareResponse | null;
+  };
+  onInviteEmailChange: (email: string) => void;
+  onInviteMessageChange: (message: string) => void;
+  onInviteExpiresInHoursChange: (expiresInHours: number) => void;
+  onCreateEditorInvite: () => void;
+  onCopyEditorInvite: () => void;
 }): React.JSX.Element {
   return (
     <aside className="studio-sidebar">
@@ -630,6 +650,83 @@ export function EditorSidebar({
           >
             Open signer link
           </a>
+        ) : null}
+      </div>
+
+      <div className="studio-panel">
+        <div className="studio-panel__eyebrow">Collaboration</div>
+        <h2>Invite collaborators</h2>
+        <p>
+          Send an editor invite link for this PDF. Collaborators open it in the editor and save their
+          own exported copy.
+        </p>
+
+        <label htmlFor="editor-invite-email">Recipient email</label>
+        <input
+          id="editor-invite-email"
+          type="email"
+          value={invite.email}
+          onChange={(event) => onInviteEmailChange(event.target.value)}
+          placeholder="name@example.com"
+          disabled={state.busy || invite.busy}
+        />
+
+        <label htmlFor="editor-invite-expiry">Invite expires after</label>
+        <select
+          id="editor-invite-expiry"
+          value={invite.expiresInHours}
+          onChange={(event) => onInviteExpiresInHoursChange(Number(event.target.value))}
+          disabled={state.busy || invite.busy}
+        >
+          {invite.expiryOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="editor-invite-message">Message</label>
+        <textarea
+          id="editor-invite-message"
+          value={invite.message}
+          onChange={(event) => onInviteMessageChange(event.target.value)}
+          placeholder="Add a short note for the collaborator"
+          disabled={state.busy || invite.busy}
+        />
+
+        <button
+          type="button"
+          className="studio-primary-button studio-primary-button--full"
+          onClick={onCreateEditorInvite}
+          disabled={state.busy || invite.busy || !state.pdfFile}
+        >
+          {invite.busy ? "Creating invite..." : invite.email.trim() ? "Send editor invite" : "Create editor link"}
+        </button>
+
+        {invite.status ? (
+          <p className={invite.status.toLowerCase().includes("failed") ? "error" : "small"}>
+            {invite.status}
+          </p>
+        ) : (
+          <p className="small">Open a PDF, then create an invite link or email it directly.</p>
+        )}
+
+        {invite.share ? (
+          <div className="share-result">
+            <div>
+              <strong>{invite.share.fileName}</strong>
+              <span>Expires {new Date(invite.share.expiresAt).toLocaleString()}</span>
+            </div>
+            <input readOnly value={invite.share.shareUrl} aria-label="Editor invite link" />
+            <div className="row-actions">
+              <button type="button" onClick={onCopyEditorInvite}>
+                Copy link
+              </button>
+              <a className="download" href={invite.share.shareUrl} target="_blank" rel="noreferrer">
+                Open invite
+              </a>
+            </div>
+          </div>
         ) : null}
       </div>
 

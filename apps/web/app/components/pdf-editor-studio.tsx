@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  createFileShare,
+  getSharedFile,
   getPdfMetadata,
   pollTask,
   queueEditPdf,
-  uploadPdfWithRetention
+  uploadPdfWithRetention,
+  type FileShareResponse
 } from "../lib/pdf-api";
 import { buildEditPayload, getWatermarkConfig } from "./editor/adapter";
 import { EditorShell } from "./editor/editor-shell";
@@ -13,12 +16,38 @@ import { usePdfEditor } from "./editor/use-pdf-editor";
 import type { EditorMode } from "./editor/types";
 import { fileToDataUrl, retentionLabel } from "./editor/utils";
 
+const INVITE_EXPIRY_OPTIONS = [
+  { value: 24, label: "24 hours" },
+  { value: 72, label: "3 days" },
+  { value: 168, label: "7 days" },
+  { value: 720, label: "30 days" }
+];
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 export function PdfEditorStudio({
   mode = "edit"
 }: {
   mode?: EditorMode;
 } = {}): React.JSX.Element {
   const previewLoadIdRef = useRef(0);
+  const sharedLoadTokenRef = useRef<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteMessage, setInviteMessage] = useState("");
+  const [inviteExpiresInHours, setInviteExpiresInHours] = useState(72);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteStatus, setInviteStatus] = useState("");
+  const [inviteShare, setInviteShare] = useState<FileShareResponse | null>(null);
   const {
     state,
     selectedLayer,
@@ -29,6 +58,81 @@ export function PdfEditorStudio({
     hasAnyEdits,
     actions
   } = usePdfEditor(mode);
+  const { redo, removeSelectedLayer, undo } = actions;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.isComposing || isEditableShortcutTarget(event.target)) {
+        return;
+      }
+
+      if (
+        state.selection.layerId &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        (event.key === "Delete" || event.key === "Backspace")
+      ) {
+        event.preventDefault();
+        removeSelectedLayer();
+        return;
+      }
+
+      const hasShortcutModifier = event.ctrlKey || event.metaKey;
+      if (!hasShortcutModifier || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [redo, removeSelectedLayer, state.selection.layerId, undo]);
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("shared");
+    if (!token || sharedLoadTokenRef.current === token) {
+      return;
+    }
+
+    sharedLoadTokenRef.current = token;
+    actions.setStatus("Loading shared PDF into the editor...");
+
+    void (async () => {
+      try {
+        const sharedFile = await getSharedFile(token);
+        const response = await fetch(sharedFile.downloadUrl, { credentials: "include" });
+        if (!response.ok) {
+          throw new Error(`Shared PDF download failed (${response.status}).`);
+        }
+
+        const blob = await response.blob();
+        const file = new File([blob], sharedFile.fileName, {
+          type: sharedFile.mimeType || "application/pdf"
+        });
+
+        actions.selectPdfFile(file);
+        actions.setStatus("Shared PDF loaded. Edits you make here are saved as your own export.");
+      } catch (error) {
+        actions.setStatus(`Shared PDF failed to load: ${(error as Error).message}`);
+      }
+    })();
+  }, [actions]);
 
   useEffect(() => {
     const pdfFile = state.pdfFile;
@@ -135,6 +239,50 @@ export function PdfEditorStudio({
     }
   };
 
+  const createEditorInvite = async (): Promise<void> => {
+    if (!state.pdfFile) {
+      setInviteStatus("Open a PDF before inviting collaborators.");
+      return;
+    }
+
+    try {
+      setInviteBusy(true);
+      setInviteStatus("Preparing editor invite...");
+      setInviteShare(null);
+
+      let fileId = state.sourceFileId;
+      if (!fileId || state.sourceRetentionHours !== state.retentionHours) {
+        const uploaded = await uploadPdfWithRetention(state.pdfFile, state.retentionHours);
+        fileId = uploaded.fileId;
+        actions.setSourceFile(fileId, state.retentionHours);
+      }
+
+      const share = await createFileShare({
+        fileId,
+        email: inviteEmail.trim() || undefined,
+        message: inviteMessage.trim() || undefined,
+        expiresInHours: inviteExpiresInHours,
+        mode: "editor"
+      });
+
+      setInviteShare(share);
+      setInviteStatus(share.emailSent ? "Editor invite created and email sent." : "Editor invite link created.");
+    } catch (error) {
+      setInviteStatus(`Editor invite failed: ${(error as Error).message}`);
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  const copyEditorInvite = async (): Promise<void> => {
+    if (!inviteShare) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(inviteShare.shareUrl);
+    setInviteStatus("Editor invite link copied.");
+  };
+
   const openSignatureChooser = (): void => {
     if (!state.pdfFile || !state.sourceFileId) {
       actions.setSignatureRequestFeedback("Open a PDF first.");
@@ -167,6 +315,7 @@ export function PdfEditorStudio({
       onImageDefaultsChange={actions.setImageDefaults}
       onSignatureDefaultsChange={actions.setSignatureDefaults}
       onSelectLayer={actions.setSelectedLayerId}
+      onCreateUndoCheckpoint={actions.createUndoCheckpoint}
       onUpdateLayer={actions.updateLayer}
       onRemoveSelectedLayer={actions.removeSelectedLayer}
       onOutputNameChange={actions.setOutputName}
@@ -193,6 +342,20 @@ export function PdfEditorStudio({
       onMoveLayer={actions.moveLayer}
       onReorderLayers={actions.reorderLayers}
       onPlaceLayer={(pageNumber, x, y) => actions.createLayerAt(pageNumber, x, y)}
+      invite={{
+        email: inviteEmail,
+        message: inviteMessage,
+        expiresInHours: inviteExpiresInHours,
+        expiryOptions: INVITE_EXPIRY_OPTIONS,
+        busy: inviteBusy,
+        status: inviteStatus,
+        share: inviteShare
+      }}
+      onInviteEmailChange={setInviteEmail}
+      onInviteMessageChange={setInviteMessage}
+      onInviteExpiresInHoursChange={setInviteExpiresInHours}
+      onCreateEditorInvite={() => void createEditorInvite()}
+      onCopyEditorInvite={() => void copyEditorInvite()}
     />
   );
 }

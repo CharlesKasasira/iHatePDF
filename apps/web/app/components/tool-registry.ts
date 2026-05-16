@@ -10,6 +10,7 @@ export type ActiveKey =
   | "sign-pdf"
   | "protect"
   | "unlock"
+  | "share-pdf"
   | "jpg-to-pdf"
   | "pdf-to-word"
   | "pdf-to-jpg"
@@ -20,7 +21,7 @@ export type ActiveKey =
   | "powerpoint-to-pdf"
   | "edit";
 
-export type ToolGroupId = "organize" | "optimize" | "convert" | "edit" | "security" | "sign";
+export type ToolGroupId = "organize" | "optimize" | "convert" | "edit" | "security" | "share" | "sign";
 
 export type ToolIconKey =
   | "merge"
@@ -31,6 +32,7 @@ export type ToolIconKey =
   | "compress"
   | "lock"
   | "unlock"
+  | "share"
   | "image"
   | "word"
   | "file-image"
@@ -62,6 +64,7 @@ export const TOOL_GROUPS: Array<{
   { id: "convert", label: "Convert", description: "Move between PDFs, Office files, and images." },
   { id: "edit", label: "Edit", description: "Layer content and make document-wide edits." },
   { id: "security", label: "Security", description: "Protect or unlock PDFs with known passwords." },
+  { id: "share", label: "Share", description: "Create expiring PDF links and email them to recipients." },
   { id: "sign", label: "Sign", description: "Prepare signer routing and complete documents." }
 ];
 
@@ -222,6 +225,16 @@ export const TOOLS: ToolItem[] = [
     href: "/unlock-pdf",
     icon: "unlock",
     group: "security"
+  },
+  {
+    key: "share-pdf",
+    title: "Share PDF",
+    shortTitle: "Share",
+    description: "Create an expiring link and optionally email it to someone.",
+    href: "/share-pdf",
+    icon: "share",
+    group: "share",
+    featured: true
   },
   {
     key: "sign-pdf",
