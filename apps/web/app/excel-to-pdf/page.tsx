@@ -1,6 +1,7 @@
 "use client";
 
 import { BatchOperationPage } from "../components/batch-operation-page";
+import { excelToPdfGuide } from "../components/conversion-guides";
 import { queueExcelToPdf } from "../lib/pdf-api";
 
 const EXCEL_MIME_TYPES = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] as const;
@@ -24,6 +25,7 @@ export default function ExcelToPdfPage(): React.JSX.Element {
       runningLabel="Converting..."
       downloadLabel="Download PDF file"
       helperText="Spreadsheet conversions run in a controlled batch so you can monitor every file separately."
+      conversionGuide={excelToPdfGuide}
       deriveOutputName={deriveOutputName}
       queueTask={(fileId, outputName) => queueExcelToPdf(fileId, outputName)}
     />

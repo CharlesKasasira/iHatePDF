@@ -151,6 +151,50 @@ type AdminDashboard = {
     queue: Awaited<ReturnType<QueueService["getStatus"]>> | null;
     failedTasks: Array<AccountTaskItem & { ownerEmail: string | null }>;
   };
+  retention: {
+    expiring24hCount: number;
+    expiring7dCount: number;
+    expiredPendingDeletionCount: number;
+    filesWithoutExpiryCount: number;
+    oldestExpiryAt: Date | null;
+    cleanupEnabled: boolean;
+    cleanupIntervalMinutes: number;
+  };
+  antivirus: {
+    enabled: boolean;
+    engine: string;
+    lastScanPolicy: string;
+  };
+  storageQuotas: Array<{
+    ownerId: string | null;
+    ownerEmail: string | null;
+    usedBytes: string;
+    quotaBytes: string;
+    percentUsed: number;
+    fileCount: number;
+  }>;
+  auditLog: Array<{
+    id: string;
+    type: string;
+    email: string | null;
+    actorEmail: string | null;
+    ipAddress: string | null;
+    description: string;
+    createdAt: Date;
+  }>;
+  deletionReceipts: Array<{
+    id: string;
+    fileId: string | null;
+    fileName: string;
+    ownerEmail: string | null;
+    sizeBytes: string;
+    reason: string;
+    storageDeleted: boolean;
+    storageError: string | null;
+    expiresAt: Date | null;
+    deletedAt: Date;
+  }>;
+  jobHistory: Array<AccountTaskItem & { ownerEmail: string | null }>;
   fileHistory: Array<AccountFileHistoryItem & { ownerEmail: string | null }>;
 };
 
@@ -554,6 +598,10 @@ export class AccountService {
   async adminDashboard(request: FastifyRequest): Promise<AdminDashboard> {
     await this.authService.requireAdminUser(request);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const next24Hours = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const next7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const quotaBytes = BigInt(env.USER_STORAGE_QUOTA_MB) * 1024n * 1024n;
 
     const [
       users,
@@ -568,8 +616,16 @@ export class AccountService {
       recentWebhookDeliveries,
       recentFiles,
       failedTasks,
+      recentJobs,
       taskStatusCounts,
-      storageByOwner
+      storageByOwner,
+      expiring24hCount,
+      expiring7dCount,
+      expiredPendingDeletionCount,
+      filesWithoutExpiryCount,
+      oldestExpiry,
+      auditEvents,
+      deletionReceipts
     ] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.fileObject.aggregate({
@@ -628,6 +684,16 @@ export class AccountService {
         orderBy: { updatedAt: "desc" },
         take: 30
       }),
+      this.prisma.task.findMany({
+        include: {
+          outputFile: true,
+          owner: {
+            select: { email: true }
+          }
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 40
+      }),
       this.prisma.task.groupBy({
         by: ["status"],
         _count: { _all: true }
@@ -636,6 +702,31 @@ export class AccountService {
         by: ["ownerId"],
         _count: { _all: true },
         _sum: { sizeBytes: true }
+      }),
+      this.prisma.fileObject.count({
+        where: { expiresAt: { gte: now, lte: next24Hours } }
+      }),
+      this.prisma.fileObject.count({
+        where: { expiresAt: { gte: now, lte: next7Days } }
+      }),
+      this.prisma.fileObject.count({
+        where: { expiresAt: { lt: now } }
+      }),
+      this.prisma.fileObject.count({
+        where: { expiresAt: null }
+      }),
+      this.prisma.fileObject.findFirst({
+        where: { expiresAt: { gte: now } },
+        select: { expiresAt: true },
+        orderBy: { expiresAt: "asc" }
+      }),
+      this.prisma.userSecurityEvent.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 50
+      }),
+      this.prisma.fileDeletionReceipt.findMany({
+        orderBy: { deletedAt: "desc" },
+        take: 30
       })
     ]);
 
@@ -701,6 +792,61 @@ export class AccountService {
           ownerEmail: task.owner?.email ?? null
         }))
       },
+      retention: {
+        expiring24hCount,
+        expiring7dCount,
+        expiredPendingDeletionCount,
+        filesWithoutExpiryCount,
+        oldestExpiryAt: oldestExpiry?.expiresAt ?? null,
+        cleanupEnabled: env.CLEANUP_ENABLED,
+        cleanupIntervalMinutes: env.CLEANUP_INTERVAL_MINUTES
+      },
+      antivirus: {
+        enabled: env.ANTIVIRUS_ENABLED,
+        engine: "Built-in upload signature scan",
+        lastScanPolicy: env.ANTIVIRUS_ENABLED
+          ? "Every accepted upload is scanned before the file record is created."
+          : "Scanning is disabled by ANTIVIRUS_ENABLED."
+      },
+      storageQuotas: storageByOwner
+        .map((item) => {
+          const usedBytes = item._sum.sizeBytes ?? 0n;
+          return {
+            ownerId: item.ownerId,
+            ownerEmail: item.ownerId ? ownerEmailById.get(item.ownerId) ?? null : null,
+            usedBytes: usedBytes.toString(),
+            quotaBytes: item.ownerId ? quotaBytes.toString() : "0",
+            percentUsed: item.ownerId ? Math.min(100, Number((usedBytes * 10000n) / quotaBytes) / 100) : 0,
+            fileCount: item._count._all
+          };
+        })
+        .sort((left, right) => right.percentUsed - left.percentUsed)
+        .slice(0, 12),
+      auditLog: auditEvents.map((event) => ({
+        id: event.id,
+        type: event.type,
+        email: event.email,
+        actorEmail: event.actorEmail,
+        ipAddress: event.ipAddress,
+        description: event.description,
+        createdAt: event.createdAt
+      })),
+      deletionReceipts: deletionReceipts.map((receipt) => ({
+        id: receipt.id,
+        fileId: receipt.fileId,
+        fileName: receipt.fileName,
+        ownerEmail: receipt.ownerEmail,
+        sizeBytes: receipt.sizeBytes.toString(),
+        reason: receipt.reason,
+        storageDeleted: receipt.storageDeleted,
+        storageError: receipt.storageError,
+        expiresAt: receipt.expiresAt,
+        deletedAt: receipt.deletedAt
+      })),
+      jobHistory: recentJobs.map((task) => ({
+        ...this.mapTask(task),
+        ownerEmail: task.owner?.email ?? null
+      })),
       fileHistory: recentFiles.map((file) => ({
         ...this.mapFile(file),
         ownerEmail: file.owner?.email ?? null
@@ -926,14 +1072,12 @@ export class AccountService {
     input: { password: string }
   ): Promise<{ ok: true }> {
     await this.authService.requireAdminUser(request);
-    if (input.password.length < 8) {
-      throw new BadRequestException("Password must be at least 8 characters.");
-    }
 
     const target = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!target) {
       throw new NotFoundException("User was not found.");
     }
+    this.authService.assertStrongPassword(input.password, target.email);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({

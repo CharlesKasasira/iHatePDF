@@ -8,11 +8,14 @@ import { useAuth } from "../components/auth-provider";
 import {
   createWebhook,
   deleteWebhook,
+  listWebhookDeliveries,
   listWebhookEvents,
   listWebhooks,
+  retryWebhookDelivery,
   rotateWebhookSecret,
   updateWebhook,
   type CreatedWebhookEndpoint,
+  type WebhookDeliveryItem,
   type WebhookEndpointItem
 } from "../lib/pdf-api";
 import { formatEatDateTime } from "../lib/time";
@@ -219,19 +222,26 @@ export default function AutomationPage(): React.JSX.Element {
   const { user, loading } = useAuth();
   const [events, setEvents] = useState<string[]>([]);
   const [webhooks, setWebhooks] = useState<WebhookEndpointItem[]>([]);
+  const [deliveries, setDeliveries] = useState<WebhookDeliveryItem[]>([]);
   const [url, setUrl] = useState("");
   const [description, setDescription] = useState("");
   const [selectedEvents, setSelectedEvents] = useState<string[]>(["*"]);
   const [newSecret, setNewSecret] = useState("");
   const [status, setStatus] = useState("Loading automation tools...");
   const [creating, setCreating] = useState(false);
+  const [retryingDeliveryId, setRetryingDeliveryId] = useState<string | null>(null);
 
   const activeCount = useMemo(() => webhooks.filter((endpoint) => endpoint.active).length, [webhooks]);
 
   const loadAutomation = async (): Promise<void> => {
-    const [eventResult, webhookResult] = await Promise.all([listWebhookEvents(), listWebhooks()]);
+    const [eventResult, webhookResult, deliveryResult] = await Promise.all([
+      listWebhookEvents(),
+      listWebhooks(),
+      listWebhookDeliveries()
+    ]);
     setEvents(eventResult.events);
     setWebhooks(webhookResult);
+    setDeliveries(deliveryResult);
     setStatus("");
   };
 
@@ -280,6 +290,20 @@ export default function AutomationPage(): React.JSX.Element {
   const copySecret = async (): Promise<void> => {
     await navigator.clipboard.writeText(newSecret);
     setStatus("Webhook signing secret copied.");
+  };
+
+  const retryDelivery = async (deliveryId: string): Promise<void> => {
+    try {
+      setRetryingDeliveryId(deliveryId);
+      setStatus("Retrying webhook delivery...");
+      await retryWebhookDelivery(deliveryId);
+      await loadAutomation();
+      setStatus("Webhook delivery retried.");
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setRetryingDeliveryId(null);
+    }
   };
 
   return (
@@ -375,6 +399,45 @@ X-IHatePDF-Signature: v1=...`}</code></pre>
                   onSecret={setNewSecret}
                   onStatus={setStatus}
                 />
+              ))}
+            </article>
+
+            <article className="account-panel account-panel--wide">
+              <div className="account-panel-heading">
+                <span><RefreshCcw aria-hidden="true" size={18} /> Delivery logs</span>
+                <strong>{deliveries.length}</strong>
+              </div>
+              {deliveries.length === 0 ? (
+                <div className="account-empty-state">
+                  <RefreshCcw aria-hidden="true" size={24} />
+                  <strong>No deliveries yet</strong>
+                  <span>Task and signing events will appear here after matching webhooks fire.</span>
+                </div>
+              ) : null}
+              {deliveries.map((delivery) => (
+                <div className={`activity-card ${delivery.status === "failed" ? "is-error" : ""}`} key={delivery.id}>
+                  <div className="activity-card__title">
+                    <Webhook aria-hidden="true" size={18} />
+                    <strong>{delivery.eventType}</strong>
+                  </div>
+                  <span>{delivery.endpointUrl}</span>
+                  <small>
+                    {delivery.status} - HTTP {delivery.responseStatus ?? "none"} - attempts {delivery.attemptCount}
+                  </small>
+                  <small>
+                    Created {formatDate(delivery.createdAt)} - delivered {formatEatDateTime(delivery.deliveredAt)}
+                  </small>
+                  {delivery.errorMessage ? <small>{delivery.errorMessage}</small> : null}
+                  <button
+                    className="activity-action-button"
+                    type="button"
+                    disabled={retryingDeliveryId === delivery.id}
+                    onClick={() => void retryDelivery(delivery.id)}
+                  >
+                    <RefreshCcw aria-hidden="true" size={16} />
+                    {retryingDeliveryId === delivery.id ? "Retrying..." : "Retry"}
+                  </button>
+                </div>
               ))}
             </article>
           </section>

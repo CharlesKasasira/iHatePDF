@@ -216,6 +216,16 @@ export class ImageToolDto {
   options?: Record<string, unknown>;
 }
 
+export class EditFontAssetDto {
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  dataUrl!: string;
+}
+
 export class EditTextDto {
   @IsInt()
   @Min(1)
@@ -229,6 +239,11 @@ export class EditTextDto {
   @Min(0)
   y!: number;
 
+  @IsNumber()
+  @Min(1)
+  @Max(5000)
+  width!: number;
+
   @IsString()
   @IsNotEmpty()
   text!: string;
@@ -239,8 +254,27 @@ export class EditTextDto {
   fontSize!: number;
 
   @IsString()
-  @IsIn(["sans", "serif", "mono"])
-  fontFamily!: "sans" | "serif" | "mono";
+  @IsIn(["sans", "serif", "mono", "inter", "source-serif", "roboto-mono", "cursive"])
+  fontFamily!: "sans" | "serif" | "mono" | "inter" | "source-serif" | "roboto-mono" | "cursive";
+
+  @IsString()
+  @IsIn(["left", "center", "right"])
+  align!: "left" | "center" | "right";
+
+  @IsNumber()
+  @Min(0.8)
+  @Max(3)
+  lineHeight!: number;
+
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  opacity!: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => EditFontAssetDto)
+  customFont?: EditFontAssetDto | null;
 
   @IsBoolean()
   bold!: boolean;
@@ -289,6 +323,61 @@ export class EditRectangleDto {
   opacity!: number;
 }
 
+export class EditRedactionDto {
+  @IsInt()
+  @Min(1)
+  page!: number;
+
+  @IsNumber()
+  @Min(0)
+  x!: number;
+
+  @IsNumber()
+  @Min(0)
+  y!: number;
+
+  @IsNumber()
+  @Min(1)
+  @Max(5000)
+  width!: number;
+
+  @IsNumber()
+  @Min(1)
+  @Max(5000)
+  height!: number;
+
+  @IsString()
+  @IsHexColor()
+  color!: string;
+}
+
+export class EditTextReplacementDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsString()
+  @IsNotEmpty()
+  find!: string;
+
+  @IsString()
+  replace!: string;
+
+  @IsBoolean()
+  matchCase!: boolean;
+
+  @IsString()
+  @IsHexColor()
+  color!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(4)
+  @Max(400)
+  fontSize?: number;
+}
+
 export class EditImageDto {
   @IsInt()
   @Min(1)
@@ -316,6 +405,55 @@ export class EditImageDto {
   @IsNotEmpty()
   @Matches(/^data:image\//)
   dataUrl!: string;
+}
+
+export class EditInkPointDto {
+  @IsNumber()
+  @Min(0)
+  x!: number;
+
+  @IsNumber()
+  @Min(0)
+  y!: number;
+}
+
+export class EditInkDto {
+  @IsInt()
+  @Min(1)
+  page!: number;
+
+  @IsString()
+  @IsHexColor()
+  color!: string;
+
+  @IsNumber()
+  @Min(0.5)
+  @Max(24)
+  thickness!: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EditInkPointDto)
+  @ArrayMinSize(2)
+  @ArrayMaxSize(1000)
+  points!: EditInkPointDto[];
+}
+
+export class EditFormDto {
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @IsString()
+  @IsIn(["text", "checkbox", "dropdown", "option-list", "radio", "signature"])
+  type!: "text" | "checkbox" | "dropdown" | "option-list" | "radio" | "signature";
+
+  value!: string | boolean | string[];
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^data:image\//)
+  signatureDataUrl?: string;
 }
 
 export class EditPageRotationDto {
@@ -394,6 +532,11 @@ export class EditPdfDto {
   @IsNotEmpty()
   fileId!: string;
 
+  @IsOptional()
+  @IsString()
+  @IsIn(["flattened", "editable-annotations"])
+  outputMode?: "flattened" | "editable-annotations";
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => EditTextDto)
@@ -410,10 +553,38 @@ export class EditPdfDto {
 
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => EditRedactionDto)
+  @ArrayMaxSize(200)
+  @IsOptional()
+  redactionEdits?: EditRedactionDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EditTextReplacementDto)
+  @ArrayMaxSize(100)
+  @IsOptional()
+  textReplacementEdits?: EditTextReplacementDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => EditImageDto)
   @ArrayMaxSize(50)
   @IsOptional()
   imageEdits?: EditImageDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EditInkDto)
+  @ArrayMaxSize(100)
+  @IsOptional()
+  inkEdits?: EditInkDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EditFormDto)
+  @ArrayMaxSize(500)
+  @IsOptional()
+  formEdits?: EditFormDto[];
 
   @IsArray()
   @ValidateNested({ each: true })

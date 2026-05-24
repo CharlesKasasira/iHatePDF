@@ -1,6 +1,7 @@
 "use client";
 
 import { BatchOperationPage } from "../components/batch-operation-page";
+import { pdfToJpgGuide } from "../components/conversion-guides";
 import { queuePdfToJpg } from "../lib/pdf-api";
 
 function deriveOutputName(file: File): string {
@@ -22,6 +23,7 @@ export default function PdfToJpgPage(): React.JSX.Element {
       runningLabel="Converting..."
       downloadLabel="Download JPG or ZIP"
       helperText="Single-page PDFs download as one JPG. Multi-page PDFs download as a ZIP of page images."
+      conversionGuide={pdfToJpgGuide}
       deriveOutputName={deriveOutputName}
       queueTask={(fileId, outputName) => queuePdfToJpg(fileId, outputName)}
     />

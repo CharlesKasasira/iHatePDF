@@ -99,7 +99,7 @@ export default function SharePdfPage(): React.JSX.Element {
       <main className="feature-page">
         <section className="feature-hero">
           <h1>Share PDF files</h1>
-          <p>Create an expiring link for a PDF, copy it, or send it by email from the workspace.</p>
+          <p>Create an expiring review link where recipients can download the PDF and leave page comments.</p>
 
           <UploadDropzone
             label="Select PDF file"

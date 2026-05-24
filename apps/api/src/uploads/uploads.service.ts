@@ -16,6 +16,7 @@ const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 ]);
+const EICAR_SIGNATURE = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE";
 
 function fieldValue(field?: unknown): string | undefined {
   const entry = Array.isArray(field) ? field[0] : field;
@@ -112,7 +113,16 @@ export class UploadsService {
     }
 
     if (stored.sizeBytes <= 0) {
+      await this.storageService.deleteObject(stored.objectKey).catch(() => undefined);
       throw new BadRequestException("Uploaded file content is empty.");
+    }
+
+    try {
+      await this.scanStoredObject(stored.objectKey);
+      await this.enforceStorageQuota(ownerId, stored.sizeBytes);
+    } catch (error) {
+      await this.storageService.deleteObject(stored.objectKey).catch(() => undefined);
+      throw error;
     }
 
     const dbFile = await this.prisma.fileObject.create({
@@ -133,5 +143,33 @@ export class UploadsService {
       objectKey: dbFile.objectKey,
       fileName: dbFile.fileName
     };
+  }
+
+  private async scanStoredObject(objectKey: string): Promise<void> {
+    if (!env.ANTIVIRUS_ENABLED) {
+      return;
+    }
+
+    const sample = await this.storageService.readObjectBuffer(objectKey);
+    if (sample.includes(EICAR_SIGNATURE)) {
+      throw new BadRequestException("Upload rejected by antivirus scan.");
+    }
+  }
+
+  private async enforceStorageQuota(ownerId: string | undefined, incomingBytes: number): Promise<void> {
+    if (!ownerId) {
+      return;
+    }
+
+    const quotaBytes = BigInt(env.USER_STORAGE_QUOTA_MB) * 1024n * 1024n;
+    const usage = await this.prisma.fileObject.aggregate({
+      where: { ownerId },
+      _sum: { sizeBytes: true }
+    });
+    const currentBytes = usage._sum.sizeBytes ?? 0n;
+
+    if (currentBytes + BigInt(incomingBytes) > quotaBytes) {
+      throw new BadRequestException(`Storage quota exceeded. Limit is ${env.USER_STORAGE_QUOTA_MB}MB per user.`);
+    }
   }
 }

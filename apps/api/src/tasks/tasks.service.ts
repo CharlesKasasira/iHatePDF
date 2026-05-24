@@ -6,12 +6,16 @@ import { StorageService } from "../storage/storage.service.js";
 import {
   CompressPdfDto,
   ConvertPdfDto,
+  EditFormDto,
   EditPdfDto,
   EditImageDto,
+  EditInkDto,
   EditPageNumbersDto,
   EditPageRotationDto,
   EditRectangleDto,
+  EditRedactionDto,
   EditTextDto,
+  EditTextReplacementDto,
   EditWatermarkDto,
   ExtractPagesDto,
   ImageToolDto,
@@ -116,10 +120,15 @@ interface EditJobPayload {
   fileKey: string;
   textEdits: EditTextDto[];
   rectangleEdits: EditRectangleDto[];
+  redactionEdits: EditRedactionDto[];
+  textReplacementEdits: EditTextReplacementDto[];
   imageEdits: EditImageDto[];
+  inkEdits: EditInkDto[];
+  formEdits: EditFormDto[];
   pageRotations: EditPageRotationDto[];
   pageNumbers?: EditPageNumbersDto;
   watermark?: EditWatermarkDto;
+  outputMode: "flattened" | "editable-annotations";
   outputName: string;
   expiresAtIso?: string;
 }
@@ -737,7 +746,11 @@ export class TasksService {
 
     const textEdits = dto.textEdits ?? [];
     const rectangleEdits = dto.rectangleEdits ?? [];
+    const redactionEdits = dto.redactionEdits ?? [];
+    const textReplacementEdits = dto.textReplacementEdits ?? [];
     const imageEdits = dto.imageEdits ?? [];
+    const inkEdits = dto.inkEdits ?? [];
+    const formEdits = dto.formEdits ?? [];
     const pageRotations = dto.pageRotations ?? [];
     const pageNumbers = dto.pageNumbers;
     const watermark = dto.watermark;
@@ -745,7 +758,11 @@ export class TasksService {
     if (
       textEdits.length +
         rectangleEdits.length +
+        redactionEdits.length +
+        textReplacementEdits.length +
         imageEdits.length +
+        inkEdits.length +
+        formEdits.length +
         pageRotations.length +
         (pageNumbers ? 1 : 0) +
         (watermark ? 1 : 0) ===
@@ -762,10 +779,15 @@ export class TasksService {
         fileKey: file.objectKey,
         outputName: dto.outputName,
         retentionHours: dto.retentionHours ?? null,
+        outputMode: dto.outputMode ?? "flattened",
         editCounts: {
           text: textEdits.length,
           rectangles: rectangleEdits.length,
+          redactions: redactionEdits.length,
+          textReplacements: textReplacementEdits.length,
           images: imageEdits.length,
+          ink: inkEdits.length,
+          forms: formEdits.length,
           rotations: pageRotations.length,
           pageNumbers: Boolean(pageNumbers),
           watermark: Boolean(watermark)
@@ -777,10 +799,15 @@ export class TasksService {
         fileKey: file.objectKey,
         textEdits,
         rectangleEdits,
+        redactionEdits,
+        textReplacementEdits,
         imageEdits,
+        inkEdits,
+        formEdits,
         pageRotations,
         pageNumbers,
         watermark,
+        outputMode: dto.outputMode ?? "flattened",
         outputName: dto.outputName,
         expiresAtIso: dto.retentionHours
           ? new Date(Date.now() + dto.retentionHours * 60 * 60 * 1000).toISOString()

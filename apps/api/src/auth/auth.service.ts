@@ -30,6 +30,14 @@ const DEFAULT_ADMIN_PASSWORD = "password123#";
 const DEFAULT_ADMIN_NAME = "Default Admin";
 const AUTO_LOCK_FAILED_LOGIN_THRESHOLD = 5;
 const AUTO_LOCK_WINDOW_MS = 15 * 60 * 1000;
+const COMMON_PASSWORD_FRAGMENTS = [
+  "password",
+  "qwerty",
+  "letmein",
+  "admin",
+  "welcome",
+  "ihatepdf"
+];
 
 export type SafeUser = {
   id: string;
@@ -111,6 +119,36 @@ function safeUser(
   };
 }
 
+function passwordStrengthIssues(password: string, email?: string): string[] {
+  const issues: string[] = [];
+  const normalized = password.toLowerCase();
+  const emailLocalPart = email?.split("@")[0]?.toLowerCase();
+
+  if (password.length < 10) {
+    issues.push("at least 10 characters");
+  }
+  if (!/[a-z]/.test(password)) {
+    issues.push("a lowercase letter");
+  }
+  if (!/[A-Z]/.test(password)) {
+    issues.push("an uppercase letter");
+  }
+  if (!/[0-9]/.test(password)) {
+    issues.push("a number");
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    issues.push("a symbol");
+  }
+  if (COMMON_PASSWORD_FRAGMENTS.some((fragment) => normalized.includes(fragment))) {
+    issues.push("no common password words");
+  }
+  if (emailLocalPart && emailLocalPart.length >= 3 && normalized.includes(emailLocalPart)) {
+    issues.push("no part of the email address");
+  }
+
+  return issues;
+}
+
 function firstHeaderValue(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {
     return value[0] ?? null;
@@ -186,6 +224,13 @@ export class AuthService implements OnModuleInit {
     const expected = Buffer.from(encodedHash, "base64url");
     const actual = (await scrypt(password, salt, expected.length)) as Buffer;
     return expected.length === actual.length && timingSafeEqual(expected, actual);
+  }
+
+  assertStrongPassword(password: string, email?: string): void {
+    const issues = passwordStrengthIssues(password, email);
+    if (issues.length > 0) {
+      throw new BadRequestException(`Password must include ${issues.join(", ")}.`);
+    }
   }
 
   private setSessionCookie(reply: FastifyReply, token: string): void {
@@ -337,6 +382,20 @@ export class AuthService implements OnModuleInit {
     createdAt: Date;
   }> {
     const user = await this.requireSessionUser(request);
+    return this.createApiKeyForUser(user.id, input);
+  }
+
+  private async createApiKeyForUser(
+    userId: string,
+    input: { name: string; expiresAt?: string }
+  ): Promise<{
+    id: string;
+    name: string;
+    key: string;
+    keyPrefix: string;
+    expiresAt: Date | null;
+    createdAt: Date;
+  }> {
     const name = input.name.trim();
     if (!name) {
       throw new BadRequestException("API key name is required.");
@@ -350,7 +409,7 @@ export class AuthService implements OnModuleInit {
     const key = `${API_KEY_PREFIX}_${createOpaqueToken(API_KEY_BYTES)}`;
     const created = await this.prisma.apiKey.create({
       data: {
-        ownerId: user.id,
+        ownerId: userId,
         name,
         keyPrefix: key.slice(0, 12),
         keyHash: hashToken(key),
@@ -368,6 +427,80 @@ export class AuthService implements OnModuleInit {
     };
   }
 
+  async createDesktopDeviceKey(
+    input: { email: string; password: string; deviceName: string },
+    request: FastifyRequest
+  ): Promise<{
+    user: SafeUser;
+    apiKey: {
+      id: string;
+      name: string;
+      key: string;
+      keyPrefix: string;
+      expiresAt: Date | null;
+      createdAt: Date;
+    };
+  }> {
+    const email = normalizeEmail(input.email);
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        email,
+        request,
+        description: `Desktop login failed for unknown account ${email}.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (user.suspendedAt || user.lockedAt) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: user.lockedAt ? `Desktop login blocked for locked account.` : `Desktop login blocked for suspended account.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (!(await this.verifyPassword(input.password, user.passwordHash))) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: `Desktop login failed for ${email}.`
+      });
+      await this.maybeAutoLockAccount(user, request);
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    const normalizedDeviceName = normalizeOptionalString(input.deviceName) ?? "Unknown device";
+    const deviceName = normalizedDeviceName.slice(0, 80);
+    const apiKey = await this.createApiKeyForUser(user.id, {
+      name: `Desktop - ${deviceName}`
+    });
+
+    await this.recordSecurityEvent({
+      type: UserSecurityEventType.login_success,
+      userId: user.id,
+      email,
+      request,
+      description: `Desktop login succeeded for ${email}.`,
+      metadata: {
+        apiKeyId: apiKey.id,
+        apiKeyPrefix: apiKey.keyPrefix,
+        deviceName
+      }
+    });
+
+    return {
+      user: safeUser(user),
+      apiKey
+    };
+  }
+
   async listApiKeys(request: FastifyRequest): Promise<Array<{
     id: string;
     name: string;
@@ -376,9 +509,20 @@ export class AuthService implements OnModuleInit {
     expiresAt: Date | null;
     revokedAt: Date | null;
     createdAt: Date;
+    usage: {
+      total: number;
+      last30Days: number;
+      byRoute: Array<{
+        route: string;
+        method: string;
+        count: number;
+        lastUsedAt: Date;
+      }>;
+    };
   }>> {
     const user = await this.requireSessionUser(request);
-    return this.prisma.apiKey.findMany({
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const keys = await this.prisma.apiKey.findMany({
       where: { ownerId: user.id },
       orderBy: { createdAt: "desc" },
       select: {
@@ -391,6 +535,39 @@ export class AuthService implements OnModuleInit {
         createdAt: true
       }
     });
+
+    return Promise.all(
+      keys.map(async (key) => {
+        const [total, last30Days, routeGroups] = await Promise.all([
+          this.prisma.apiUsageEvent.count({ where: { apiKeyId: key.id } }),
+          this.prisma.apiUsageEvent.count({
+            where: { apiKeyId: key.id, createdAt: { gte: thirtyDaysAgo } }
+          }),
+          this.prisma.apiUsageEvent.groupBy({
+            by: ["route", "method"],
+            where: { apiKeyId: key.id },
+            _count: { _all: true },
+            _max: { createdAt: true },
+            orderBy: { _count: { route: "desc" } },
+            take: 6
+          })
+        ]);
+
+        return {
+          ...key,
+          usage: {
+            total,
+            last30Days,
+            byRoute: routeGroups.map((group) => ({
+              route: group.route,
+              method: group.method,
+              count: group._count._all,
+              lastUsedAt: group._max.createdAt ?? key.createdAt
+            }))
+          }
+        };
+      })
+    );
   }
 
   async revokeApiKey(request: FastifyRequest, id: string): Promise<{ ok: true }> {
@@ -411,9 +588,7 @@ export class AuthService implements OnModuleInit {
 
   async signup(input: { email: string; password: string; name?: string }, reply: FastifyReply): Promise<SafeUser> {
     const email = normalizeEmail(input.email);
-    if (input.password.length < 8) {
-      throw new BadRequestException("Password must be at least 8 characters.");
-    }
+    this.assertStrongPassword(input.password, email);
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
@@ -645,17 +820,19 @@ export class AuthService implements OnModuleInit {
   }
 
   async confirmPasswordReset(input: { token: string; password: string }): Promise<{ ok: true }> {
-    if (input.password.length < 8) {
-      throw new BadRequestException("Password must be at least 8 characters.");
-    }
-
     const reset = await this.prisma.passwordResetToken.findUnique({
-      where: { tokenHash: hashToken(input.token) }
+      where: { tokenHash: hashToken(input.token) },
+      include: {
+        user: {
+          select: { email: true }
+        }
+      }
     });
 
     if (!reset || reset.usedAt || reset.expiresAt.getTime() <= Date.now()) {
       throw new BadRequestException("Password reset link is invalid or expired.");
     }
+    this.assertStrongPassword(input.password, reset.user.email);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({

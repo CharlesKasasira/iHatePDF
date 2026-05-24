@@ -6,6 +6,7 @@ import { DEFAULT_EDITOR_PAGE } from "./constants";
 import type {
   EditorAction,
   EditorAssetState,
+  EditorDocumentModel,
   EditorDocumentState,
   EditorDraftDefaults,
   EditorHistorySnapshot,
@@ -23,8 +24,19 @@ import {
   toolStatusMessage
 } from "./utils";
 import { getPageNumbersConfig, getWatermarkConfig, hasAnyEdits } from "./adapter";
+import {
+  cloneLayer,
+  createEmptySelection,
+  DUPLICATE_LAYER_OFFSET,
+  getSelectionLayerIds
+} from "./selection";
+import { redoHistory, undoHistory, withUndoCheckpoint } from "./history";
+import { reduceDocumentState } from "./document-reducer";
+import { reduceLayerState } from "./layer-reducer";
+import { reduceSignatureState } from "./signature-reducer";
+import { reduceViewportState } from "./viewport-reducer";
 
-const HISTORY_LIMIT = 100;
+const SNAP_GRID_SIZE = 12;
 
 function createInitialDraftDefaults(): EditorDraftDefaults {
   return {
@@ -32,6 +44,11 @@ function createInitialDraftDefaults(): EditorDraftDefaults {
       text: "Approved",
       fontFamily: "sans",
       fontSize: 20,
+      width: 220,
+      align: "left",
+      lineHeight: 1.2,
+      opacity: 1,
+      customFont: null,
       color: "#19334d",
       bold: true,
       italic: false,
@@ -54,208 +71,133 @@ function createInitialDraftDefaults(): EditorDraftDefaults {
   };
 }
 
-function createInitialState(mode: EditorMode): EditorDocumentState {
+function createInitialDocumentModel(mode: EditorMode): EditorDocumentModel {
   return {
-    mode,
-    pdfFile: null,
+    file: null,
     sourceFileId: null,
     sourceRetentionHours: null,
     pages: [DEFAULT_EDITOR_PAGE],
+    layers: [],
+    formFields: [],
+    formValues: {},
+    selection: createEmptySelection(),
+    operations: {
+      pageRotations: [],
+      textReplacements: [],
+      pageNumbers: {
+        enabled: false,
+        startAt: 1,
+        fontSize: 12,
+        color: "#19334d",
+        position: "bottom-center",
+        margin: 24,
+        prefix: ""
+      },
+      watermark: {
+        enabled: false,
+        text: "Confidential",
+        fontSize: 64,
+        color: "#19334d",
+        opacity: 0.14,
+        rotation: -32
+      }
+    },
+    signatures: {
+      request: {
+        requesterEmail: "",
+        signerName: "",
+        signerEmail: "",
+        signerRole: "Signer",
+        message: "",
+        outputName: buildDefaultSignatureRequestOutputName(),
+        status: "",
+        link: ""
+      },
+      flowStep: "closed"
+    },
+    export: {
+      outputName: buildDefaultOutputName(mode),
+      retentionHours: 24,
+      outputMode: "flattened",
+      downloadUrl: "",
+      history: []
+    },
+    viewport: {
+      zoom: 1,
+      fitMode: "fit-width",
+      activePage: 1,
+      scrollTarget: null,
+      snapToGrid: true,
+      showGuides: true
+    }
+  };
+}
+
+function createInitialState(mode: EditorMode): EditorDocumentState {
+  const document = createInitialDocumentModel(mode);
+  return {
+    mode,
+    document,
+    pdfFile: document.file,
+    sourceFileId: document.sourceFileId,
+    sourceRetentionHours: document.sourceRetentionHours,
+    pages: document.pages,
     isLoadingPreview: false,
     tool: "select",
-    layers: [],
-    selection: { layerId: null },
+    layers: document.layers,
+    formFields: document.formFields,
+    formValues: document.formValues,
+    selection: document.selection,
     status: "Upload a PDF to begin a controlled studio editing session.",
     busy: false,
-    downloadUrl: "",
-    outputName: buildDefaultOutputName(mode),
-    retentionHours: 24,
+    downloadUrl: document.export.downloadUrl,
+    outputName: document.export.outputName,
+    retentionHours: document.export.retentionHours,
     draftDefaults: createInitialDraftDefaults(),
     assets: {
       image: null,
       sign: null
     },
-    pageRotations: [],
+    pageRotations: document.operations.pageRotations,
     rotationPage: 1,
     rotationDegrees: 90,
-    pageNumbers: {
-      enabled: false,
-      startAt: 1,
-      fontSize: 12,
-      color: "#19334d",
-      position: "bottom-center",
-      margin: 24,
-      prefix: ""
-    },
-    watermark: {
-      enabled: false,
-      text: "Confidential",
-      fontSize: 64,
-      color: "#19334d",
-      opacity: 0.14,
-      rotation: -32
-    },
+    pageNumbers: document.operations.pageNumbers,
+    watermark: document.operations.watermark,
     history: {
       past: [],
       future: []
     },
-    signatureRequest: {
-      requesterEmail: "",
-      signerName: "",
-      signerEmail: "",
-      signerRole: "Signer",
-      message: "",
-      outputName: buildDefaultSignatureRequestOutputName(),
-      status: "",
-      link: ""
-    },
-    signatureFlowStep: "closed",
-    viewport: {
-      zoom: 1,
-      fitMode: "fit-width",
-      activePage: 1,
-      scrollAnchor: null
-    }
+    signatureRequest: document.signatures.request,
+    signatureFlowStep: document.signatures.flowStep,
+    viewport: document.viewport
   };
 }
 
-function createHistorySnapshot(state: EditorDocumentState): EditorHistorySnapshot {
-  return {
-    layers: state.layers,
-    selection: state.selection,
-    pageRotations: state.pageRotations,
-    pageNumbers: state.pageNumbers,
-    watermark: state.watermark
-  };
+function snapCoordinate(value: number, enabled: boolean): number {
+  return enabled ? Math.round(value / SNAP_GRID_SIZE) * SNAP_GRID_SIZE : value;
 }
 
-function withUndoCheckpoint(state: EditorDocumentState, nextState: EditorDocumentState): EditorDocumentState {
-  return {
-    ...nextState,
-    history: {
-      past: [...state.history.past, createHistorySnapshot(state)].slice(-HISTORY_LIMIT),
-      future: []
-    }
-  };
-}
+function reduceEditorState(state: EditorDocumentState, action: EditorAction): EditorDocumentState {
+  const domainState =
+    reduceDocumentState(state, action) ??
+    reduceLayerState(state, action) ??
+    reduceViewportState(state, action) ??
+    reduceSignatureState(state, action);
 
-function restoreHistorySnapshot(
-  state: EditorDocumentState,
-  snapshot: EditorHistorySnapshot,
-  status: string
-): EditorDocumentState {
-  return {
-    ...state,
-    layers: snapshot.layers,
-    selection: snapshot.selection,
-    pageRotations: snapshot.pageRotations,
-    pageNumbers: snapshot.pageNumbers,
-    watermark: snapshot.watermark,
-    status
-  };
-}
+  if (domainState) {
+    return domainState;
+  }
 
-function reducer(state: EditorDocumentState, action: EditorAction): EditorDocumentState {
   switch (action.type) {
-    case "reset-for-pdf":
-      return {
-        ...state,
-        pdfFile: action.file,
-        sourceFileId: null,
-        sourceRetentionHours: null,
-        pages: [DEFAULT_EDITOR_PAGE],
-        isLoadingPreview: false,
-        layers: [],
-        pageRotations: [],
-        rotationPage: 1,
-        selection: { layerId: null },
-        history: { past: [], future: [] },
-        downloadUrl: "",
-        outputName: action.outputName,
-        signatureRequest: {
-          ...state.signatureRequest,
-          outputName: action.signatureRequestOutputName,
-          status: "",
-          link: ""
-        },
-        signatureFlowStep: "closed"
-      };
-    case "load-preview-started":
-      return {
-        ...state,
-        isLoadingPreview: true,
-        sourceFileId: null,
-        pages: [DEFAULT_EDITOR_PAGE],
-        status: `Loading ${action.fileName} for preview...`
-      };
-    case "load-preview-succeeded":
-      return {
-        ...state,
-        sourceFileId: action.fileId,
-        sourceRetentionHours: action.retentionHours,
-        pages: action.pages.length > 0 ? action.pages : [DEFAULT_EDITOR_PAGE],
-        rotationPage: Math.min(Math.max(1, state.rotationPage), Math.max(1, action.pageCount)),
-        isLoadingPreview: false,
-        status: `${action.fileName} loaded. ${action.pageCount} page${action.pageCount === 1 ? "" : "s"} ready for editing.`
-      };
-    case "load-preview-failed":
-      return {
-        ...state,
-        sourceFileId: null,
-        sourceRetentionHours: null,
-        pages: [DEFAULT_EDITOR_PAGE],
-        isLoadingPreview: false,
-        status: action.message
-      };
-    case "set-tool":
-      return { ...state, tool: action.tool, selection: { layerId: null } };
-    case "set-selection":
-      return { ...state, selection: { layerId: action.layerId } };
     case "commit-history":
       return withUndoCheckpoint(state, {
         ...state,
         status: action.status ?? state.status
       });
-    case "add-layer":
-      return withUndoCheckpoint(state, {
-        ...state,
-        layers: [...state.layers, action.layer],
-        selection: { layerId: action.layer.id },
-        status: action.status
-      });
-    case "update-layer": {
-      const nextState = {
-        ...state,
-        layers: state.layers.map((layer) =>
-          layer.id === action.layerId ? action.updater(layer) : layer
-        )
-      };
-      return action.trackHistory === false ? nextState : withUndoCheckpoint(state, nextState);
-    }
-    case "set-layers":
-      return withUndoCheckpoint(state, {
-        ...state,
-        layers: action.layers,
-        status: action.status ?? state.status
-      });
-    case "remove-layer":
-      return withUndoCheckpoint(state, {
-        ...state,
-        layers: state.layers.filter((layer) => layer.id !== action.layerId),
-        selection: {
-          layerId: state.selection.layerId === action.layerId ? null : state.selection.layerId
-        }
-      });
     case "set-status":
       return { ...state, status: action.status };
     case "set-busy":
       return { ...state, busy: action.busy };
-    case "set-download-url":
-      return { ...state, downloadUrl: action.downloadUrl };
-    case "set-output-name":
-      return { ...state, outputName: action.outputName };
-    case "set-retention-hours":
-      return { ...state, retentionHours: action.retentionHours };
     case "set-text-defaults":
       return {
         ...state,
@@ -296,85 +238,17 @@ function reducer(state: EditorDocumentState, action: EditorAction): EditorDocume
           [action.kind]: action.asset
         }
       };
-    case "set-page-rotations":
-      return withUndoCheckpoint(state, { ...state, pageRotations: action.pageRotations });
-    case "set-rotation-page":
-      return { ...state, rotationPage: action.rotationPage };
-    case "set-rotation-degrees":
-      return { ...state, rotationDegrees: action.rotationDegrees };
-    case "set-page-numbers-enabled":
-      return withUndoCheckpoint(state, {
-        ...state,
-        pageNumbers: { ...state.pageNumbers, enabled: action.enabled }
-      });
-    case "set-page-numbers":
-      return withUndoCheckpoint(state, {
-        ...state,
-        pageNumbers: { ...state.pageNumbers, ...action.patch }
-      });
-    case "set-watermark-enabled":
-      return withUndoCheckpoint(state, {
-        ...state,
-        watermark: { ...state.watermark, enabled: action.enabled }
-      });
-    case "set-watermark":
-      return withUndoCheckpoint(state, {
-        ...state,
-        watermark: { ...state.watermark, ...action.patch }
-      });
-    case "undo": {
-      const previous = state.history.past.at(-1);
-      if (!previous) {
-        return state;
-      }
-
-      return {
-        ...restoreHistorySnapshot(state, previous, "Undid the last studio edit."),
-        history: {
-          past: state.history.past.slice(0, -1),
-          future: [createHistorySnapshot(state), ...state.history.future].slice(0, HISTORY_LIMIT)
-        }
-      };
-    }
-    case "redo": {
-      const next = state.history.future[0];
-      if (!next) {
-        return state;
-      }
-
-      return {
-        ...restoreHistorySnapshot(state, next, "Redid the last studio edit."),
-        history: {
-          past: [...state.history.past, createHistorySnapshot(state)].slice(-HISTORY_LIMIT),
-          future: state.history.future.slice(1)
-        }
-      };
-    }
-    case "set-signature-request":
-      return {
-        ...state,
-        signatureRequest: { ...state.signatureRequest, ...action.patch }
-      };
-    case "set-signature-request-feedback":
-      return {
-        ...state,
-        signatureRequest: {
-          ...state.signatureRequest,
-          status: action.status,
-          link: action.link ?? state.signatureRequest.link
-        }
-      };
-    case "set-signature-flow-step":
-      return { ...state, signatureFlowStep: action.step };
-    case "set-source-file":
-      return {
-        ...state,
-        sourceFileId: action.fileId,
-        sourceRetentionHours: action.retentionHours
-      };
+    case "undo":
+      return undoHistory(state);
+    case "redo":
+      return redoHistory(state);
     default:
       return state;
   }
+}
+
+function reducer(state: EditorDocumentState, action: EditorAction): EditorDocumentState {
+  return reduceEditorState(state, action);
 }
 
 export function usePdfEditor(mode: EditorMode) {
@@ -402,8 +276,12 @@ export function usePdfEditor(mode: EditorMode) {
     }
   }, []);
 
-  const setSelectedLayerId = useCallback((layerId: string | null) => {
-    dispatch({ type: "set-selection", layerId });
+  const setSelectedLayerId = useCallback((layerId: string | null, additive = false) => {
+    dispatch({ type: "set-selection", layerId, additive });
+  }, []);
+
+  const setSelectedLayerIds = useCallback((layerIds: string[]) => {
+    dispatch({ type: "set-selection-many", layerIds });
   }, []);
 
   const setStatus = useCallback((status: string) => {
@@ -426,6 +304,41 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-retention-hours", retentionHours });
   }, []);
 
+  const setOutputMode = useCallback((outputMode: EditorDocumentModel["export"]["outputMode"]) => {
+    dispatch({ type: "set-output-mode", outputMode });
+  }, []);
+
+  const setActivePage = useCallback((activePage: number) => {
+    dispatch({ type: "set-active-page", activePage });
+  }, []);
+
+  const setZoom = useCallback((zoom: number) => {
+    dispatch({ type: "set-zoom", zoom });
+  }, []);
+
+  const setFitMode = useCallback((fitMode: EditorDocumentModel["viewport"]["fitMode"]) => {
+    dispatch({ type: "set-fit-mode", fitMode });
+  }, []);
+
+  const setSnapToGrid = useCallback((enabled: boolean) => {
+    dispatch({ type: "set-snap-to-grid", enabled });
+  }, []);
+
+  const setShowGuides = useCallback((enabled: boolean) => {
+    dispatch({ type: "set-show-guides", enabled });
+  }, []);
+
+  const setFormValue = useCallback((name: string, value: EditorDocumentModel["formValues"][string]) => {
+    dispatch({ type: "set-form-value", name, value });
+  }, []);
+
+  const setScrollTarget = useCallback(
+    (page: number, behavior: NonNullable<EditorDocumentModel["viewport"]["scrollTarget"]>["behavior"] = "smooth") => {
+      dispatch({ type: "set-scroll-target", page, behavior });
+    },
+    []
+  );
+
   const loadPreviewStarted = useCallback((fileName: string) => {
     dispatch({ type: "load-preview-started", fileName });
   }, []);
@@ -435,6 +348,7 @@ export function usePdfEditor(mode: EditorMode) {
       fileId: string;
       retentionHours: number;
       pages: EditorPage[];
+      formFields: EditorDocumentModel["formFields"];
       pageCount: number;
       fileName: string;
     }) => {
@@ -474,12 +388,22 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "commit-history", status });
   }, []);
 
+  const restoreDraft = useCallback(
+    (snapshot: EditorHistorySnapshot, outputName: string, retentionHours: number) => {
+      dispatch({ type: "restore-draft", snapshot, outputName, retentionHours });
+    },
+    []
+  );
+
   const reorderLayers = useCallback((layers: EditorLayer[]) => {
     dispatch({ type: "set-layers", layers, status: "Layer stack order updated." });
   }, []);
 
   const createLayerAt = useCallback(
     (pageNumber: number, x: number, y: number) => {
+      const placeX = snapCoordinate(x, state.document.viewport.snapToGrid);
+      const placeY = snapCoordinate(y, state.document.viewport.snapToGrid);
+
       if (state.tool === "select") {
         dispatch({ type: "set-selection", layerId: null });
         return;
@@ -498,11 +422,16 @@ export function usePdfEditor(mode: EditorMode) {
             id: nextLayerId(),
             kind: "text",
             page: pageNumber,
-            x,
-            y,
+            x: placeX,
+            y: placeY,
+            width: state.draftDefaults.text.width,
             text,
             fontSize: state.draftDefaults.text.fontSize,
             fontFamily: state.draftDefaults.text.fontFamily,
+            align: state.draftDefaults.text.align,
+            lineHeight: state.draftDefaults.text.lineHeight,
+            opacity: state.draftDefaults.text.opacity,
+            customFont: state.draftDefaults.text.customFont,
             bold: state.draftDefaults.text.bold,
             italic: state.draftDefaults.text.italic,
             underline: state.draftDefaults.text.underline,
@@ -513,9 +442,10 @@ export function usePdfEditor(mode: EditorMode) {
         return;
       }
 
-      if (state.tool === "highlight" || state.tool === "shape" || state.tool === "erase") {
+      if (state.tool === "highlight" || state.tool === "shape" || state.tool === "erase" || state.tool === "redact") {
         const isHighlight = state.tool === "highlight";
         const isErase = state.tool === "erase";
+        const isRedact = state.tool === "redact";
         dispatch({
           type: "add-layer",
           layer: {
@@ -523,17 +453,45 @@ export function usePdfEditor(mode: EditorMode) {
             kind: "rectangle",
             variant: state.tool,
             page: pageNumber,
-            x,
-            y,
+            x: placeX,
+            y: placeY,
             width: state.draftDefaults.rectangle.width,
             height: state.draftDefaults.rectangle.height,
-            color: isHighlight ? "#ffe082" : isErase ? "#ffffff" : state.draftDefaults.rectangle.color,
-            opacity: isHighlight ? 0.26 : isErase ? 1 : state.draftDefaults.rectangle.opacity
+            color: isHighlight ? "#ffe082" : isErase ? "#ffffff" : isRedact ? "#111827" : state.draftDefaults.rectangle.color,
+            opacity: isHighlight ? 0.26 : isErase || isRedact ? 1 : state.draftDefaults.rectangle.opacity
           },
           status: `Placed a ${
-            isHighlight ? "highlight" : isErase ? "white erase block" : "shape"
+            isHighlight ? "highlight" : isErase ? "white erase block" : isRedact ? "true redaction block" : "shape"
           } layer on page ${pageNumber}.`
         });
+        return;
+      }
+
+      if (state.tool === "comment" || state.tool === "strike" || state.tool === "sticky") {
+        const isStrike = state.tool === "strike";
+        const isSticky = state.tool === "sticky";
+        dispatch({
+          type: "add-layer",
+          layer: {
+            id: nextLayerId(),
+            kind: "annotation",
+            variant: state.tool,
+            page: pageNumber,
+            x: placeX,
+            y: placeY,
+            width: isStrike ? 220 : isSticky ? 150 : 240,
+            height: isStrike ? 18 : isSticky ? 86 : 64,
+            color: isStrike ? "#d62828" : isSticky ? "#ffe082" : "#b8dcff",
+            opacity: isStrike ? 1 : isSticky ? 0.9 : 0.78,
+            text: isStrike ? "Strikethrough" : isSticky ? "Note" : "Comment"
+          },
+          status: `Placed a ${isStrike ? "strikethrough" : isSticky ? "sticky note" : "comment"} annotation on page ${pageNumber}.`
+        });
+        return;
+      }
+
+      if (state.tool === "ink") {
+        dispatch({ type: "set-status", status: "Drag on the PDF page to draw a freehand ink annotation." });
         return;
       }
 
@@ -556,8 +514,8 @@ export function usePdfEditor(mode: EditorMode) {
           kind: "image",
           variant: state.tool,
           page: pageNumber,
-          x,
-          y,
+          x: placeX,
+          y: placeY,
           width: state.tool === "sign" ? state.draftDefaults.signature.width : state.draftDefaults.image.width,
           height: state.tool === "sign" ? state.draftDefaults.signature.height : state.draftDefaults.image.height,
           dataUrl: asset.dataUrl,
@@ -568,6 +526,34 @@ export function usePdfEditor(mode: EditorMode) {
     },
     [state]
   );
+
+  const createInkLayer = useCallback((pageNumber: number, points: Array<{ x: number; y: number }>) => {
+    if (points.length < 2) {
+      return;
+    }
+
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+
+    dispatch({
+      type: "add-layer",
+      layer: {
+        id: nextLayerId(),
+        kind: "ink",
+        page: pageNumber,
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY),
+        color: "#19334d",
+        thickness: 2.5,
+        points: points.map((point) => ({ x: point.x - minX, y: point.y - minY }))
+      },
+      status: `Drew a freehand ink annotation on page ${pageNumber}.`
+    });
+  }, []);
 
   const setAsset = useCallback((kind: "image" | "sign", asset: EditorAssetState) => {
     dispatch({ type: "set-asset", kind, asset });
@@ -587,7 +573,7 @@ export function usePdfEditor(mode: EditorMode) {
   }, []);
 
   const queuePageRotation = useCallback(() => {
-    const next = state.pageRotations.filter((item) => item.page !== state.rotationPage);
+    const next = state.document.operations.pageRotations.filter((item) => item.page !== state.rotationPage);
     next.push({ page: state.rotationPage, degrees: state.rotationDegrees });
     next.sort((left, right) => left.page - right.page);
     dispatch({ type: "set-page-rotations", pageRotations: next });
@@ -595,14 +581,22 @@ export function usePdfEditor(mode: EditorMode) {
       type: "set-status",
       status: `Queued a ${state.rotationDegrees}° rotation for page ${state.rotationPage}.`
     });
-  }, [state.pageRotations, state.rotationDegrees, state.rotationPage]);
+  }, [state.document.operations.pageRotations, state.rotationDegrees, state.rotationPage]);
 
   const removePageRotation = useCallback((page: number) => {
     dispatch({
       type: "set-page-rotations",
-      pageRotations: state.pageRotations.filter((item) => item.page !== page)
+      pageRotations: state.document.operations.pageRotations.filter((item) => item.page !== page)
     });
-  }, [state.pageRotations]);
+  }, [state.document.operations.pageRotations]);
+
+  const addTextReplacement = useCallback((replacement: EditorDocumentModel["operations"]["textReplacements"][number]) => {
+    dispatch({ type: "add-text-replacement", replacement });
+  }, []);
+
+  const removeTextReplacement = useCallback((index: number) => {
+    dispatch({ type: "remove-text-replacement", index });
+  }, []);
 
   const setRotationPage = useCallback((rotationPage: number) => {
     dispatch({ type: "set-rotation-page", rotationPage });
@@ -632,7 +626,7 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-page-numbers-enabled", enabled });
   }, []);
 
-  const setPageNumbers = useCallback((patch: Partial<EditorDocumentState["pageNumbers"]>) => {
+  const setPageNumbers = useCallback((patch: Partial<EditorDocumentModel["operations"]["pageNumbers"]>) => {
     dispatch({ type: "set-page-numbers", patch });
   }, []);
 
@@ -640,12 +634,12 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-watermark-enabled", enabled });
   }, []);
 
-  const setWatermark = useCallback((patch: Partial<EditorDocumentState["watermark"]>) => {
+  const setWatermark = useCallback((patch: Partial<EditorDocumentModel["operations"]["watermark"]>) => {
     dispatch({ type: "set-watermark", patch });
   }, []);
 
   const setSignatureRequest = useCallback(
-    (patch: Partial<EditorDocumentState["signatureRequest"]>) => {
+    (patch: Partial<EditorDocumentModel["signatures"]["request"]>) => {
       dispatch({ type: "set-signature-request", patch });
     },
     []
@@ -663,24 +657,171 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-signature-flow-step", step });
   }, []);
 
+  const selectedLayerIds = useMemo(
+    () => getSelectionLayerIds(state.document.selection),
+    [state.document.selection]
+  );
+
+  const moveSelectedLayersInStack = useCallback(
+    (direction: "front" | "forward" | "backward" | "back") => {
+      if (selectedLayerIds.length === 0) {
+        return;
+      }
+      if (state.document.layers.some((layer) => selectedLayerIds.includes(layer.id) && layer.locked)) {
+        dispatch({ type: "set-status", status: "Unlock selected layers before changing their stack order." });
+        return;
+      }
+
+      const selected = new Set(selectedLayerIds);
+      let nextLayers = [...state.document.layers];
+
+      if (direction === "front") {
+        nextLayers = [
+          ...state.document.layers.filter((layer) => !selected.has(layer.id)),
+          ...state.document.layers.filter((layer) => selected.has(layer.id))
+        ];
+      } else if (direction === "back") {
+        nextLayers = [
+          ...state.document.layers.filter((layer) => selected.has(layer.id)),
+          ...state.document.layers.filter((layer) => !selected.has(layer.id))
+        ];
+      } else if (direction === "forward") {
+        for (let index = nextLayers.length - 2; index >= 0; index -= 1) {
+          if (selected.has(nextLayers[index].id) && !selected.has(nextLayers[index + 1].id)) {
+            [nextLayers[index], nextLayers[index + 1]] = [nextLayers[index + 1], nextLayers[index]];
+          }
+        }
+      } else {
+        for (let index = 1; index < nextLayers.length; index += 1) {
+          if (selected.has(nextLayers[index].id) && !selected.has(nextLayers[index - 1].id)) {
+            [nextLayers[index - 1], nextLayers[index]] = [nextLayers[index], nextLayers[index - 1]];
+          }
+        }
+      }
+
+      dispatch({
+        type: "set-layers",
+        layers: nextLayers,
+        status:
+          selectedLayerIds.length === 1
+            ? "Moved the selected layer in the stack."
+            : "Moved selected layers in the stack."
+      });
+    },
+    [selectedLayerIds, state.document.layers]
+  );
+
   const removeSelectedLayer = useCallback(() => {
-    if (!state.selection.layerId) {
+    if (selectedLayerIds.length === 0) {
       return;
     }
-    dispatch({ type: "remove-layer", layerId: state.selection.layerId });
-  }, [state.selection.layerId]);
+    const removableIds = selectedLayerIds.filter(
+      (layerId) => !state.document.layers.some((layer) => layer.id === layerId && layer.locked)
+    );
+    if (removableIds.length === 0) {
+      dispatch({ type: "set-status", status: "Unlock selected layers before removing them." });
+      return;
+    }
+
+    dispatch({
+      type: "set-layers",
+      layers: state.document.layers.filter((layer) => !removableIds.includes(layer.id)),
+      status:
+        removableIds.length === 1
+          ? "Removed the selected layer."
+          : `Removed ${removableIds.length} selected layers.`
+    });
+    dispatch({ type: "set-selection-many", layerIds: [] });
+  }, [selectedLayerIds, state.document.layers]);
+
+  const nudgeSelectedLayers = useCallback(
+    (deltaX: number, deltaY: number) => {
+      if (selectedLayerIds.length === 0) {
+        return;
+      }
+
+      dispatch({
+        type: "set-layers",
+        layers: state.document.layers.map((layer) =>
+          selectedLayerIds.includes(layer.id) && !layer.locked
+            ? {
+                ...layer,
+                x: Math.max(0, layer.x + deltaX),
+                y: Math.max(0, layer.y + deltaY)
+              }
+            : layer
+        ),
+        status: "Nudged selected layers."
+      });
+    },
+    [selectedLayerIds, state.document.layers]
+  );
+
+  const duplicateSelectedLayers = useCallback(() => {
+    const selectedLayers = state.document.layers.filter((layer) => selectedLayerIds.includes(layer.id) && !layer.locked);
+    if (selectedLayers.length === 0) {
+      dispatch({ type: "set-status", status: "Unlock selected layers before duplicating them." });
+      return;
+    }
+
+    const duplicatedLayers = selectedLayers.map((layer) => cloneLayer(layer));
+    dispatch({
+      type: "set-layers",
+      layers: [...state.document.layers, ...duplicatedLayers],
+      status:
+        duplicatedLayers.length === 1
+          ? "Duplicated the selected layer."
+          : `Duplicated ${duplicatedLayers.length} selected layers.`
+    });
+    dispatch({ type: "set-selection-many", layerIds: duplicatedLayers.map((layer) => layer.id) });
+  }, [selectedLayerIds, state.document.layers]);
+
+  const pasteLayers = useCallback(
+    (layers: EditorLayer[]) => {
+      if (layers.length === 0) {
+        return;
+      }
+
+      const pastedLayers = layers.map((layer) => cloneLayer(layer, DUPLICATE_LAYER_OFFSET * 1.5));
+      dispatch({
+        type: "set-layers",
+        layers: [...state.document.layers, ...pastedLayers],
+        status:
+          pastedLayers.length === 1
+            ? "Pasted a copied layer."
+            : `Pasted ${pastedLayers.length} copied layers.`
+      });
+      dispatch({ type: "set-selection-many", layerIds: pastedLayers.map((layer) => layer.id) });
+    },
+    [state.document.layers]
+  );
 
   const undo = useCallback(() => {
     dispatch({ type: "undo" });
   }, []);
+
+  const setSelectedLayersLocked = useCallback(
+    (locked: boolean) => {
+      if (selectedLayerIds.length === 0) {
+        return;
+      }
+      dispatch({ type: "set-layer-lock", layerIds: selectedLayerIds, locked });
+    },
+    [selectedLayerIds]
+  );
 
   const redo = useCallback(() => {
     dispatch({ type: "redo" });
   }, []);
 
   const selectedLayer = useMemo(
-    () => state.layers.find((layer) => layer.id === state.selection.layerId) ?? null,
-    [state.layers, state.selection.layerId]
+    () => state.document.layers.find((layer) => layer.id === state.document.selection.layerId) ?? null,
+    [state.document.layers, state.document.selection.layerId]
+  );
+
+  const selectedLayers = useMemo(
+    () => state.document.layers.filter((layer) => selectedLayerIds.includes(layer.id)),
+    [selectedLayerIds, state.document.layers]
   );
 
   const selectedSignatureBox = useMemo(
@@ -689,8 +830,8 @@ export function usePdfEditor(mode: EditorMode) {
   );
 
   const pageRotationMap = useMemo(
-    () => new Map(state.pageRotations.map((item) => [item.page, item.degrees])),
-    [state.pageRotations]
+    () => new Map(state.document.operations.pageRotations.map((item) => [item.page, item.degrees])),
+    [state.document.operations.pageRotations]
   );
 
   const pageNumberConfig = useMemo(() => getPageNumbersConfig(state), [state]);
@@ -700,30 +841,42 @@ export function usePdfEditor(mode: EditorMode) {
   return {
     state,
     selectedLayer,
+    selectedLayers,
+    selectedLayerIds,
     selectedSignatureBox,
     pageRotationMap,
     pageNumberConfig,
     watermarkConfig,
     hasAnyEdits: hasEdits,
+    activePage: state.document.viewport.activePage,
+    zoom: state.document.viewport.zoom,
     actions: {
       createLayerAt,
+      createInkLayer,
+      addTextReplacement,
       createUndoCheckpoint,
+      duplicateSelectedLayers,
       loadPreviewFailed,
       loadPreviewStarted,
       loadPreviewSucceeded,
       moveLayer,
+      pasteLayers,
       queuePageRotation,
       redo,
       removePageRotation,
+      removeTextReplacement,
       removeSelectedLayer,
       reorderLayers,
+      restoreDraft,
       resetSignatureRequestFeedback,
       selectPdfFile,
       setAsset,
+      setActivePage,
       setBusy,
       setDownloadUrl,
       setImageDefaults,
       setOutputName,
+      setOutputMode,
       setPageNumbers,
       setPageNumbersEnabled,
       setRectangleDefaults,
@@ -731,18 +884,28 @@ export function usePdfEditor(mode: EditorMode) {
       setRotationDegrees,
       setRotationPage,
       setSelectedLayerId,
+      setSelectedLayerIds,
+      setSelectedLayersLocked,
+      setScrollTarget,
+      setShowGuides,
       setSignatureDefaults,
       setSignatureFlowStep,
       setSignatureRequest,
       setSignatureRequestFeedback,
+      setSnapToGrid,
       setSourceFile,
       setStatus,
       setTextDefaults,
+      setFitMode,
+      setFormValue,
       setTool,
       setWatermark,
       setWatermarkEnabled,
+      setZoom,
       undo,
-      updateLayer
+      updateLayer,
+      moveSelectedLayersInStack,
+      nudgeSelectedLayers
     }
   };
 }
