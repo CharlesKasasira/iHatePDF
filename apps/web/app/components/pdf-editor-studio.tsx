@@ -162,11 +162,17 @@ export function PdfEditorStudio({
 
       if (key === "c" && selectedLayers.length > 0) {
         event.preventDefault();
-        copiedLayersRef.current = selectedLayers;
+        const copyableLayers = selectedLayers.filter((layer) => !layer.locked);
+        if (copyableLayers.length === 0) {
+          actions.setStatus("Unlock selected layers before copying them.");
+          return;
+        }
+
+        copiedLayersRef.current = copyableLayers;
         actions.setStatus(
-          selectedLayers.length === 1
+          copyableLayers.length === 1
             ? "Copied the selected layer."
-            : `Copied ${selectedLayers.length} selected layers.`
+            : `Copied ${copyableLayers.length} selected layers.`
         );
         return;
       }
@@ -254,6 +260,7 @@ export function PdfEditorStudio({
           fileId: uploaded.fileId,
           retentionHours,
           pages: metadata.pages,
+          formFields: metadata.formFields,
           pageCount: metadata.pageCount,
           fileName: pdfFile.name
         });
@@ -327,8 +334,11 @@ export function PdfEditorStudio({
       retentionHours: state.document.export.retentionHours,
       snapshot: {
         layers: state.document.layers,
+        formFields: state.document.formFields,
+        formValues: state.document.formValues,
         selection: state.document.selection,
         pageRotations: state.document.operations.pageRotations,
+        textReplacements: state.document.operations.textReplacements,
         pageNumbers: state.document.operations.pageNumbers,
         watermark: state.document.operations.watermark
       }
@@ -504,6 +514,7 @@ export function PdfEditorStudio({
       onCreateUndoCheckpoint={actions.createUndoCheckpoint}
       onUpdateLayer={actions.updateLayer}
       onRemoveSelectedLayer={actions.removeSelectedLayer}
+      onToggleSelectedLayersLock={actions.setSelectedLayersLocked}
       onOutputNameChange={actions.setOutputName}
       onRotationPageChange={actions.setRotationPage}
       onRotationDegreesChange={actions.setRotationDegrees}
@@ -513,16 +524,20 @@ export function PdfEditorStudio({
       onPageNumbersChange={actions.setPageNumbers}
       onWatermarkEnabledChange={actions.setWatermarkEnabled}
       onWatermarkChange={actions.setWatermark}
+      onAddTextReplacement={actions.addTextReplacement}
+      onRemoveTextReplacement={actions.removeTextReplacement}
       onActivePageChange={actions.setActivePage}
       onZoomChange={actions.setZoom}
       onFitModeChange={actions.setFitMode}
       onSnapToGridChange={actions.setSnapToGrid}
       onShowGuidesChange={actions.setShowGuides}
+      onFormValueChange={actions.setFormValue}
       onScrollTargetChange={actions.setScrollTarget}
       onUndo={actions.undo}
       onRedo={actions.redo}
       onOpenSignatureChooser={openSignatureChooser}
       onRetentionHoursChange={actions.setRetentionHours}
+      onOutputModeChange={actions.setOutputMode}
       onExport={processDocument}
       onCloseSignatureFlow={() => actions.setSignatureFlowStep("closed")}
       onOnlyMeSignature={() => {
@@ -537,6 +552,7 @@ export function PdfEditorStudio({
       onReorderLayers={actions.reorderLayers}
       onMoveSelectedLayersInStack={actions.moveSelectedLayersInStack}
       onPlaceLayer={(pageNumber, x, y) => actions.createLayerAt(pageNumber, x, y)}
+      onCreateInkLayer={actions.createInkLayer}
       invite={{
         email: inviteEmail,
         message: inviteMessage,

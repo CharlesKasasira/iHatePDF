@@ -382,6 +382,20 @@ export class AuthService implements OnModuleInit {
     createdAt: Date;
   }> {
     const user = await this.requireSessionUser(request);
+    return this.createApiKeyForUser(user.id, input);
+  }
+
+  private async createApiKeyForUser(
+    userId: string,
+    input: { name: string; expiresAt?: string }
+  ): Promise<{
+    id: string;
+    name: string;
+    key: string;
+    keyPrefix: string;
+    expiresAt: Date | null;
+    createdAt: Date;
+  }> {
     const name = input.name.trim();
     if (!name) {
       throw new BadRequestException("API key name is required.");
@@ -395,7 +409,7 @@ export class AuthService implements OnModuleInit {
     const key = `${API_KEY_PREFIX}_${createOpaqueToken(API_KEY_BYTES)}`;
     const created = await this.prisma.apiKey.create({
       data: {
-        ownerId: user.id,
+        ownerId: userId,
         name,
         keyPrefix: key.slice(0, 12),
         keyHash: hashToken(key),
@@ -410,6 +424,80 @@ export class AuthService implements OnModuleInit {
       keyPrefix: created.keyPrefix,
       expiresAt: created.expiresAt,
       createdAt: created.createdAt
+    };
+  }
+
+  async createDesktopDeviceKey(
+    input: { email: string; password: string; deviceName: string },
+    request: FastifyRequest
+  ): Promise<{
+    user: SafeUser;
+    apiKey: {
+      id: string;
+      name: string;
+      key: string;
+      keyPrefix: string;
+      expiresAt: Date | null;
+      createdAt: Date;
+    };
+  }> {
+    const email = normalizeEmail(input.email);
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        email,
+        request,
+        description: `Desktop login failed for unknown account ${email}.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (user.suspendedAt || user.lockedAt) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: user.lockedAt ? `Desktop login blocked for locked account.` : `Desktop login blocked for suspended account.`
+      });
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    if (!(await this.verifyPassword(input.password, user.passwordHash))) {
+      await this.recordSecurityEvent({
+        type: UserSecurityEventType.login_failed,
+        userId: user.id,
+        email,
+        request,
+        description: `Desktop login failed for ${email}.`
+      });
+      await this.maybeAutoLockAccount(user, request);
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    const normalizedDeviceName = normalizeOptionalString(input.deviceName) ?? "Unknown device";
+    const deviceName = normalizedDeviceName.slice(0, 80);
+    const apiKey = await this.createApiKeyForUser(user.id, {
+      name: `Desktop - ${deviceName}`
+    });
+
+    await this.recordSecurityEvent({
+      type: UserSecurityEventType.login_success,
+      userId: user.id,
+      email,
+      request,
+      description: `Desktop login succeeded for ${email}.`,
+      metadata: {
+        apiKeyId: apiKey.id,
+        apiKeyPrefix: apiKey.keyPrefix,
+        deviceName
+      }
+    });
+
+    return {
+      user: safeUser(user),
+      apiKey
     };
   }
 

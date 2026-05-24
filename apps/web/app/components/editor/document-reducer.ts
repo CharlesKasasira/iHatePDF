@@ -1,10 +1,25 @@
 import { DEFAULT_EDITOR_PAGE } from "./constants";
 import { withUndoCheckpoint } from "./history";
 import { createEmptySelection } from "./selection";
-import type { EditorAction, EditorDocumentState } from "./types";
+import type { EditorAction, EditorDocumentState, EditorLayer } from "./types";
 
 function nextExportId(): string {
   return `export-${crypto.randomUUID()}`;
+}
+
+function normalizeDraftLayer(layer: EditorLayer): EditorLayer {
+  if (layer.kind !== "text") {
+    return layer;
+  }
+
+  return {
+    ...layer,
+    width: layer.width ?? 220,
+    align: layer.align ?? "left",
+    lineHeight: layer.lineHeight ?? 1.2,
+    opacity: layer.opacity ?? 1,
+    customFont: layer.customFont ?? null
+  };
 }
 
 export function reduceDocumentState(
@@ -25,10 +40,13 @@ export function reduceDocumentState(
           sourceRetentionHours: null,
           pages: [DEFAULT_EDITOR_PAGE],
           layers: [],
+          formFields: [],
+          formValues: {},
           selection: createEmptySelection(),
           operations: {
             ...state.document.operations,
-            pageRotations: []
+            pageRotations: [],
+            textReplacements: []
           },
           export: {
             ...state.document.export,
@@ -60,12 +78,19 @@ export function reduceDocumentState(
         document: {
           ...state.document,
           sourceFileId: null,
-          pages: [DEFAULT_EDITOR_PAGE]
+          pages: [DEFAULT_EDITOR_PAGE],
+          formFields: [],
+          formValues: {}
         },
         status: `Loading ${action.fileName} for preview...`
       };
     case "load-preview-succeeded": {
       const nextPages = action.pages.length > 0 ? action.pages : [DEFAULT_EDITOR_PAGE];
+      const formValues = Object.fromEntries(
+        action.formFields
+          .filter((field) => field.type !== "button" && field.type !== "unknown")
+          .map((field) => [field.name, field.value ?? (field.type === "checkbox" ? false : "")])
+      );
       return {
         ...state,
         rotationPage: Math.min(Math.max(1, state.rotationPage), Math.max(1, action.pageCount)),
@@ -74,6 +99,8 @@ export function reduceDocumentState(
           sourceFileId: action.fileId,
           sourceRetentionHours: action.retentionHours,
           pages: nextPages,
+          formFields: action.formFields,
+          formValues,
           viewport: {
             ...state.document.viewport,
             activePage: Math.min(
@@ -93,7 +120,9 @@ export function reduceDocumentState(
           ...state.document,
           sourceFileId: null,
           sourceRetentionHours: null,
-          pages: [DEFAULT_EDITOR_PAGE]
+          pages: [DEFAULT_EDITOR_PAGE],
+          formFields: [],
+          formValues: {}
         },
         isLoadingPreview: false,
         status: action.message
@@ -143,17 +172,29 @@ export function reduceDocumentState(
           }
         }
       };
+    case "set-output-mode":
+      return {
+        ...state,
+        document: {
+          ...state.document,
+          export: {
+            ...state.document.export,
+            outputMode: action.outputMode
+          }
+        }
+      };
     case "restore-draft":
       return {
         ...state,
         history: { past: [], future: [] },
         document: {
           ...state.document,
-          layers: action.snapshot.layers,
+          layers: action.snapshot.layers.map(normalizeDraftLayer),
           selection: action.snapshot.selection,
           operations: {
             ...state.document.operations,
             pageRotations: action.snapshot.pageRotations,
+            textReplacements: action.snapshot.textReplacements,
             pageNumbers: action.snapshot.pageNumbers,
             watermark: action.snapshot.watermark
           },
@@ -176,6 +217,30 @@ export function reduceDocumentState(
             pageRotations: action.pageRotations
           }
         }
+      });
+    case "add-text-replacement":
+      return withUndoCheckpoint(state, {
+        ...state,
+        document: {
+          ...state.document,
+          operations: {
+            ...state.document.operations,
+            textReplacements: [...state.document.operations.textReplacements, action.replacement]
+          }
+        },
+        status: "Queued a text replacement."
+      });
+    case "remove-text-replacement":
+      return withUndoCheckpoint(state, {
+        ...state,
+        document: {
+          ...state.document,
+          operations: {
+            ...state.document.operations,
+            textReplacements: state.document.operations.textReplacements.filter((_, index) => index !== action.index)
+          }
+        },
+        status: "Removed a text replacement."
       });
     case "set-rotation-page":
       return { ...state, rotationPage: action.rotationPage };

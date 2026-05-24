@@ -1,8 +1,23 @@
 import "dotenv/config";
+import fontkit from "@pdf-lib/fontkit";
 import { Job, Worker } from "bullmq";
 import JSZip from "jszip";
 import nodemailer from "nodemailer";
-import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import {
+  PDFCheckBox,
+  PDFDocument,
+  PDFDropdown,
+  PDFName,
+  PDFOptionList,
+  PDFRadioGroup,
+  PDFSignature,
+  PDFString,
+  PDFTextField,
+  StandardFonts,
+  degrees,
+  type PDFFont,
+  rgb
+} from "pdf-lib";
 import sharp, { type Sharp } from "sharp";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -30,6 +45,7 @@ const EnvSchema = z.object({
   MAIL_FROM: z.string().default("iHatePDF <no-reply@ihatepdf.local>"),
   QPDF_BIN: z.string().default("qpdf"),
   PDFTOPPM_BIN: z.string().default("pdftoppm"),
+  PDFTOTEXT_BIN: z.string().default("pdftotext"),
   PDF_RENDER_DPI: z.coerce.number().int().min(72).max(300).default(144)
 });
 
@@ -354,9 +370,20 @@ const EditTextSchema = z.object({
   page: z.number().int().min(1),
   x: z.number().min(0),
   y: z.number().min(0),
+  width: z.number().positive().default(240),
   text: z.string().min(1),
   fontSize: z.number().min(4).max(400),
-  fontFamily: z.enum(["sans", "serif", "mono"]),
+  fontFamily: z.enum(["sans", "serif", "mono", "inter", "source-serif", "roboto-mono", "cursive"]),
+  align: z.enum(["left", "center", "right"]).default("left"),
+  lineHeight: z.number().min(0.8).max(3).default(1.2),
+  opacity: z.number().min(0).max(1).default(1),
+  customFont: z
+    .object({
+      name: z.string().min(1),
+      dataUrl: z.string().min(1)
+    })
+    .nullable()
+    .optional(),
   bold: z.boolean(),
   italic: z.boolean(),
   underline: z.boolean(),
@@ -373,6 +400,24 @@ const EditRectangleSchema = z.object({
   opacity: z.number().min(0).max(1)
 });
 
+const EditRedactionSchema = z.object({
+  page: z.number().int().min(1),
+  x: z.number().min(0),
+  y: z.number().min(0),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/)
+});
+
+const EditTextReplacementSchema = z.object({
+  page: z.number().int().min(1).optional(),
+  find: z.string().min(1),
+  replace: z.string(),
+  matchCase: z.boolean(),
+  color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/),
+  fontSize: z.number().min(4).max(400).optional()
+});
+
 const EditImageSchema = z.object({
   page: z.number().int().min(1),
   x: z.number().min(0),
@@ -380,6 +425,20 @@ const EditImageSchema = z.object({
   width: z.number().positive(),
   height: z.number().positive(),
   dataUrl: z.string().startsWith("data:image/")
+});
+
+const EditInkSchema = z.object({
+  page: z.number().int().min(1),
+  color: z.string().regex(/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/),
+  thickness: z.number().min(0.5).max(24),
+  points: z.array(z.object({ x: z.number().min(0), y: z.number().min(0) })).min(2).max(1000)
+});
+
+const EditFormSchema = z.object({
+  name: z.string().min(1),
+  type: z.enum(["text", "checkbox", "dropdown", "option-list", "radio", "signature"]),
+  value: z.union([z.string(), z.boolean(), z.array(z.string())]),
+  signatureDataUrl: z.string().startsWith("data:image/").optional()
 });
 
 const EditPageRotationSchema = z.object({
@@ -417,10 +476,15 @@ const EditPayloadSchema = z
     fileKey: z.string(),
     textEdits: z.array(EditTextSchema).default([]),
     rectangleEdits: z.array(EditRectangleSchema).default([]),
+    redactionEdits: z.array(EditRedactionSchema).default([]),
+    textReplacementEdits: z.array(EditTextReplacementSchema).default([]),
     imageEdits: z.array(EditImageSchema).default([]),
+    inkEdits: z.array(EditInkSchema).default([]),
+    formEdits: z.array(EditFormSchema).default([]),
     pageRotations: z.array(EditPageRotationSchema).default([]),
     pageNumbers: EditPageNumbersSchema.optional(),
     watermark: EditWatermarkSchema.optional(),
+    outputMode: z.enum(["flattened", "editable-annotations"]).default("flattened"),
     outputName: z.string().min(1),
     expiresAtIso: z.string().datetime().optional()
   })
@@ -428,7 +492,11 @@ const EditPayloadSchema = z
     (value) =>
       value.textEdits.length +
         value.rectangleEdits.length +
+        value.redactionEdits.length +
+        value.textReplacementEdits.length +
         value.imageEdits.length +
+        value.inkEdits.length +
+        value.formEdits.length +
         value.pageRotations.length +
         (value.pageNumbers ? 1 : 0) +
         (value.watermark ? 1 : 0) >
@@ -469,6 +537,15 @@ type RenderedJpegPage = {
   pageNumber: number;
   imageBuffer: Buffer;
   imageFileName: string;
+};
+
+type TextReplacementMatch = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  replacement: EditPayload["textReplacementEdits"][number];
 };
 
 function sanitizeFileName(name: string): string {
@@ -633,8 +710,8 @@ async function runCommand(command: string, args: string[]): Promise<void> {
         const installHint =
           command === env.QPDF_BIN
             ? 'Install qpdf (for macOS: brew install qpdf).'
-            : command === env.PDFTOPPM_BIN
-              ? 'Install poppler-utils or poppler so "pdftoppm" is available.'
+            : command === env.PDFTOPPM_BIN || command === env.PDFTOTEXT_BIN
+              ? 'Install poppler-utils or poppler so "pdftoppm" and "pdftotext" are available.'
               : `Install the required tool "${command}".`;
         rejectPromise(new Error(`Required tool "${command}" is not installed. ${installHint}`));
         return;
@@ -1681,6 +1758,10 @@ function xmlUnescape(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
+function htmlAttributeUnescape(value: string): string {
+  return xmlUnescape(value.replace(/&nbsp;/g, " "));
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -1781,6 +1862,140 @@ async function renderPdfPages(inputBuffer: Buffer): Promise<RenderedPdfPage[]> {
       })
     );
   });
+}
+
+async function findTextReplacementMatches(
+  inputBuffer: Buffer,
+  replacements: EditPayload["textReplacementEdits"]
+): Promise<TextReplacementMatch[]> {
+  if (replacements.length === 0) {
+    return [];
+  }
+
+  return withTempDir(async (dir) => {
+    const inputPath = resolve(dir, "source.pdf");
+    const htmlPath = resolve(dir, "text.html");
+    await writeFile(inputPath, inputBuffer);
+    await runCommand(env.PDFTOTEXT_BIN, ["-bbox", inputPath, htmlPath]);
+    const html = await readFile(htmlPath, "utf8");
+    const pageRegex = /<page\b[^>]*\bnumber="(\d+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"[^>]*>([\s\S]*?)<\/page>/g;
+    const matches: TextReplacementMatch[] = [];
+    let pageMatch: RegExpExecArray | null = pageRegex.exec(html);
+
+    while (pageMatch) {
+      const pageNumber = Number(pageMatch[1]);
+      const pageHeight = Number(pageMatch[3]);
+      const pageBody = pageMatch[4];
+      const wordRegex = /<word\b[^>]*\bxMin="([\d.]+)"[^>]*\byMin="([\d.]+)"[^>]*\bxMax="([\d.]+)"[^>]*\byMax="([\d.]+)"[^>]*>([\s\S]*?)<\/word>/g;
+      const words: Array<{ text: string; xMin: number; yMin: number; xMax: number; yMax: number }> = [];
+      let wordMatch: RegExpExecArray | null = wordRegex.exec(pageBody);
+
+      while (wordMatch) {
+        words.push({
+          xMin: Number(wordMatch[1]),
+          yMin: Number(wordMatch[2]),
+          xMax: Number(wordMatch[3]),
+          yMax: Number(wordMatch[4]),
+          text: htmlAttributeUnescape(wordMatch[5]).trim()
+        });
+        wordMatch = wordRegex.exec(pageBody);
+      }
+
+      for (const replacement of replacements) {
+        if (replacement.page && replacement.page !== pageNumber) {
+          continue;
+        }
+
+        const needle = replacement.matchCase ? replacement.find : replacement.find.toLowerCase();
+        for (let start = 0; start < words.length; start += 1) {
+          let phrase = "";
+          for (let end = start; end < Math.min(words.length, start + 16); end += 1) {
+            phrase = `${phrase}${phrase ? " " : ""}${words[end].text}`;
+            const candidate = replacement.matchCase ? phrase : phrase.toLowerCase();
+            if (candidate === needle) {
+              const selected = words.slice(start, end + 1);
+              const xMin = Math.min(...selected.map((word) => word.xMin));
+              const yMin = Math.min(...selected.map((word) => word.yMin));
+              const xMax = Math.max(...selected.map((word) => word.xMax));
+              const yMax = Math.max(...selected.map((word) => word.yMax));
+              matches.push({
+                page: pageNumber,
+                x: xMin,
+                y: pageHeight - yMax,
+                width: xMax - xMin,
+                height: yMax - yMin,
+                replacement
+              });
+              break;
+            }
+            if (!needle.startsWith(candidate)) {
+              break;
+            }
+          }
+        }
+      }
+
+      pageMatch = pageRegex.exec(html);
+    }
+
+    return matches;
+  });
+}
+
+async function applyTrueRedactions(inputBuffer: Buffer, redactions: EditPayload["redactionEdits"]): Promise<Buffer> {
+  if (redactions.length === 0) {
+    return inputBuffer;
+  }
+
+  const source = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const pageCount = source.getPageCount();
+  const redactionsByPage = new Map<number, EditPayload["redactionEdits"]>();
+  for (const redaction of redactions) {
+    if (redaction.page > pageCount) {
+      throw new Error(`Invalid redaction page ${redaction.page}. PDF has ${pageCount} page(s).`);
+    }
+    redactionsByPage.set(redaction.page, [...(redactionsByPage.get(redaction.page) ?? []), redaction]);
+  }
+
+  const renderedPages = await renderPdfPages(inputBuffer);
+  const redactedPdf = await PDFDocument.create();
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    const pageNumber = pageIndex + 1;
+    const pageRedactions = redactionsByPage.get(pageNumber);
+
+    if (!pageRedactions?.length) {
+      const [copiedPage] = await redactedPdf.copyPages(source, [pageIndex]);
+      redactedPdf.addPage(copiedPage);
+      continue;
+    }
+
+    const rendered = renderedPages[pageIndex];
+    const scale = env.PDF_RENDER_DPI / 72;
+    const composites = pageRedactions.map((redaction) => {
+      const color = parseHexColor(redaction.color);
+      const width = Math.max(1, Math.round(redaction.width * scale));
+      const height = Math.max(1, Math.round(redaction.height * scale));
+      const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="rgb(${color.red},${color.green},${color.blue})"/></svg>`;
+      return {
+        input: Buffer.from(svg),
+        left: Math.max(0, Math.round(redaction.x * scale)),
+        top: Math.max(0, Math.round((rendered.heightPt - redaction.y - redaction.height) * scale))
+      };
+    });
+
+    const redactedImageBuffer = await sharp(rendered.imageBuffer).composite(composites).png().toBuffer();
+    const embeddedPage = await redactedPdf.embedPng(redactedImageBuffer);
+    const page = redactedPdf.addPage([rendered.widthPt, rendered.heightPt]);
+    page.drawImage(embeddedPage, {
+      x: 0,
+      y: 0,
+      width: rendered.widthPt,
+      height: rendered.heightPt
+    });
+  }
+
+  return Buffer.from(await redactedPdf.save());
 }
 
 async function renderPdfPagesAsJpegs(inputBuffer: Buffer): Promise<RenderedJpegPage[]> {
@@ -2887,7 +3102,7 @@ function parseHexColor(value: string): { red: number; green: number; blue: numbe
 }
 
 function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): StandardFonts {
-  if (textEdit.fontFamily === "serif") {
+  if (textEdit.fontFamily === "serif" || textEdit.fontFamily === "source-serif") {
     if (textEdit.bold && textEdit.italic) {
       return StandardFonts.TimesRomanBoldItalic;
     }
@@ -2900,7 +3115,7 @@ function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): Standa
     return StandardFonts.TimesRoman;
   }
 
-  if (textEdit.fontFamily === "mono") {
+  if (textEdit.fontFamily === "mono" || textEdit.fontFamily === "roboto-mono") {
     if (textEdit.bold && textEdit.italic) {
       return StandardFonts.CourierBoldOblique;
     }
@@ -2923,6 +3138,122 @@ function resolveStandardFont(textEdit: EditPayload["textEdits"][number]): Standa
     return StandardFonts.HelveticaOblique;
   }
   return StandardFonts.Helvetica;
+}
+
+function wrapPdfText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+  const output: string[] = [];
+  for (const rawLine of text.replace(/\r\n/g, "\n").split("\n")) {
+    const words = rawLine.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      output.push("");
+      continue;
+    }
+
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth || !line) {
+        line = candidate;
+        continue;
+      }
+      output.push(line);
+      line = word;
+    }
+    output.push(line);
+  }
+  return output;
+}
+
+function decodeDataUrl(dataUrl: string): Buffer {
+  const [, payload = dataUrl] = dataUrl.split(",", 2);
+  return Buffer.from(payload, "base64");
+}
+
+function addPdfAnnotation(
+  page: ReturnType<PDFDocument["getPages"]>[number],
+  annotation: Record<string, unknown>,
+  contents = ""
+): void {
+  const context = page.doc.context;
+  const annotationDict = context.obj({
+    Type: "Annot",
+    F: 4,
+    ...annotation
+  });
+  annotationDict.set(PDFName.of("Contents"), PDFString.of(contents));
+  const annotationRef = context.register(annotationDict);
+  page.node.addAnnot(annotationRef);
+}
+
+function annotationColor(hexColor: string): [number, number, number] {
+  const color = parseHexColor(hexColor);
+  return [color.red / 255, color.green / 255, color.blue / 255];
+}
+
+function addTextEditAnnotation(page: ReturnType<PDFDocument["getPages"]>[number], item: EditPayload["textEdits"][number]): void {
+  const lineCount = wrapPdfText(
+    item.text,
+    {
+      widthOfTextAtSize: (value: string, size: number) => value.length * size * 0.52
+    } as unknown as PDFFont,
+    item.fontSize,
+    Math.max(1, item.width)
+  ).length;
+  const height = Math.max(item.fontSize * item.lineHeight * Math.max(1, lineCount), item.fontSize * 1.4);
+  const color = annotationColor(item.color);
+  const rect = [item.x, item.y - height + item.fontSize, item.x + Math.max(1, item.width), item.y + item.fontSize * 0.35];
+
+  addPdfAnnotation(
+    page,
+    {
+      Subtype: "FreeText",
+      Rect: rect,
+      C: color,
+      DA: PDFString.of(`/${item.fontFamily === "mono" || item.fontFamily === "roboto-mono" ? "Cour" : "Helv"} ${item.fontSize} Tf ${color.join(" ")} rg`),
+      Q: item.align === "center" ? 1 : item.align === "right" ? 2 : 0,
+      CA: item.opacity
+    },
+    item.text
+  );
+}
+
+function addRectangleAnnotation(
+  page: ReturnType<PDFDocument["getPages"]>[number],
+  item: EditPayload["rectangleEdits"][number]
+): void {
+  const color = annotationColor(item.color);
+  addPdfAnnotation(
+    page,
+    {
+      Subtype: "Square",
+      Rect: [item.x, item.y, item.x + item.width, item.y + item.height],
+      C: color,
+      IC: color,
+      CA: item.opacity,
+      Border: [0, 0, 1]
+    },
+    "Shape"
+  );
+}
+
+function addInkAnnotation(page: ReturnType<PDFDocument["getPages"]>[number], item: EditPayload["inkEdits"][number]): void {
+  addPdfAnnotation(
+    page,
+    {
+      Subtype: "Ink",
+      Rect: [
+        Math.min(...item.points.map((point) => point.x)),
+        Math.min(...item.points.map((point) => point.y)),
+        Math.max(...item.points.map((point) => point.x)),
+        Math.max(...item.points.map((point) => point.y))
+      ],
+      C: annotationColor(item.color),
+      InkList: [item.points.flatMap((point) => [point.x, point.y])],
+      Border: [0, 0, item.thickness],
+      CA: 0.95
+    },
+    "Ink"
+  );
 }
 
 function resolveTextAnchorPosition(options: {
@@ -3293,13 +3624,66 @@ async function runImageTool(payload: ImageToolPayload, reportProgress: ProgressR
 async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): Promise<string> {
   await reportProgress(12, "Loading source PDF...");
   const inputBuffer = await downloadObject(payload.fileKey);
-  const pdfDoc = await PDFDocument.load(inputBuffer, { ignoreEncryption: true });
+  const textReplacementMatches = await findTextReplacementMatches(inputBuffer, payload.textReplacementEdits);
+  const replacementRedactions = textReplacementMatches.map((match) => ({
+    page: match.page,
+    x: Math.max(0, match.x - 1),
+    y: Math.max(0, match.y - 1),
+    width: match.width + 2,
+    height: match.height + 2,
+    color: "#ffffff"
+  }));
+  const destructiveRedactions = [...payload.redactionEdits, ...replacementRedactions];
+  const redactedInputBuffer =
+    destructiveRedactions.length > 0
+      ? await applyTrueRedactions(inputBuffer, destructiveRedactions)
+      : inputBuffer;
+  const pdfDoc = await PDFDocument.load(redactedInputBuffer, { ignoreEncryption: true });
   const pages = pdfDoc.getPages();
   const embeddedFonts = new Map<StandardFonts, Awaited<ReturnType<typeof pdfDoc.embedFont>>>();
+  const customFonts = new Map<string, PDFFont>();
+  if (payload.textEdits.some((item) => item.customFont?.dataUrl)) {
+    pdfDoc.registerFontkit(fontkit);
+  }
+  if (payload.formEdits.length > 0) {
+    const form = pdfDoc.getForm();
+    for (const item of payload.formEdits) {
+      const field = form.getFieldMaybe(item.name);
+      if (!field) {
+        continue;
+      }
+
+      if (field instanceof PDFTextField && typeof item.value === "string") {
+        field.setText(item.value);
+      } else if (field instanceof PDFCheckBox && typeof item.value === "boolean") {
+        if (item.value) {
+          field.check();
+        } else {
+          field.uncheck();
+        }
+      } else if (field instanceof PDFDropdown) {
+        const value = Array.isArray(item.value) ? item.value : [String(item.value)];
+        field.select(value.filter(Boolean));
+      } else if (field instanceof PDFOptionList) {
+        const value = Array.isArray(item.value) ? item.value : [String(item.value)];
+        field.select(value.filter(Boolean));
+      } else if (field instanceof PDFRadioGroup && typeof item.value === "string" && item.value) {
+        field.select(item.value);
+      }
+    }
+    form.updateFieldAppearances(await pdfDoc.embedFont(StandardFonts.Helvetica));
+    if (payload.outputMode === "flattened") {
+      form.flatten();
+    }
+  }
   const totalEdits =
     payload.textEdits.length +
     payload.rectangleEdits.length +
+    payload.redactionEdits.length +
+    payload.textReplacementEdits.length +
     payload.imageEdits.length +
+    payload.inkEdits.length +
+    payload.formEdits.length +
     payload.pageRotations.length +
     (payload.pageNumbers ? 1 : 0) +
     (payload.watermark ? 1 : 0);
@@ -3312,6 +3696,14 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
       message
     );
   };
+
+  if (payload.redactionEdits.length > 0) {
+    await advanceEditProgress(`Permanently redacted ${payload.redactionEdits.length} region(s)...`);
+  }
+
+  if (payload.textReplacementEdits.length > 0) {
+    await advanceEditProgress(`Matched ${textReplacementMatches.length} text replacement region(s)...`);
+  }
 
   const pageAt = (pageNumber: number) => {
     if (pageNumber > pages.length) {
@@ -3329,36 +3721,98 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
     return font;
   };
 
-  for (const item of payload.textEdits) {
-    const page = pageAt(item.page);
-    const color = parseHexColor(item.color);
-    const fontName = resolveStandardFont(item);
-    const font = await getEmbeddedFont(fontName);
+  const getTextEditFont = async (item: EditPayload["textEdits"][number]): Promise<PDFFont> => {
+    if (item.customFont?.dataUrl) {
+      const cacheKey = createHash("sha256").update(item.customFont.dataUrl).digest("hex");
+      const cached = customFonts.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
 
-    page.drawText(item.text, {
-      x: item.x,
-      y: item.y,
-      size: item.fontSize,
-      font,
-      color: rgb(color.red / 255, color.green / 255, color.blue / 255)
-    });
-
-    if (item.underline) {
-      const width = font.widthOfTextAtSize(item.text, item.fontSize);
-      const thickness = Math.max(0.75, item.fontSize * 0.06);
-      page.drawLine({
-        start: { x: item.x, y: item.y - thickness * 2.2 },
-        end: { x: item.x + width, y: item.y - thickness * 2.2 },
-        thickness,
-        color: rgb(color.red / 255, color.green / 255, color.blue / 255)
-      });
+      try {
+        const font = await pdfDoc.embedFont(decodeDataUrl(item.customFont.dataUrl), {
+          subset: true
+        });
+        customFonts.set(cacheKey, font);
+        return font;
+      } catch {
+        // Fall back to a standard PDF font if the uploaded font is malformed or unsupported.
+      }
     }
 
-    await advanceEditProgress(`Applying text edit ${completedEdits + 1} of ${totalEdits}...`);
+    return getEmbeddedFont(resolveStandardFont(item));
+  };
+
+  if (payload.outputMode === "editable-annotations") {
+    for (const item of payload.textEdits) {
+      addTextEditAnnotation(pageAt(item.page), item);
+      await advanceEditProgress(`Creating editable text annotation ${completedEdits + 1} of ${totalEdits}...`);
+    }
+  } else {
+    for (const item of payload.textEdits) {
+      const page = pageAt(item.page);
+      const color = parseHexColor(item.color);
+      const font = await getTextEditFont(item);
+      const maxWidth = Math.max(1, item.width);
+      const lineHeight = item.fontSize * item.lineHeight;
+      const lines = wrapPdfText(item.text, font, item.fontSize, maxWidth);
+      const textColor = rgb(color.red / 255, color.green / 255, color.blue / 255);
+
+      lines.forEach((line, index) => {
+        const width = font.widthOfTextAtSize(line, item.fontSize);
+        const x =
+          item.align === "center" ? item.x + (maxWidth - width) / 2 : item.align === "right" ? item.x + maxWidth - width : item.x;
+        const y = item.y - index * lineHeight;
+
+        page.drawText(line, {
+          x,
+          y,
+          size: item.fontSize,
+          font,
+          color: textColor,
+          opacity: item.opacity
+        });
+
+        if (!item.underline || !line) {
+          return;
+        }
+        const thickness = Math.max(0.75, item.fontSize * 0.06);
+        page.drawLine({
+          start: { x, y: y - thickness * 2.2 },
+          end: { x: x + width, y: y - thickness * 2.2 },
+          thickness,
+          color: textColor,
+          opacity: item.opacity
+        });
+      });
+
+      await advanceEditProgress(`Applying text edit ${completedEdits + 1} of ${totalEdits}...`);
+    }
+  }
+
+  for (const match of textReplacementMatches) {
+    const page = pageAt(match.page);
+    const color = parseHexColor(match.replacement.color);
+    const font = await getEmbeddedFont(StandardFonts.Helvetica);
+    const size = match.replacement.fontSize ?? Math.max(6, match.height * 0.82);
+    page.drawText(match.replacement.replace, {
+      x: match.x,
+      y: match.y + Math.max(0, (match.height - size) / 2),
+      size,
+      font,
+      color: rgb(color.red / 255, color.green / 255, color.blue / 255),
+      maxWidth: Math.max(1, match.width * 1.5)
+    });
   }
 
   for (const item of payload.rectangleEdits) {
     const page = pageAt(item.page);
+    if (payload.outputMode === "editable-annotations") {
+      addRectangleAnnotation(page, item);
+      await advanceEditProgress(`Creating editable shape annotation ${completedEdits + 1} of ${totalEdits}...`);
+      continue;
+    }
+
     const color = parseHexColor(item.color);
     page.drawRectangle({
       x: item.x,
@@ -3386,6 +3840,30 @@ async function runEdit(payload: EditPayload, reportProgress: ProgressReporter): 
     });
 
     await advanceEditProgress(`Applying image edit ${completedEdits + 1} of ${totalEdits}...`);
+  }
+
+  for (const item of payload.inkEdits) {
+    const page = pageAt(item.page);
+    if (payload.outputMode === "editable-annotations") {
+      addInkAnnotation(page, item);
+      await advanceEditProgress(`Creating editable ink annotation ${completedEdits + 1} of ${totalEdits}...`);
+      continue;
+    }
+
+    const color = parseHexColor(item.color);
+    for (let index = 1; index < item.points.length; index += 1) {
+      const start = item.points[index - 1];
+      const end = item.points[index];
+      page.drawLine({
+        start,
+        end,
+        thickness: item.thickness,
+        color: rgb(color.red / 255, color.green / 255, color.blue / 255),
+        opacity: 0.95
+      });
+    }
+
+    await advanceEditProgress(`Applying ink annotation ${completedEdits + 1} of ${totalEdits}...`);
   }
 
   if (payload.watermark) {

@@ -44,6 +44,11 @@ function createInitialDraftDefaults(): EditorDraftDefaults {
       text: "Approved",
       fontFamily: "sans",
       fontSize: 20,
+      width: 220,
+      align: "left",
+      lineHeight: 1.2,
+      opacity: 1,
+      customFont: null,
       color: "#19334d",
       bold: true,
       italic: false,
@@ -73,9 +78,12 @@ function createInitialDocumentModel(mode: EditorMode): EditorDocumentModel {
     sourceRetentionHours: null,
     pages: [DEFAULT_EDITOR_PAGE],
     layers: [],
+    formFields: [],
+    formValues: {},
     selection: createEmptySelection(),
     operations: {
       pageRotations: [],
+      textReplacements: [],
       pageNumbers: {
         enabled: false,
         startAt: 1,
@@ -110,6 +118,7 @@ function createInitialDocumentModel(mode: EditorMode): EditorDocumentModel {
     export: {
       outputName: buildDefaultOutputName(mode),
       retentionHours: 24,
+      outputMode: "flattened",
       downloadUrl: "",
       history: []
     },
@@ -136,6 +145,8 @@ function createInitialState(mode: EditorMode): EditorDocumentState {
     isLoadingPreview: false,
     tool: "select",
     layers: document.layers,
+    formFields: document.formFields,
+    formValues: document.formValues,
     selection: document.selection,
     status: "Upload a PDF to begin a controlled studio editing session.",
     busy: false,
@@ -293,6 +304,10 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-retention-hours", retentionHours });
   }, []);
 
+  const setOutputMode = useCallback((outputMode: EditorDocumentModel["export"]["outputMode"]) => {
+    dispatch({ type: "set-output-mode", outputMode });
+  }, []);
+
   const setActivePage = useCallback((activePage: number) => {
     dispatch({ type: "set-active-page", activePage });
   }, []);
@@ -313,6 +328,10 @@ export function usePdfEditor(mode: EditorMode) {
     dispatch({ type: "set-show-guides", enabled });
   }, []);
 
+  const setFormValue = useCallback((name: string, value: EditorDocumentModel["formValues"][string]) => {
+    dispatch({ type: "set-form-value", name, value });
+  }, []);
+
   const setScrollTarget = useCallback(
     (page: number, behavior: NonNullable<EditorDocumentModel["viewport"]["scrollTarget"]>["behavior"] = "smooth") => {
       dispatch({ type: "set-scroll-target", page, behavior });
@@ -329,6 +348,7 @@ export function usePdfEditor(mode: EditorMode) {
       fileId: string;
       retentionHours: number;
       pages: EditorPage[];
+      formFields: EditorDocumentModel["formFields"];
       pageCount: number;
       fileName: string;
     }) => {
@@ -404,9 +424,14 @@ export function usePdfEditor(mode: EditorMode) {
             page: pageNumber,
             x: placeX,
             y: placeY,
+            width: state.draftDefaults.text.width,
             text,
             fontSize: state.draftDefaults.text.fontSize,
             fontFamily: state.draftDefaults.text.fontFamily,
+            align: state.draftDefaults.text.align,
+            lineHeight: state.draftDefaults.text.lineHeight,
+            opacity: state.draftDefaults.text.opacity,
+            customFont: state.draftDefaults.text.customFont,
             bold: state.draftDefaults.text.bold,
             italic: state.draftDefaults.text.italic,
             underline: state.draftDefaults.text.underline,
@@ -417,9 +442,10 @@ export function usePdfEditor(mode: EditorMode) {
         return;
       }
 
-      if (state.tool === "highlight" || state.tool === "shape" || state.tool === "erase") {
+      if (state.tool === "highlight" || state.tool === "shape" || state.tool === "erase" || state.tool === "redact") {
         const isHighlight = state.tool === "highlight";
         const isErase = state.tool === "erase";
+        const isRedact = state.tool === "redact";
         dispatch({
           type: "add-layer",
           layer: {
@@ -431,13 +457,41 @@ export function usePdfEditor(mode: EditorMode) {
             y: placeY,
             width: state.draftDefaults.rectangle.width,
             height: state.draftDefaults.rectangle.height,
-            color: isHighlight ? "#ffe082" : isErase ? "#ffffff" : state.draftDefaults.rectangle.color,
-            opacity: isHighlight ? 0.26 : isErase ? 1 : state.draftDefaults.rectangle.opacity
+            color: isHighlight ? "#ffe082" : isErase ? "#ffffff" : isRedact ? "#111827" : state.draftDefaults.rectangle.color,
+            opacity: isHighlight ? 0.26 : isErase || isRedact ? 1 : state.draftDefaults.rectangle.opacity
           },
           status: `Placed a ${
-            isHighlight ? "highlight" : isErase ? "white erase block" : "shape"
+            isHighlight ? "highlight" : isErase ? "white erase block" : isRedact ? "true redaction block" : "shape"
           } layer on page ${pageNumber}.`
         });
+        return;
+      }
+
+      if (state.tool === "comment" || state.tool === "strike" || state.tool === "sticky") {
+        const isStrike = state.tool === "strike";
+        const isSticky = state.tool === "sticky";
+        dispatch({
+          type: "add-layer",
+          layer: {
+            id: nextLayerId(),
+            kind: "annotation",
+            variant: state.tool,
+            page: pageNumber,
+            x: placeX,
+            y: placeY,
+            width: isStrike ? 220 : isSticky ? 150 : 240,
+            height: isStrike ? 18 : isSticky ? 86 : 64,
+            color: isStrike ? "#d62828" : isSticky ? "#ffe082" : "#b8dcff",
+            opacity: isStrike ? 1 : isSticky ? 0.9 : 0.78,
+            text: isStrike ? "Strikethrough" : isSticky ? "Note" : "Comment"
+          },
+          status: `Placed a ${isStrike ? "strikethrough" : isSticky ? "sticky note" : "comment"} annotation on page ${pageNumber}.`
+        });
+        return;
+      }
+
+      if (state.tool === "ink") {
+        dispatch({ type: "set-status", status: "Drag on the PDF page to draw a freehand ink annotation." });
         return;
       }
 
@@ -473,6 +527,34 @@ export function usePdfEditor(mode: EditorMode) {
     [state]
   );
 
+  const createInkLayer = useCallback((pageNumber: number, points: Array<{ x: number; y: number }>) => {
+    if (points.length < 2) {
+      return;
+    }
+
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+
+    dispatch({
+      type: "add-layer",
+      layer: {
+        id: nextLayerId(),
+        kind: "ink",
+        page: pageNumber,
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY),
+        color: "#19334d",
+        thickness: 2.5,
+        points: points.map((point) => ({ x: point.x - minX, y: point.y - minY }))
+      },
+      status: `Drew a freehand ink annotation on page ${pageNumber}.`
+    });
+  }, []);
+
   const setAsset = useCallback((kind: "image" | "sign", asset: EditorAssetState) => {
     dispatch({ type: "set-asset", kind, asset });
     if (!asset) {
@@ -507,6 +589,14 @@ export function usePdfEditor(mode: EditorMode) {
       pageRotations: state.document.operations.pageRotations.filter((item) => item.page !== page)
     });
   }, [state.document.operations.pageRotations]);
+
+  const addTextReplacement = useCallback((replacement: EditorDocumentModel["operations"]["textReplacements"][number]) => {
+    dispatch({ type: "add-text-replacement", replacement });
+  }, []);
+
+  const removeTextReplacement = useCallback((index: number) => {
+    dispatch({ type: "remove-text-replacement", index });
+  }, []);
 
   const setRotationPage = useCallback((rotationPage: number) => {
     dispatch({ type: "set-rotation-page", rotationPage });
@@ -577,6 +667,10 @@ export function usePdfEditor(mode: EditorMode) {
       if (selectedLayerIds.length === 0) {
         return;
       }
+      if (state.document.layers.some((layer) => selectedLayerIds.includes(layer.id) && layer.locked)) {
+        dispatch({ type: "set-status", status: "Unlock selected layers before changing their stack order." });
+        return;
+      }
 
       const selected = new Set(selectedLayerIds);
       let nextLayers = [...state.document.layers];
@@ -621,14 +715,21 @@ export function usePdfEditor(mode: EditorMode) {
     if (selectedLayerIds.length === 0) {
       return;
     }
+    const removableIds = selectedLayerIds.filter(
+      (layerId) => !state.document.layers.some((layer) => layer.id === layerId && layer.locked)
+    );
+    if (removableIds.length === 0) {
+      dispatch({ type: "set-status", status: "Unlock selected layers before removing them." });
+      return;
+    }
 
     dispatch({
       type: "set-layers",
-      layers: state.document.layers.filter((layer) => !selectedLayerIds.includes(layer.id)),
+      layers: state.document.layers.filter((layer) => !removableIds.includes(layer.id)),
       status:
-        selectedLayerIds.length === 1
+        removableIds.length === 1
           ? "Removed the selected layer."
-          : `Removed ${selectedLayerIds.length} selected layers.`
+          : `Removed ${removableIds.length} selected layers.`
     });
     dispatch({ type: "set-selection-many", layerIds: [] });
   }, [selectedLayerIds, state.document.layers]);
@@ -642,7 +743,7 @@ export function usePdfEditor(mode: EditorMode) {
       dispatch({
         type: "set-layers",
         layers: state.document.layers.map((layer) =>
-          selectedLayerIds.includes(layer.id)
+          selectedLayerIds.includes(layer.id) && !layer.locked
             ? {
                 ...layer,
                 x: Math.max(0, layer.x + deltaX),
@@ -657,8 +758,9 @@ export function usePdfEditor(mode: EditorMode) {
   );
 
   const duplicateSelectedLayers = useCallback(() => {
-    const selectedLayers = state.document.layers.filter((layer) => selectedLayerIds.includes(layer.id));
+    const selectedLayers = state.document.layers.filter((layer) => selectedLayerIds.includes(layer.id) && !layer.locked);
     if (selectedLayers.length === 0) {
+      dispatch({ type: "set-status", status: "Unlock selected layers before duplicating them." });
       return;
     }
 
@@ -697,6 +799,16 @@ export function usePdfEditor(mode: EditorMode) {
   const undo = useCallback(() => {
     dispatch({ type: "undo" });
   }, []);
+
+  const setSelectedLayersLocked = useCallback(
+    (locked: boolean) => {
+      if (selectedLayerIds.length === 0) {
+        return;
+      }
+      dispatch({ type: "set-layer-lock", layerIds: selectedLayerIds, locked });
+    },
+    [selectedLayerIds]
+  );
 
   const redo = useCallback(() => {
     dispatch({ type: "redo" });
@@ -740,6 +852,8 @@ export function usePdfEditor(mode: EditorMode) {
     zoom: state.document.viewport.zoom,
     actions: {
       createLayerAt,
+      createInkLayer,
+      addTextReplacement,
       createUndoCheckpoint,
       duplicateSelectedLayers,
       loadPreviewFailed,
@@ -750,6 +864,7 @@ export function usePdfEditor(mode: EditorMode) {
       queuePageRotation,
       redo,
       removePageRotation,
+      removeTextReplacement,
       removeSelectedLayer,
       reorderLayers,
       restoreDraft,
@@ -761,6 +876,7 @@ export function usePdfEditor(mode: EditorMode) {
       setDownloadUrl,
       setImageDefaults,
       setOutputName,
+      setOutputMode,
       setPageNumbers,
       setPageNumbersEnabled,
       setRectangleDefaults,
@@ -769,6 +885,7 @@ export function usePdfEditor(mode: EditorMode) {
       setRotationPage,
       setSelectedLayerId,
       setSelectedLayerIds,
+      setSelectedLayersLocked,
       setScrollTarget,
       setShowGuides,
       setSignatureDefaults,
@@ -780,6 +897,7 @@ export function usePdfEditor(mode: EditorMode) {
       setStatus,
       setTextDefaults,
       setFitMode,
+      setFormValue,
       setTool,
       setWatermark,
       setWatermarkEnabled,

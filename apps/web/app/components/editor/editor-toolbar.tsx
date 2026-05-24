@@ -41,8 +41,12 @@ export function EditorToolbar({
             }
           >
             <option value="sans">Studio Sans</option>
+            <option value="inter">Inter</option>
             <option value="serif">Editorial Serif</option>
+            <option value="source-serif">Source Serif</option>
             <option value="mono">Mono</option>
+            <option value="roboto-mono">Roboto Mono</option>
+            <option value="cursive">Handwritten</option>
           </select>
         </label>
 
@@ -65,6 +69,20 @@ export function EditorToolbar({
             type="color"
             value={textDefaults.color}
             onChange={(event) => onTextDefaultsChange({ color: event.target.value })}
+          />
+        </label>
+
+        <label className="studio-inline-control studio-inline-control--short">
+          <span>Opacity</span>
+          <input
+            type="number"
+            min={0.05}
+            max={1}
+            step={0.05}
+            value={textDefaults.opacity}
+            onChange={(event) =>
+              onTextDefaultsChange({ opacity: normalizeNumber(Number(event.target.value), 1) })
+            }
           />
         </label>
 

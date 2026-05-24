@@ -44,6 +44,7 @@ export function cloneLayer(layer: EditorLayer, offset = DUPLICATE_LAYER_OFFSET):
   return {
     ...layer,
     id: nextLayerId(),
+    locked: false,
     x: layer.x + offset,
     y: layer.y + offset
   };

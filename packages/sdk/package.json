@@ -1,0 +1,20 @@
+{
+  "name": "@ihatepdf/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo 'No lint configured for sdk'",
+    "test": "echo 'No tests configured for sdk'",
+    "format": "echo 'No formatting step for sdk'"
+  },
+  "dependencies": {
+    "@ihatepdf/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

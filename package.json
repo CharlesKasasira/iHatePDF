@@ -5,7 +5,9 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm -r --parallel --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker dev",
+    "dev:desktop": "pnpm --filter @ihatepdf/desktop dev",
     "build": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker build",
+    "build:desktop": "pnpm --filter @ihatepdf/desktop build",
     "lint": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker lint",
     "test": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker test",
     "format": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker format"

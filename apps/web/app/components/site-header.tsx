@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronDown, Code2, FileCheck2, Layers3, LogOut, Menu, ShieldCheck, UserRound, X } from "lucide-react";
+import { ChevronDown, Code2, Download, FileCheck2, Layers3, LogOut, Menu, ShieldCheck, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "./auth-provider";
 import { ToolIcon } from "./tool-icon";
@@ -76,6 +76,9 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
             className={`top-nav-link top-nav-home ${active === "image-tools" ? "is-active" : ""}`}
           >
             Image tools
+          </Link>
+          <Link href="/desktop" className="top-nav-link top-nav-home">
+            Desktop
           </Link>
           {DESKTOP_TOOL_GROUPS.map((group) => {
             const isActive = group.id === currentGroup;
@@ -176,6 +179,9 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
               <Link href="/developer" className="auth-link">
                 Developer
               </Link>
+              <Link href="/desktop" className="auth-link">
+                Desktop
+              </Link>
               <Link href="/login" className="auth-link auth-link-strong">
                 Log in
               </Link>
@@ -235,6 +241,14 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
             onClick={() => setMobileOpen(false)}
           >
             <span>All tools</span>
+          </Link>
+          <Link
+            href="/desktop"
+            className="mobile-tool-menu__item mobile-tool-menu__item--home"
+            onClick={() => setMobileOpen(false)}
+          >
+            <Download aria-hidden="true" size={17} />
+            <span>Desktop app</span>
           </Link>
           <Link
             href="/image-tools"

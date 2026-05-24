@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Download, Laptop } from "lucide-react";
 import { useMemo, useState } from "react";
 import { SiteHeader } from "./components/site-header";
 import { ToolIcon } from "./components/tool-icon";
@@ -50,6 +51,24 @@ export default function HomePage(): React.JSX.Element {
             <strong>Precise ordering</strong>
             <span>Drag files, page slots, layers, and signers into the order you need.</span>
           </article>
+        </section>
+
+        <section className="desktop-promo" aria-label="Desktop app downloads">
+          <div>
+            <span>
+              <Laptop aria-hidden="true" size={18} />
+              Desktop app
+            </span>
+            <h2>Native file workflows for macOS, Windows, and Linux</h2>
+            <p>
+              Use the desktop app for repeated batch work, remembered output folders, secure device
+              keys, and the same self-hosted API behind these web tools.
+            </p>
+          </div>
+          <Link href="/desktop" className="desktop-promo__link">
+            <Download aria-hidden="true" size={18} />
+            Get desktop app
+          </Link>
         </section>
 
         <section className="filter-row" aria-label="Tool categories">

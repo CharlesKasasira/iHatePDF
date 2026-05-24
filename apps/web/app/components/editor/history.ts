@@ -6,8 +6,11 @@ export function createHistorySnapshot(state: EditorDocumentState): EditorHistory
   const document = state.document;
   return {
     layers: document.layers,
+    formFields: document.formFields,
+    formValues: document.formValues,
     selection: document.selection,
     pageRotations: document.operations.pageRotations,
+    textReplacements: document.operations.textReplacements,
     pageNumbers: document.operations.pageNumbers,
     watermark: document.operations.watermark
   };
@@ -36,10 +39,13 @@ export function restoreHistorySnapshot(
     document: {
       ...state.document,
       layers: snapshot.layers,
+      formFields: snapshot.formFields,
+      formValues: snapshot.formValues,
       selection: snapshot.selection,
       operations: {
         ...state.document.operations,
         pageRotations: snapshot.pageRotations,
+        textReplacements: snapshot.textReplacements,
         pageNumbers: snapshot.pageNumbers,
         watermark: snapshot.watermark
       }

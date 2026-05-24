@@ -26,6 +26,12 @@ class LoginDto {
   password!: string;
 }
 
+class DesktopDeviceKeyDto extends LoginDto {
+  @IsString()
+  @IsNotEmpty()
+  deviceName!: string;
+}
+
 class PasswordResetRequestDto {
   @IsEmail()
   email!: string;
@@ -64,6 +70,16 @@ export class AuthController {
     @Res({ passthrough: true }) reply: FastifyReply
   ): Promise<SafeUser> {
     return this.authService.login(dto, request, reply);
+  }
+
+  @Post("desktop-device-key")
+  @RateLimit("login")
+  @Header("Cache-Control", "no-store")
+  createDesktopDeviceKey(
+    @Body() dto: DesktopDeviceKeyDto,
+    @Req() request: FastifyRequest
+  ): ReturnType<AuthService["createDesktopDeviceKey"]> {
+    return this.authService.createDesktopDeviceKey(dto, request);
   }
 
   @Post("logout")

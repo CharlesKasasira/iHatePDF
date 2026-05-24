@@ -537,6 +537,19 @@ export type PdfFileMetadataResponse = {
     width: number;
     height: number;
   }>;
+  formFields: Array<{
+    name: string;
+    type: "text" | "checkbox" | "dropdown" | "option-list" | "radio" | "button" | "signature" | "unknown";
+    value: string | boolean | string[] | null;
+    options: string[];
+    widgets: Array<{
+      pageNumber: number | null;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
+  }>;
 };
 
 export type PdfEntity = {
@@ -1489,13 +1502,23 @@ export async function queuePowerpointToPdf(
   });
 }
 
+export type EditFontAssetInput = {
+  name: string;
+  dataUrl: string;
+};
+
 export type EditTextInput = {
   page: number;
   x: number;
   y: number;
+  width: number;
   text: string;
   fontSize: number;
-  fontFamily: "sans" | "serif" | "mono";
+  fontFamily: "sans" | "serif" | "mono" | "inter" | "source-serif" | "roboto-mono" | "cursive";
+  align: "left" | "center" | "right";
+  lineHeight: number;
+  opacity: number;
+  customFont?: EditFontAssetInput | null;
   bold: boolean;
   italic: boolean;
   underline: boolean;
@@ -1512,6 +1535,24 @@ export type EditRectangleInput = {
   opacity: number;
 };
 
+export type EditRedactionInput = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+};
+
+export type EditTextReplacementInput = {
+  page?: number;
+  find: string;
+  replace: string;
+  matchCase: boolean;
+  color: string;
+  fontSize?: number;
+};
+
 export type EditImageInput = {
   page: number;
   x: number;
@@ -1519,6 +1560,20 @@ export type EditImageInput = {
   width: number;
   height: number;
   dataUrl: string;
+};
+
+export type EditInkInput = {
+  page: number;
+  color: string;
+  thickness: number;
+  points: Array<{ x: number; y: number }>;
+};
+
+export type EditFormInput = {
+  name: string;
+  type: "text" | "checkbox" | "dropdown" | "option-list" | "radio" | "signature";
+  value: string | boolean | string[];
+  signatureDataUrl?: string;
 };
 
 export type EditPageRotationInput = {
@@ -1543,13 +1598,20 @@ export type EditWatermarkInput = {
   rotation: number;
 };
 
+export type EditPdfOutputMode = "flattened" | "editable-annotations";
+
 export async function queueEditPdf(
   fileId: string,
   outputName: string,
   edits: {
+    outputMode?: EditPdfOutputMode;
     textEdits?: EditTextInput[];
     rectangleEdits?: EditRectangleInput[];
+    redactionEdits?: EditRedactionInput[];
+    textReplacementEdits?: EditTextReplacementInput[];
     imageEdits?: EditImageInput[];
+    inkEdits?: EditInkInput[];
+    formEdits?: EditFormInput[];
     pageRotations?: EditPageRotationInput[];
     pageNumbers?: EditPageNumbersInput;
     watermark?: EditWatermarkInput;

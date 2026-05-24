@@ -37,6 +37,7 @@ export function EditorShell({
   onCreateUndoCheckpoint,
   onUpdateLayer,
   onRemoveSelectedLayer,
+  onToggleSelectedLayersLock,
   onOutputNameChange,
   onRotationPageChange,
   onRotationDegreesChange,
@@ -46,16 +47,20 @@ export function EditorShell({
   onPageNumbersChange,
   onWatermarkEnabledChange,
   onWatermarkChange,
+  onAddTextReplacement,
+  onRemoveTextReplacement,
   onActivePageChange,
   onZoomChange,
   onFitModeChange,
   onSnapToGridChange,
   onShowGuidesChange,
+  onFormValueChange,
   onScrollTargetChange,
   onUndo,
   onRedo,
   onOpenSignatureChooser,
   onRetentionHoursChange,
+  onOutputModeChange,
   onExport,
   onCloseSignatureFlow,
   onOnlyMeSignature,
@@ -67,6 +72,7 @@ export function EditorShell({
   onReorderLayers,
   onMoveSelectedLayersInStack,
   onPlaceLayer,
+  onCreateInkLayer,
   invite,
   intelligence,
   onInviteEmailChange,
@@ -98,6 +104,7 @@ export function EditorShell({
     trackHistory?: boolean
   ) => void;
   onRemoveSelectedLayer: () => void;
+  onToggleSelectedLayersLock: (locked: boolean) => void;
   onOutputNameChange: (outputName: string) => void;
   onRotationPageChange: (page: number) => void;
   onRotationDegreesChange: (degrees: EditorDocumentState["rotationDegrees"]) => void;
@@ -107,11 +114,14 @@ export function EditorShell({
   onPageNumbersChange: (patch: Partial<EditorDocumentModel["operations"]["pageNumbers"]>) => void;
   onWatermarkEnabledChange: (enabled: boolean) => void;
   onWatermarkChange: (patch: Partial<EditorDocumentModel["operations"]["watermark"]>) => void;
+  onAddTextReplacement: (replacement: EditorDocumentModel["operations"]["textReplacements"][number]) => void;
+  onRemoveTextReplacement: (index: number) => void;
   onActivePageChange: (page: number) => void;
   onZoomChange: (zoom: number) => void;
   onFitModeChange: (fitMode: EditorDocumentModel["viewport"]["fitMode"]) => void;
   onSnapToGridChange: (enabled: boolean) => void;
   onShowGuidesChange: (enabled: boolean) => void;
+  onFormValueChange: (name: string, value: EditorDocumentModel["formValues"][string]) => void;
   onScrollTargetChange: (
     page: number,
     behavior?: NonNullable<EditorDocumentModel["viewport"]["scrollTarget"]>["behavior"]
@@ -120,6 +130,7 @@ export function EditorShell({
   onRedo: () => void;
   onOpenSignatureChooser: () => void;
   onRetentionHoursChange: (retentionHours: number) => void;
+  onOutputModeChange: (outputMode: EditorDocumentModel["export"]["outputMode"]) => void;
   onExport: () => Promise<void>;
   onCloseSignatureFlow: () => void;
   onOnlyMeSignature: () => void;
@@ -131,6 +142,7 @@ export function EditorShell({
   onReorderLayers: (layers: EditorLayer[]) => void;
   onMoveSelectedLayersInStack: (direction: "front" | "forward" | "backward" | "back") => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
+  onCreateInkLayer: (pageNumber: number, points: Array<{ x: number; y: number }>) => void;
   invite: {
     email: string;
     message: string;
@@ -312,6 +324,7 @@ export function EditorShell({
               onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
               onPlaceLayer={onPlaceLayer}
+              onCreateInkLayer={onCreateInkLayer}
             />
 
             <EditorSidebar
@@ -322,6 +335,7 @@ export function EditorShell({
               onSelectLayer={onSelectLayer}
               onUpdateLayer={onUpdateLayer}
               onRemoveSelectedLayer={onRemoveSelectedLayer}
+              onToggleSelectedLayersLock={onToggleSelectedLayersLock}
               onOutputNameChange={onOutputNameChange}
               onRotationPageChange={onRotationPageChange}
               onRotationDegreesChange={onRotationDegreesChange}
@@ -331,11 +345,14 @@ export function EditorShell({
               onPageNumbersChange={onPageNumbersChange}
               onWatermarkEnabledChange={onWatermarkEnabledChange}
               onWatermarkChange={onWatermarkChange}
+              onAddTextReplacement={onAddTextReplacement}
+              onRemoveTextReplacement={onRemoveTextReplacement}
               onActivePageChange={onActivePageChange}
               onZoomChange={onZoomChange}
               onFitModeChange={onFitModeChange}
               onSnapToGridChange={onSnapToGridChange}
               onShowGuidesChange={onShowGuidesChange}
+              onFormValueChange={onFormValueChange}
               onJumpToPage={jumpToPage}
               onUndo={onUndo}
               onRedo={onRedo}
@@ -347,6 +364,7 @@ export function EditorShell({
               onOpenSignaturePicker={() => signatureInputRef.current?.click()}
               onOpenSignatureChooser={onOpenSignatureChooser}
               onRetentionHoursChange={onRetentionHoursChange}
+              onOutputModeChange={onOutputModeChange}
               onExport={onExport}
               onReorderLayers={onReorderLayers}
               onMoveSelectedLayersInStack={onMoveSelectedLayersInStack}

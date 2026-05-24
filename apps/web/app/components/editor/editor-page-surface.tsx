@@ -1,9 +1,30 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { PDFDocumentProxy, RenderTask, TextLayer } from "pdfjs-dist";
 import type { EditPageNumbersInput, EditWatermarkInput } from "../../lib/pdf-api";
 import type { EditorLayer, EditorPage, EditorTool } from "./types";
 import { clamp, cssFontFamily, previewPageNumber } from "./utils";
+
+type PdfJsModule = typeof import("pdfjs-dist");
+
+let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
+
+function loadPdfJs(): Promise<PdfJsModule> {
+  pdfJsModulePromise ??= import("pdfjs-dist").then((pdfjs) => {
+    pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+    return pdfjs;
+  });
+
+  return pdfJsModulePromise;
+}
+
+function customFontCssName(layer: EditorLayer): string | null {
+  if (layer.kind !== "text" || !layer.customFont?.dataUrl) {
+    return null;
+  }
+  return `ihatepdf-${layer.id}`;
+}
 
 type ResizeHandle = "nw" | "ne" | "se" | "sw";
 type AlignmentGuides = {
@@ -29,6 +50,7 @@ function colorWithOpacity(color: string, opacity: number): string {
 export function EditorPageSurface({
   fileName,
   page,
+  pdfDocument,
   previewUrl,
   layers,
   rotationDegrees,
@@ -45,10 +67,12 @@ export function EditorPageSurface({
   onCreateUndoCheckpoint,
   onUpdateLayer,
   onMoveLayer,
-  onPlaceLayer
+  onPlaceLayer,
+  onCreateInkLayer
 }: {
   fileName: string;
   page: EditorPage;
+  pdfDocument: PDFDocumentProxy | null;
   previewUrl: string | null;
   layers: EditorLayer[];
   rotationDegrees: number;
@@ -70,10 +94,14 @@ export function EditorPageSurface({
   ) => void;
   onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onPlaceLayer: (x: number, y: number) => void;
+  onCreateInkLayer: (points: Array<{ x: number; y: number }>) => void;
 }): React.JSX.Element {
   const frameRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const [renderWidth, setRenderWidth] = useState<number>(page.width);
+  const [pdfJsPageReady, setPdfJsPageReady] = useState(false);
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [editingTextLayerId, setEditingTextLayerId] = useState<string | null>(null);
   const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuides>({ vertical: [], horizontal: [] });
@@ -148,7 +176,140 @@ export function EditorPageSurface({
     };
   }, [draggingLayerId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let renderTask: RenderTask | null = null;
+    let textLayer: TextLayer | null = null;
+    const canvas = canvasRef.current;
+    const textLayerContainer = textLayerRef.current;
+
+    setPdfJsPageReady(false);
+
+    if (!pdfDocument || !canvas || !textLayerContainer) {
+      return;
+    }
+
+    textLayerContainer.replaceChildren();
+
+    void (async () => {
+      try {
+        const pdfjs = await loadPdfJs();
+        const pdfPage = await pdfDocument.getPage(page.pageNumber);
+        const viewport = pdfPage.getViewport({ scale });
+        const outputScale = window.devicePixelRatio || 1;
+        const context = canvas.getContext("2d");
+
+        if (!context || cancelled) {
+          return;
+        }
+
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = `${pageWidth}px`;
+        canvas.style.height = `${pageHeight}px`;
+        context.setTransform(outputScale, 0, 0, outputScale, 0, 0);
+
+        renderTask = pdfPage.render({
+          canvas,
+          canvasContext: context,
+          viewport
+        });
+        await renderTask.promise;
+
+        if (cancelled) {
+          return;
+        }
+
+        textLayerContainer.replaceChildren();
+        textLayerContainer.style.setProperty("--total-scale-factor", String(scale));
+        textLayer = new pdfjs.TextLayer({
+          textContentSource: await pdfPage.getTextContent(),
+          container: textLayerContainer,
+          viewport
+        });
+        await textLayer.render();
+
+        if (!cancelled) {
+          setPdfJsPageReady(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setPdfJsPageReady(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+      textLayer?.cancel();
+    };
+  }, [page.pageNumber, pageHeight, pageWidth, pdfDocument, scale]);
+
   const selectedLayerIdSet = new Set(selectedLayerIds);
+
+  useEffect(() => {
+    if (typeof FontFace === "undefined") {
+      return;
+    }
+
+    const fonts = layers.flatMap((layer) => {
+      const family = customFontCssName(layer);
+      if (!family || layer.kind !== "text" || !layer.customFont?.dataUrl) {
+        return [];
+      }
+      const face = new FontFace(family, `url(${layer.customFont.dataUrl})`);
+      document.fonts.add(face);
+      void face.load().catch(() => undefined);
+      return [face];
+    });
+
+    return () => {
+      fonts.forEach((font) => document.fonts.delete(font));
+    };
+  }, [layers]);
+
+  const pointerToPdfPoint = (clientX: number, clientY: number, element: HTMLElement): { x: number; y: number } => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: clamp(((clientX - rect.left) / rect.width) * page.width, 0, page.width),
+      y: clamp((1 - (clientY - rect.top) / rect.height) * page.height, 0, page.height)
+    };
+  };
+
+  const beginInkStroke = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (activeTool !== "ink") {
+      return;
+    }
+
+    const surface = event.currentTarget;
+    const points: Array<{ x: number; y: number }> = [pointerToPdfPoint(event.clientX, event.clientY, surface)];
+
+    event.preventDefault();
+    event.stopPropagation();
+    surface.setPointerCapture(event.pointerId);
+
+    const handlePointerMove = (moveEvent: PointerEvent): void => {
+      const next = pointerToPdfPoint(moveEvent.clientX, moveEvent.clientY, surface);
+      const previous = points[points.length - 1];
+      if (Math.hypot(next.x - previous.x, next.y - previous.y) >= 1.5) {
+        points.push(next);
+      }
+    };
+
+    const finishStroke = (): void => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishStroke);
+      window.removeEventListener("pointercancel", finishStroke);
+      if (points.length >= 2) {
+        onCreateInkLayer(points);
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishStroke);
+    window.addEventListener("pointercancel", finishStroke);
+  };
 
   const getLayerDimensions = (layer: EditorLayer): { width: number; height: number } =>
     layer.kind === "text" ? { width: 0, height: 0 } : { width: layer.width, height: layer.height };
@@ -244,6 +405,13 @@ export function EditorPageSurface({
     event: React.PointerEvent<HTMLButtonElement>,
     layer: EditorLayer
   ): void => {
+    if (layer.locked) {
+      onSelectLayer(layer.id, event.shiftKey || event.metaKey || event.ctrlKey);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (activeTool !== "select") {
       onSelectLayer(layer.id);
       return;
@@ -356,7 +524,11 @@ export function EditorPageSurface({
     layer: EditorLayer,
     handle: ResizeHandle
   ): void => {
-    if (activeTool !== "select" || (layer.kind !== "rectangle" && layer.kind !== "image")) {
+    if (
+      activeTool !== "select" ||
+      layer.locked ||
+      (layer.kind !== "rectangle" && layer.kind !== "image" && layer.kind !== "annotation" && layer.kind !== "ink")
+    ) {
       return;
     }
 
@@ -413,8 +585,7 @@ export function EditorPageSurface({
 
       onUpdateLayer(
         layer.id,
-        (current) =>
-          current.kind === "rectangle" || current.kind === "image" ? { ...current, ...next } : current,
+        (current) => (current.kind === "text" ? current : { ...current, ...next }),
         false
       );
     };
@@ -444,7 +615,8 @@ export function EditorPageSurface({
     if (
       activeTool !== "select" ||
       !selectedLayerIdSet.has(layer.id) ||
-      (layer.kind !== "rectangle" && layer.kind !== "image")
+      layer.locked ||
+      (layer.kind !== "rectangle" && layer.kind !== "image" && layer.kind !== "annotation" && layer.kind !== "ink")
     ) {
       return null;
     }
@@ -482,6 +654,9 @@ export function EditorPageSurface({
             cursor: activeTool === "select" ? "default" : "crosshair"
           }}
           onClick={(event) => {
+            if (activeTool === "ink") {
+              return;
+            }
             const rect = event.currentTarget.getBoundingClientRect();
             const relativeX = event.clientX - rect.left;
             const relativeY = event.clientY - rect.top;
@@ -489,9 +664,20 @@ export function EditorPageSurface({
             const y = (1 - relativeY / rect.height) * page.height;
             onPlaceLayer(x, y);
           }}
+          onPointerDown={beginInkStroke}
         >
           <div className="studio-page-paper">
-          {previewUrl ? (
+          {pdfDocument ? (
+            <div className={`studio-pdfjs-page ${pdfJsPageReady ? "is-ready" : ""}`}>
+              <canvas
+                ref={canvasRef}
+                className="studio-pdfjs-page__canvas"
+                aria-label={`${fileName} page ${page.pageNumber}`}
+              />
+              <div ref={textLayerRef} className="textLayer studio-pdfjs-page__text-layer" />
+            </div>
+          ) : null}
+          {!pdfJsPageReady && previewUrl ? (
             <img
               className="studio-page-paper__preview"
               src={previewUrl}
@@ -546,15 +732,23 @@ export function EditorPageSurface({
           {layers.map((layer) => {
             if (layer.kind === "text") {
               const isEditing = editingTextLayerId === layer.id;
+              const fontFamily = customFontCssName(layer)
+                ? `"${customFontCssName(layer)}", ${cssFontFamily(layer.fontFamily)}`
+                : cssFontFamily(layer.fontFamily);
               const textStyle: React.CSSProperties = {
                 left: `${layer.x * scale}px`,
                 top: `${pageHeight - layer.y * scale}px`,
+                width: `${Math.max(40, layer.width * scale)}px`,
                 color: layer.color,
                 fontSize: `${Math.max(12, layer.fontSize * scale)}px`,
-                fontFamily: cssFontFamily(layer.fontFamily),
+                fontFamily,
                 fontWeight: layer.bold ? 800 : 600,
                 fontStyle: layer.italic ? "italic" : "normal",
-                textDecoration: layer.underline ? "underline" : "none"
+                lineHeight: layer.lineHeight,
+                opacity: layer.opacity,
+                textAlign: layer.align,
+                textDecoration: layer.underline ? "underline" : "none",
+                whiteSpace: "pre-wrap"
               };
 
               if (isEditing) {
@@ -565,7 +759,7 @@ export function EditorPageSurface({
                     style={textStyle}
                     value={layer.text}
                     autoFocus
-                    rows={1}
+                    rows={Math.max(2, layer.text.split("\n").length)}
                     onClick={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                     onBlur={() => setEditingTextLayerId(null)}
@@ -587,13 +781,15 @@ export function EditorPageSurface({
                 <button
                   key={layer.id}
                   type="button"
-                  className={`studio-layer-ghost studio-layer-ghost--text ${
+                  className={`studio-layer-ghost studio-layer-ghost--text ${layer.locked ? "is-locked" : ""} ${
                     selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                   }`}
                   style={{
                     ...textStyle,
                     cursor:
-                      activeTool === "select"
+                      layer.locked
+                        ? "not-allowed"
+                        : activeTool === "select"
                         ? draggingLayerId === layer.id
                           ? "grabbing"
                           : "grab"
@@ -605,6 +801,9 @@ export function EditorPageSurface({
                   onDoubleClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
+                    if (layer.locked) {
+                      return;
+                    }
                     onSelectLayer(layer.id, event.shiftKey || event.metaKey || event.ctrlKey);
                     setEditingTextLayerId(layer.id);
                   }}
@@ -620,7 +819,7 @@ export function EditorPageSurface({
                 <button
                   key={layer.id}
                   type="button"
-                  className={`studio-layer-ghost studio-layer-ghost--rectangle ${
+                  className={`studio-layer-ghost studio-layer-ghost--rectangle ${layer.locked ? "is-locked" : ""} ${
                     selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                   }`}
                   style={{
@@ -630,7 +829,9 @@ export function EditorPageSurface({
                     height: `${layer.height * scale}px`,
                     background: colorWithOpacity(layer.color, layer.opacity),
                     cursor:
-                      activeTool === "select"
+                      layer.locked
+                        ? "not-allowed"
+                        : activeTool === "select"
                         ? draggingLayerId === layer.id
                           ? "grabbing"
                           : "grab"
@@ -646,11 +847,105 @@ export function EditorPageSurface({
               );
             }
 
+            if (layer.kind === "annotation") {
+              const top = pageHeight - (layer.y + layer.height) * scale;
+              return (
+                <button
+                  key={layer.id}
+                  type="button"
+                  className={`studio-layer-ghost studio-layer-ghost--annotation studio-layer-ghost--annotation-${layer.variant} ${layer.locked ? "is-locked" : ""} ${
+                    selectedLayerIdSet.has(layer.id) ? "is-active" : ""
+                  }`}
+                  style={{
+                    left: `${layer.x * scale}px`,
+                    top: `${top}px`,
+                    width: `${layer.width * scale}px`,
+                    height: `${layer.height * scale}px`,
+                    color: layer.variant === "strike" ? layer.color : "#19334d",
+                    background: layer.variant === "strike" ? "transparent" : colorWithOpacity(layer.color, layer.opacity),
+                    cursor:
+                      layer.locked
+                        ? "not-allowed"
+                        : activeTool === "select"
+                        ? draggingLayerId === layer.id
+                          ? "grabbing"
+                          : "grab"
+                        : "pointer"
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onDoubleClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (layer.locked) {
+                      return;
+                    }
+                    onUpdateLayer(layer.id, (current) =>
+                      current.kind === "annotation"
+                        ? {
+                            ...current,
+                            text: window.prompt("Annotation text", current.text) ?? current.text
+                          }
+                        : current
+                    );
+                  }}
+                  onPointerDown={(event) => beginLayerDrag(event, layer)}
+                >
+                  {layer.variant === "strike" ? <span className="studio-annotation-strike-line" /> : layer.text}
+                  {renderResizeHandles(layer)}
+                </button>
+              );
+            }
+
+            if (layer.kind === "ink") {
+              const points = layer.points.map((point) => `${point.x * scale},${(layer.height - point.y) * scale}`).join(" ");
+              return (
+                <button
+                  key={layer.id}
+                  type="button"
+                  className={`studio-layer-ghost studio-layer-ghost--ink ${layer.locked ? "is-locked" : ""} ${
+                    selectedLayerIdSet.has(layer.id) ? "is-active" : ""
+                  }`}
+                  style={{
+                    left: `${layer.x * scale}px`,
+                    top: `${pageHeight - (layer.y + layer.height) * scale}px`,
+                    width: `${layer.width * scale}px`,
+                    height: `${layer.height * scale}px`,
+                    cursor:
+                      layer.locked
+                        ? "not-allowed"
+                        : activeTool === "select"
+                        ? draggingLayerId === layer.id
+                          ? "grabbing"
+                          : "grab"
+                        : "pointer"
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onPointerDown={(event) => beginLayerDrag(event, layer)}
+                >
+                  <svg viewBox={`0 0 ${layer.width * scale} ${layer.height * scale}`} aria-hidden="true">
+                    <polyline
+                      points={points}
+                      fill="none"
+                      stroke={layer.color}
+                      strokeWidth={Math.max(1.5, layer.thickness * scale)}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  {renderResizeHandles(layer)}
+                </button>
+              );
+            }
+
             return (
               <button
                 key={layer.id}
                 type="button"
-                className={`studio-layer-ghost studio-layer-ghost--image ${
+                className={`studio-layer-ghost studio-layer-ghost--image ${layer.locked ? "is-locked" : ""} ${
                   selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                 }`}
                 style={{
@@ -659,7 +954,9 @@ export function EditorPageSurface({
                   width: `${layer.width * scale}px`,
                   height: `${layer.height * scale}px`,
                   cursor:
-                    activeTool === "select"
+                    layer.locked
+                      ? "not-allowed"
+                      : activeTool === "select"
                       ? draggingLayerId === layer.id
                         ? "grabbing"
                         : "grab"

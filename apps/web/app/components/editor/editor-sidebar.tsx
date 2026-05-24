@@ -29,7 +29,7 @@ import type {
   EditorRectangleLayer,
   EditorTextLayer
 } from "./types";
-import { fontFamilyLabel, layerSummary, normalizeNumber, retentionLabel } from "./utils";
+import { fileToDataUrl, fontFamilyLabel, layerSummary, normalizeNumber, retentionLabel } from "./utils";
 
 export function EditorSidebar({
   state,
@@ -39,6 +39,7 @@ export function EditorSidebar({
   onSelectLayer,
   onUpdateLayer,
   onRemoveSelectedLayer,
+  onToggleSelectedLayersLock,
   onOutputNameChange,
   onRotationPageChange,
   onRotationDegreesChange,
@@ -48,11 +49,14 @@ export function EditorSidebar({
   onPageNumbersChange,
   onWatermarkEnabledChange,
   onWatermarkChange,
+  onAddTextReplacement,
+  onRemoveTextReplacement,
   onActivePageChange,
   onZoomChange,
   onFitModeChange,
   onSnapToGridChange,
   onShowGuidesChange,
+  onFormValueChange,
   onJumpToPage,
   onUndo,
   onRedo,
@@ -64,6 +68,7 @@ export function EditorSidebar({
   onOpenSignaturePicker,
   onOpenSignatureChooser,
   onRetentionHoursChange,
+  onOutputModeChange,
   onExport,
   onReorderLayers,
   onMoveSelectedLayersInStack,
@@ -82,6 +87,7 @@ export function EditorSidebar({
   onSelectLayer: (layerId: string | null, additive?: boolean) => void;
   onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
   onRemoveSelectedLayer: () => void;
+  onToggleSelectedLayersLock: (locked: boolean) => void;
   onOutputNameChange: (outputName: string) => void;
   onRotationPageChange: (page: number) => void;
   onRotationDegreesChange: (degrees: EditPageRotationInput["degrees"]) => void;
@@ -91,11 +97,14 @@ export function EditorSidebar({
   onPageNumbersChange: (patch: Partial<EditorDocumentModel["operations"]["pageNumbers"]>) => void;
   onWatermarkEnabledChange: (enabled: boolean) => void;
   onWatermarkChange: (patch: Partial<EditorDocumentModel["operations"]["watermark"]>) => void;
+  onAddTextReplacement: (replacement: EditorDocumentModel["operations"]["textReplacements"][number]) => void;
+  onRemoveTextReplacement: (index: number) => void;
   onActivePageChange: (page: number) => void;
   onZoomChange: (zoom: number) => void;
   onFitModeChange: (fitMode: EditorDocumentModel["viewport"]["fitMode"]) => void;
   onSnapToGridChange: (enabled: boolean) => void;
   onShowGuidesChange: (enabled: boolean) => void;
+  onFormValueChange: (name: string, value: EditorDocumentModel["formValues"][string]) => void;
   onJumpToPage: (page: number) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -107,6 +116,7 @@ export function EditorSidebar({
   onOpenSignaturePicker: () => void;
   onOpenSignatureChooser: () => void;
   onRetentionHoursChange: (retentionHours: number) => void;
+  onOutputModeChange: (outputMode: EditorDocumentModel["export"]["outputMode"]) => void;
   onExport: () => Promise<void>;
   onReorderLayers: (layers: EditorLayer[]) => void;
   onMoveSelectedLayersInStack: (direction: "front" | "forward" | "backward" | "back") => void;
@@ -136,8 +146,15 @@ export function EditorSidebar({
   const exportState = document.export;
   const pageCount = Math.max(1, document.pages.length);
   const activePage = Math.min(Math.max(1, document.viewport.activePage ?? 1), pageCount);
+  const selectedLockedCount = selectedLayerIds.filter((layerId) =>
+    document.layers.some((layer) => layer.id === layerId && layer.locked)
+  ).length;
   const [pageInput, setPageInput] = useState(String(activePage));
   const [intelligenceQuery, setIntelligenceQuery] = useState("");
+  const [replacementFind, setReplacementFind] = useState("");
+  const [replacementText, setReplacementText] = useState("");
+  const [replacementPage, setReplacementPage] = useState("");
+  const [replacementMatchCase, setReplacementMatchCase] = useState(false);
 
   useEffect(() => {
     setPageInput(String(activePage));
@@ -501,6 +518,157 @@ export function EditorSidebar({
             ) : null}
           </>
         ) : null}
+
+        <div className="studio-intelligence-block">
+          <strong>Text replacement</strong>
+          <span>Find existing text, remove its underlying page content, then place replacement text in the same region.</span>
+          <div className="studio-form-grid">
+            <label>
+              Find
+              <input value={replacementFind} onChange={(event) => setReplacementFind(event.target.value)} />
+            </label>
+            <label>
+              Replace with
+              <input value={replacementText} onChange={(event) => setReplacementText(event.target.value)} />
+            </label>
+            <label>
+              Page
+              <input
+                type="number"
+                min={1}
+                max={pageCount}
+                value={replacementPage}
+                onChange={(event) => setReplacementPage(event.target.value)}
+                placeholder="All"
+              />
+            </label>
+            <label className="studio-check">
+              <input
+                type="checkbox"
+                checked={replacementMatchCase}
+                onChange={(event) => setReplacementMatchCase(event.target.checked)}
+              />
+              <span>Match case</span>
+            </label>
+          </div>
+          <button
+            type="button"
+            className="studio-secondary-button studio-primary-button--full"
+            onClick={() => {
+              if (!replacementFind.trim()) {
+                return;
+              }
+              onAddTextReplacement({
+                find: replacementFind.trim(),
+                replace: replacementText,
+                matchCase: replacementMatchCase,
+                page: replacementPage ? normalizeNumber(Number(replacementPage), activePage) : undefined,
+                color: "#111827"
+              });
+              setReplacementFind("");
+              setReplacementText("");
+            }}
+          >
+            Queue replacement
+          </button>
+          {operations.textReplacements.length > 0 ? (
+            <div className="studio-layer-list">
+              {operations.textReplacements.map((replacement, index) => (
+                <button
+                  key={`${replacement.find}-${index}`}
+                  type="button"
+                  className="studio-layer-card"
+                  onClick={() => onRemoveTextReplacement(index)}
+                >
+                  <span className="studio-layer-card__index">T</span>
+                  <span className="studio-layer-card__content">
+                    <strong>{replacement.find}</strong>
+                    <small>{replacement.replace || "(blank)"} {replacement.page ? `on page ${replacement.page}` : "throughout document"}</small>
+                  </span>
+                  <span className="studio-layer-card__meta">Remove</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="studio-panel">
+        <div className="studio-panel__eyebrow">Form fields</div>
+        <h2>Fill PDF form</h2>
+        {document.formFields.length === 0 ? (
+          <p className="studio-empty-copy">No AcroForm fields were detected in this PDF.</p>
+        ) : (
+          <div className="studio-form-field-list">
+            {document.formFields.map((field) => {
+              const value = document.formValues[field.name] ?? field.value ?? "";
+              const firstWidget = field.widgets[0];
+
+              if (field.type === "checkbox") {
+                return (
+                  <label key={field.name} className="studio-form-field studio-form-field--check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value)}
+                      onChange={(event) => onFormValueChange(field.name, event.target.checked)}
+                    />
+                    <span>
+                      <strong>{field.name}</strong>
+                      <small>{firstWidget?.pageNumber ? `Page ${firstWidget.pageNumber}` : "Checkbox"}</small>
+                    </span>
+                  </label>
+                );
+              }
+
+              if (field.type === "dropdown" || field.type === "radio" || field.type === "option-list") {
+                const selected = Array.isArray(value) ? value[0] ?? "" : String(value ?? "");
+                return (
+                  <label key={field.name} className="studio-form-field">
+                    <span>{field.name}</span>
+                    <select value={selected} onChange={(event) => onFormValueChange(field.name, event.target.value)}>
+                      <option value="">Choose...</option>
+                      {field.options.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <small>{firstWidget?.pageNumber ? `Page ${firstWidget.pageNumber}` : field.type}</small>
+                  </label>
+                );
+              }
+
+              if (field.type === "signature") {
+                return (
+                  <div key={field.name} className="studio-form-field">
+                    <span>{field.name}</span>
+                    <small>Signature field detected. Use the Sign tool or signing workflow to place a visible signature.</small>
+                  </div>
+                );
+              }
+
+              if (field.type === "button" || field.type === "unknown") {
+                return (
+                  <div key={field.name} className="studio-form-field">
+                    <span>{field.name}</span>
+                    <small>{field.type === "button" ? "Button fields are detected but not fillable." : "Unsupported field type."}</small>
+                  </div>
+                );
+              }
+
+              return (
+                <label key={field.name} className="studio-form-field">
+                  <span>{field.name}</span>
+                  <input
+                    value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
+                    onChange={(event) => onFormValueChange(field.name, event.target.value)}
+                  />
+                  <small>{firstWidget?.pageNumber ? `Page ${firstWidget.pageNumber}` : "Text field"}</small>
+                </label>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="studio-panel">
@@ -514,17 +682,17 @@ export function EditorSidebar({
             items={[...document.layers].reverse()}
             onReorder={(visualLayers) => onReorderLayers([...visualLayers].reverse())}
             className="studio-layer-list"
-            disabled={state.busy}
+            disabled={state.busy || document.layers.some((layer) => layer.locked)}
             keyForItem={(layer) => layer.id}
             renderItem={(layer, index) => (
               <button
                 type="button"
-                className={`studio-layer-card ${
+                className={`studio-layer-card ${layer.locked ? "is-locked" : ""} ${
                   selectedLayerIds.includes(layer.id) ? "is-active" : ""
                 }`}
                 onClick={(event) => onSelectLayer(layer.id, event.shiftKey || event.metaKey || event.ctrlKey)}
               >
-                <ReorderHandle label="Drag layer to reorder stack" />
+                <ReorderHandle label={layer.locked ? "Layer locked" : "Drag layer to reorder stack"} />
                 <span className="studio-layer-card__index">{document.layers.length - index}</span>
                 <span className="studio-layer-card__content">
                   <strong>
@@ -533,12 +701,22 @@ export function EditorSidebar({
                       : layer.kind === "rectangle"
                         ? layer.variant === "erase"
                           ? "Erase"
+                          : layer.variant === "redact"
+                            ? "Redact"
                           : "Block"
+                        : layer.kind === "annotation"
+                          ? layer.variant === "strike"
+                            ? "Strike"
+                            : layer.variant === "sticky"
+                              ? "Sticky"
+                              : "Comment"
+                          : layer.kind === "ink"
+                            ? "Ink"
                         : "Asset"}
                   </strong>
                   <small>{layerSummary(layer)}</small>
                 </span>
-                <span className="studio-layer-card__meta">P{layer.page}</span>
+                <span className="studio-layer-card__meta">{layer.locked ? "Locked" : `P${layer.page}`}</span>
               </button>
             )}
           />
@@ -786,35 +964,53 @@ export function EditorSidebar({
         ) : null}
 
         {selectedLayerIds.length > 0 ? (
+          <div className="studio-stack-actions" aria-label="Layer lock">
+            <button type="button" className="studio-fit-button" onClick={() => onToggleSelectedLayersLock(true)}>
+              Lock
+            </button>
+            <button type="button" className="studio-fit-button" onClick={() => onToggleSelectedLayersLock(false)}>
+              Unlock
+            </button>
+            <span className="studio-layer-card__meta">
+              {selectedLockedCount > 0 ? `${selectedLockedCount} locked` : "Unlocked"}
+            </span>
+          </div>
+        ) : null}
+
+        {selectedLockedCount > 0 ? (
+          <p className="studio-empty-copy">Unlock selected layers before resizing, moving, editing, deleting, duplicating, or changing stack order.</p>
+        ) : null}
+
+        {selectedLayerIds.length > 0 ? (
           <div className="studio-stack-actions" aria-label="Layer order">
-            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("front")}>
+            <button type="button" className="studio-fit-button" disabled={selectedLockedCount > 0} onClick={() => onMoveSelectedLayersInStack("front")}>
               <BringToFront aria-hidden="true" size={14} />
               Front
             </button>
-            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("forward")}>
+            <button type="button" className="studio-fit-button" disabled={selectedLockedCount > 0} onClick={() => onMoveSelectedLayersInStack("forward")}>
               <ChevronsUp aria-hidden="true" size={14} />
               Forward
             </button>
-            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("backward")}>
+            <button type="button" className="studio-fit-button" disabled={selectedLockedCount > 0} onClick={() => onMoveSelectedLayersInStack("backward")}>
               <ChevronsDown aria-hidden="true" size={14} />
               Backward
             </button>
-            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("back")}>
+            <button type="button" className="studio-fit-button" disabled={selectedLockedCount > 0} onClick={() => onMoveSelectedLayersInStack("back")}>
               <SendToBack aria-hidden="true" size={14} />
               Back
             </button>
           </div>
         ) : null}
 
-        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "text" ? (
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "text" && !selectedLayer.locked ? (
           <TextLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
-        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "rectangle" ? (
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "rectangle" && !selectedLayer.locked ? (
           <RectangleLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
-        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "image" ? (
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "image" && !selectedLayer.locked ? (
           <ImageLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
@@ -834,6 +1030,74 @@ export function EditorSidebar({
                     placeholder="Type the text you want to place on the PDF."
                   />
                 </label>
+                <label>
+                  Width
+                  <input
+                    type="number"
+                    min={40}
+                    max={2000}
+                    value={state.draftDefaults.text.width}
+                    onChange={(event) =>
+                      onTextDefaultsChange({ width: normalizeNumber(Number(event.target.value), 220) })
+                    }
+                  />
+                </label>
+                <label>
+                  Align
+                  <select
+                    value={state.draftDefaults.text.align}
+                    onChange={(event) =>
+                      onTextDefaultsChange({ align: event.target.value as EditorTextLayer["align"] })
+                    }
+                  >
+                    <option value="left">Left</option>
+                    <option value="center">Center</option>
+                    <option value="right">Right</option>
+                  </select>
+                </label>
+                <label>
+                  Line height
+                  <input
+                    type="number"
+                    min={0.8}
+                    max={3}
+                    step={0.05}
+                    value={state.draftDefaults.text.lineHeight}
+                    onChange={(event) =>
+                      onTextDefaultsChange({ lineHeight: normalizeNumber(Number(event.target.value), 1.2) })
+                    }
+                  />
+                </label>
+                <label>
+                  Custom font
+                  <input
+                    type="file"
+                    accept=".ttf,.otf,font/ttf,font/otf"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) {
+                        return;
+                      }
+                      void fileToDataUrl(file).then((dataUrl) =>
+                        onTextDefaultsChange({
+                          customFont: {
+                            name: file.name,
+                            dataUrl
+                          }
+                        })
+                      );
+                    }}
+                  />
+                </label>
+                {state.draftDefaults.text.customFont ? (
+                  <button
+                    type="button"
+                    className="studio-fit-button"
+                    onClick={() => onTextDefaultsChange({ customFont: null })}
+                  >
+                    Remove {state.draftDefaults.text.customFont.name}
+                  </button>
+                ) : null}
                 <p>
                   Text defaults use <strong>{fontFamilyLabel(state.draftDefaults.text.fontFamily)}</strong>{" "}
                   at <strong>{state.draftDefaults.text.fontSize}px</strong>.
@@ -1182,6 +1446,24 @@ export function EditorSidebar({
 
       <div className="studio-panel">
         <div className="studio-panel__eyebrow">Export</div>
+        <div className="studio-form-grid">
+          <label>
+            PDF output
+            <select
+              value={exportState.outputMode}
+              onChange={(event) =>
+                onOutputModeChange(event.target.value as EditorDocumentModel["export"]["outputMode"])
+              }
+            >
+              <option value="flattened">Flattened final PDF</option>
+              <option value="editable-annotations">Editable PDF annotations</option>
+            </select>
+          </label>
+          <p className="small">
+            Editable export keeps supported text, shape, and ink edits as PDF annotations. Redactions,
+            replacements, images, watermarks, and page operations are still finalized into the PDF.
+          </p>
+        </div>
         <button
           type="button"
           className="studio-primary-button studio-primary-button--full"
@@ -1346,9 +1628,116 @@ function TextLayerEditor({
           }
         >
           <option value="sans">Studio Sans</option>
+          <option value="inter">Inter</option>
           <option value="serif">Editorial Serif</option>
+          <option value="source-serif">Source Serif</option>
           <option value="mono">Mono</option>
+          <option value="roboto-mono">Roboto Mono</option>
+          <option value="cursive">Handwritten</option>
         </select>
+      </label>
+      <label>
+        Custom font
+        <input
+          type="file"
+          accept=".ttf,.otf,font/ttf,font/otf"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) {
+              return;
+            }
+            void fileToDataUrl(file).then((dataUrl) =>
+              onUpdateLayer(layer.id, (current) =>
+                current.kind === "text"
+                  ? {
+                      ...current,
+                      customFont: {
+                        name: file.name,
+                        dataUrl
+                      }
+                    }
+                  : current
+              )
+            );
+          }}
+        />
+      </label>
+      {layer.customFont ? (
+        <button
+          type="button"
+          className="studio-fit-button"
+          onClick={() =>
+            onUpdateLayer(layer.id, (current) =>
+              current.kind === "text"
+                ? {
+                    ...current,
+                    customFont: null
+                  }
+                : current
+            )
+          }
+        >
+          Remove {layer.customFont.name}
+        </button>
+      ) : null}
+      <label>
+        Width
+        <input
+          type="number"
+          min={40}
+          max={2000}
+          value={layer.width}
+          onChange={(event) =>
+            onUpdateLayer(layer.id, (current) =>
+              current.kind === "text"
+                ? {
+                    ...current,
+                    width: normalizeNumber(Number(event.target.value), current.width)
+                  }
+                : current
+            )
+          }
+        />
+      </label>
+      <label>
+        Align
+        <select
+          value={layer.align}
+          onChange={(event) =>
+            onUpdateLayer(layer.id, (current) =>
+              current.kind === "text"
+                ? {
+                    ...current,
+                    align: event.target.value as EditorTextLayer["align"]
+                  }
+                : current
+            )
+          }
+        >
+          <option value="left">Left</option>
+          <option value="center">Center</option>
+          <option value="right">Right</option>
+        </select>
+      </label>
+      <label>
+        Line height
+        <input
+          type="number"
+          min={0.8}
+          max={3}
+          step={0.05}
+          value={layer.lineHeight}
+          onChange={(event) =>
+            onUpdateLayer(layer.id, (current) =>
+              current.kind === "text"
+                ? {
+                    ...current,
+                    lineHeight: normalizeNumber(Number(event.target.value), current.lineHeight)
+                  }
+                : current
+            )
+          }
+        />
       </label>
       <label>
         Color
@@ -1358,6 +1747,26 @@ function TextLayerEditor({
           onChange={(event) =>
             onUpdateLayer(layer.id, (current) =>
               current.kind === "text" ? { ...current, color: event.target.value } : current
+            )
+          }
+        />
+      </label>
+      <label>
+        Opacity
+        <input
+          type="number"
+          min={0.05}
+          max={1}
+          step={0.05}
+          value={layer.opacity}
+          onChange={(event) =>
+            onUpdateLayer(layer.id, (current) =>
+              current.kind === "text"
+                ? {
+                    ...current,
+                    opacity: normalizeNumber(Number(event.target.value), current.opacity)
+                  }
+                : current
             )
           }
         />

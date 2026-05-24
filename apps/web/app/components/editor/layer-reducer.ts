@@ -55,7 +55,7 @@ export function reduceLayerState(
         document: {
           ...state.document,
           layers: state.document.layers.map((layer) =>
-            layer.id === action.layerId ? action.updater(layer) : layer
+            layer.id === action.layerId && !layer.locked ? action.updater(layer) : layer
           )
         }
       };
@@ -75,11 +75,36 @@ export function reduceLayerState(
         ...state,
         document: {
           ...state.document,
-          layers: state.document.layers.filter((layer) => layer.id !== action.layerId),
+          layers: state.document.layers.filter((layer) => layer.id !== action.layerId || layer.locked),
           selection: createSelectionFromLayerIds(
             state.document.selection.layerIds.filter((layerId) => layerId !== action.layerId)
           )
         }
+      });
+    case "set-layer-lock": {
+      const targetIds = new Set(action.layerIds);
+      return withUndoCheckpoint(state, {
+        ...state,
+        document: {
+          ...state.document,
+          layers: state.document.layers.map((layer) =>
+            targetIds.has(layer.id) ? { ...layer, locked: action.locked } : layer
+          )
+        },
+        status: action.locked ? "Locked selected layer edits." : "Unlocked selected layer edits."
+      });
+    }
+    case "set-form-value":
+      return withUndoCheckpoint(state, {
+        ...state,
+        document: {
+          ...state.document,
+          formValues: {
+            ...state.document.formValues,
+            [action.name]: action.value
+          }
+        },
+        status: "Updated form field."
       });
     default:
       return null;

@@ -19,7 +19,16 @@ import { tmpdir } from "node:os";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { PDFDocument } from "pdf-lib";
+import {
+  PDFButton,
+  PDFCheckBox,
+  PDFDocument,
+  PDFDropdown,
+  PDFOptionList,
+  PDFRadioGroup,
+  PDFSignature,
+  PDFTextField
+} from "pdf-lib";
 import { env } from "../config/env.js";
 import { AuthService } from "../auth/auth.service.js";
 import { MailService } from "../mail/mail.service.js";
@@ -32,6 +41,20 @@ type PdfPageMetadata = {
   pageNumber: number;
   width: number;
   height: number;
+};
+
+type PdfFormFieldMetadata = {
+  name: string;
+  type: "text" | "checkbox" | "dropdown" | "option-list" | "radio" | "button" | "signature" | "unknown";
+  value: string | boolean | string[] | null;
+  options: string[];
+  widgets: Array<{
+    pageNumber: number | null;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
 };
 
 class CreateFileShareDto {
@@ -208,6 +231,7 @@ export class FilesController {
     mimeType: string;
     pageCount: number;
     pages: PdfPageMetadata[];
+    formFields: PdfFormFieldMetadata[];
   }> {
     this.assertFileAvailable(file);
 
@@ -226,13 +250,53 @@ export class FilesController {
           height
         };
       });
+      const pageNumberByRef = new Map(pages.map((page, index) => [pdf.getPage(index).ref, page.pageNumber]));
+      const form = pdf.getForm();
+      const formFields = form.getFields().map((field): PdfFormFieldMetadata => {
+        const widgets = field.acroField.getWidgets().map((widget) => {
+          const rect = widget.getRectangle();
+          const pageRef = widget.P();
+          return {
+            pageNumber: pageRef ? pageNumberByRef.get(pageRef) ?? null : null,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
+          };
+        });
+
+        if (field instanceof PDFTextField) {
+          return { name: field.getName(), type: "text", value: field.getText() ?? "", options: [], widgets };
+        }
+        if (field instanceof PDFCheckBox) {
+          return { name: field.getName(), type: "checkbox", value: field.isChecked(), options: [], widgets };
+        }
+        if (field instanceof PDFDropdown) {
+          return { name: field.getName(), type: "dropdown", value: field.getSelected(), options: field.getOptions(), widgets };
+        }
+        if (field instanceof PDFOptionList) {
+          return { name: field.getName(), type: "option-list", value: field.getSelected(), options: field.getOptions(), widgets };
+        }
+        if (field instanceof PDFRadioGroup) {
+          return { name: field.getName(), type: "radio", value: field.getSelected() ?? "", options: field.getOptions(), widgets };
+        }
+        if (field instanceof PDFButton) {
+          return { name: field.getName(), type: "button", value: null, options: [], widgets };
+        }
+        if (field instanceof PDFSignature) {
+          return { name: field.getName(), type: "signature", value: null, options: [], widgets };
+        }
+
+        return { name: field.getName(), type: "unknown", value: null, options: [], widgets };
+      });
 
       return {
         id: file.id,
         fileName: file.fileName,
         mimeType: file.mimeType,
         pageCount: pdf.getPageCount(),
-        pages
+        pages,
+        formFields
       };
     } catch {
       throw new BadRequestException("Unable to inspect PDF metadata.");
