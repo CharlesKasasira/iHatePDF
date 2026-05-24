@@ -250,7 +250,16 @@ export class CleanupService implements OnModuleInit, OnModuleDestroy {
       },
       select: {
         id: true,
-        objectKey: true
+        objectKey: true,
+        fileName: true,
+        mimeType: true,
+        sizeBytes: true,
+        ownerId: true,
+        createdAt: true,
+        expiresAt: true,
+        owner: {
+          select: { email: true }
+        }
       },
       take: env.CLEANUP_BATCH_SIZE,
       orderBy: { expiresAt: "asc" }
@@ -316,12 +325,32 @@ export class CleanupService implements OnModuleInit, OnModuleDestroy {
       }
 
       deletedCount += 1;
+      let storageDeleted = true;
+      let storageError: string | null = null;
       await this.storageService.deleteObject(file.objectKey).catch((error) => {
+        storageDeleted = false;
+        storageError = error instanceof Error ? error.message : String(error);
         this.logger.warn(
           `Deleted file record ${file.id} but failed to remove stored object ${file.objectKey}: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
+      });
+      await this.prisma.fileDeletionReceipt.create({
+        data: {
+          fileId: file.id,
+          objectKey: file.objectKey,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          ownerId: file.ownerId,
+          ownerEmail: file.owner?.email ?? null,
+          reason: "retention_expired",
+          storageDeleted,
+          storageError,
+          fileCreatedAt: file.createdAt,
+          expiresAt: file.expiresAt
+        }
       });
     }
 

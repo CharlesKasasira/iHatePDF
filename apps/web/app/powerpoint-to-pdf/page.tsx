@@ -1,6 +1,7 @@
 "use client";
 
 import { BatchOperationPage } from "../components/batch-operation-page";
+import { powerpointToPdfGuide } from "../components/conversion-guides";
 import { queuePowerpointToPdf } from "../lib/pdf-api";
 
 const POWERPOINT_MIME_TYPES = [
@@ -26,6 +27,7 @@ export default function PowerpointToPdfPage(): React.JSX.Element {
       runningLabel="Converting..."
       downloadLabel="Download PDF file"
       helperText="Each presentation is handled as its own task, with separate progress and retry visibility."
+      conversionGuide={powerpointToPdfGuide}
       deriveOutputName={deriveOutputName}
       queueTask={(fileId, outputName) => queuePowerpointToPdf(fileId, outputName)}
     />

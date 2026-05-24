@@ -1,10 +1,27 @@
 "use client";
 
-import type { EditPageRotationInput, FileShareResponse } from "../../lib/pdf-api";
+import {
+  BringToFront,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
+  Grid3X3,
+  Maximize2,
+  Minus,
+  PanelTop,
+  Plus,
+  Redo2,
+  SendToBack,
+  Undo2
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import type { EditPageRotationInput, FileShareResponse, PdfEntity, PdfIntelligenceResponse } from "../../lib/pdf-api";
 import { formatEatDateTime } from "../../lib/time";
 import { ReorderableList, ReorderHandle } from "../reorderable-list";
 import { PAGE_NUMBER_POSITIONS, RETENTION_OPTIONS } from "./constants";
 import type {
+  EditorDocumentModel,
   EditorDocumentState,
   EditorDraftDefaults,
   EditorImageLayer,
@@ -17,6 +34,7 @@ import { fontFamilyLabel, layerSummary, normalizeNumber, retentionLabel } from "
 export function EditorSidebar({
   state,
   selectedLayer,
+  selectedLayerIds,
   selectedSignatureBox,
   onSelectLayer,
   onUpdateLayer,
@@ -30,6 +48,14 @@ export function EditorSidebar({
   onPageNumbersChange,
   onWatermarkEnabledChange,
   onWatermarkChange,
+  onActivePageChange,
+  onZoomChange,
+  onFitModeChange,
+  onSnapToGridChange,
+  onShowGuidesChange,
+  onJumpToPage,
+  onUndo,
+  onRedo,
   onTextDefaultsChange,
   onRectangleDefaultsChange,
   onImageDefaultsChange,
@@ -40,7 +66,9 @@ export function EditorSidebar({
   onRetentionHoursChange,
   onExport,
   onReorderLayers,
+  onMoveSelectedLayersInStack,
   invite,
+  intelligence,
   onInviteEmailChange,
   onInviteMessageChange,
   onInviteExpiresInHoursChange,
@@ -49,8 +77,9 @@ export function EditorSidebar({
 }: {
   state: EditorDocumentState;
   selectedLayer: EditorLayer | null;
+  selectedLayerIds: string[];
   selectedSignatureBox: EditorRectangleLayer | null;
-  onSelectLayer: (layerId: string | null) => void;
+  onSelectLayer: (layerId: string | null, additive?: boolean) => void;
   onUpdateLayer: (layerId: string, updater: (layer: EditorLayer) => EditorLayer) => void;
   onRemoveSelectedLayer: () => void;
   onOutputNameChange: (outputName: string) => void;
@@ -59,9 +88,17 @@ export function EditorSidebar({
   onQueuePageRotation: () => void;
   onRemovePageRotation: (page: number) => void;
   onPageNumbersEnabledChange: (enabled: boolean) => void;
-  onPageNumbersChange: (patch: Partial<EditorDocumentState["pageNumbers"]>) => void;
+  onPageNumbersChange: (patch: Partial<EditorDocumentModel["operations"]["pageNumbers"]>) => void;
   onWatermarkEnabledChange: (enabled: boolean) => void;
-  onWatermarkChange: (patch: Partial<EditorDocumentState["watermark"]>) => void;
+  onWatermarkChange: (patch: Partial<EditorDocumentModel["operations"]["watermark"]>) => void;
+  onActivePageChange: (page: number) => void;
+  onZoomChange: (zoom: number) => void;
+  onFitModeChange: (fitMode: EditorDocumentModel["viewport"]["fitMode"]) => void;
+  onSnapToGridChange: (enabled: boolean) => void;
+  onShowGuidesChange: (enabled: boolean) => void;
+  onJumpToPage: (page: number) => void;
+  onUndo: () => void;
+  onRedo: () => void;
   onTextDefaultsChange: (patch: Partial<EditorDraftDefaults["text"]>) => void;
   onRectangleDefaultsChange: (patch: Partial<EditorDraftDefaults["rectangle"]>) => void;
   onImageDefaultsChange: (patch: Partial<EditorDraftDefaults["image"]>) => void;
@@ -72,6 +109,7 @@ export function EditorSidebar({
   onRetentionHoursChange: (retentionHours: number) => void;
   onExport: () => Promise<void>;
   onReorderLayers: (layers: EditorLayer[]) => void;
+  onMoveSelectedLayersInStack: (direction: "front" | "forward" | "backward" | "back") => void;
   invite: {
     email: string;
     message: string;
@@ -81,49 +119,400 @@ export function EditorSidebar({
     status: string;
     share: FileShareResponse | null;
   };
+  intelligence: {
+    data: PdfIntelligenceResponse | null;
+    busy: boolean;
+    status: string;
+  };
   onInviteEmailChange: (email: string) => void;
   onInviteMessageChange: (message: string) => void;
   onInviteExpiresInHoursChange: (expiresInHours: number) => void;
   onCreateEditorInvite: () => void;
   onCopyEditorInvite: () => void;
 }): React.JSX.Element {
+  const document = state.document;
+  const operations = document.operations;
+  const signatureRequest = document.signatures.request;
+  const exportState = document.export;
+  const pageCount = Math.max(1, document.pages.length);
+  const activePage = Math.min(Math.max(1, document.viewport.activePage ?? 1), pageCount);
+  const [pageInput, setPageInput] = useState(String(activePage));
+  const [intelligenceQuery, setIntelligenceQuery] = useState("");
+
+  useEffect(() => {
+    setPageInput(String(activePage));
+  }, [activePage]);
+
+  const commitPageInput = (): void => {
+    const requestedPage = normalizeNumber(Number(pageInput), activePage);
+    const nextPage = Math.min(Math.max(1, requestedPage), pageCount);
+    setPageInput(String(nextPage));
+    onJumpToPage(nextPage);
+  };
+
+  const changeZoom = (delta: number): void => {
+    onZoomChange(Number((document.viewport.zoom + delta).toFixed(2)));
+  };
+
+  const zoomPresets = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+  const intelligenceMatches = useMemo(() => {
+    const query = intelligenceQuery.trim().toLowerCase();
+    if (!query || !intelligence.data) {
+      return [];
+    }
+
+    return intelligence.data.text.sampleLines
+      .filter((line) => line.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [intelligence.data, intelligenceQuery]);
+
   return (
     <aside className="studio-sidebar">
       <div className="studio-panel">
         <div className="studio-panel__eyebrow">Document</div>
-        <h2>{state.pdfFile?.name ?? "No PDF loaded"}</h2>
+        <h2>{document.file?.name ?? "No PDF loaded"}</h2>
         <p>
-          {state.pdfFile
+          {document.file
             ? state.isLoadingPreview
               ? "Inspecting the uploaded PDF and loading a live preview..."
-              : `${state.pages.length} page${state.pages.length === 1 ? "" : "s"} detected. Click directly on the PDF page to place the current tool.`
+              : `${document.pages.length} page${document.pages.length === 1 ? "" : "s"} detected. Click directly on the PDF page to place the current tool.`
             : "Open a PDF, then place layers or configure document-wide edits from the studio sidebar."}
         </p>
 
         <label htmlFor="studio-output">Export filename</label>
         <input
           id="studio-output"
-          value={state.outputName}
+          value={exportState.outputName}
           onChange={(event) => onOutputNameChange(event.target.value)}
           placeholder="studio-export.pdf"
         />
 
-        <div className="studio-stage-controls">
-          <span>Pages</span>
-          <strong>{state.isLoadingPreview ? "Loading..." : state.pages.length}</strong>
+        <div className="studio-navigation-controls">
+          <div className="studio-history-controls" aria-label="Undo and redo">
+            <button
+              type="button"
+              className="studio-fit-button"
+              onClick={onUndo}
+              disabled={state.history.past.length === 0}
+              title="Undo"
+            >
+              <Undo2 aria-hidden="true" size={14} />
+              Undo
+            </button>
+            <button
+              type="button"
+              className="studio-fit-button"
+              onClick={onRedo}
+              disabled={state.history.future.length === 0}
+              title="Redo"
+            >
+              <Redo2 aria-hidden="true" size={14} />
+              Redo
+            </button>
+          </div>
+
+          <div className="studio-page-jump">
+            <button
+              type="button"
+              className="studio-icon-button"
+              onClick={() => onJumpToPage(activePage - 1)}
+              disabled={!document.file || activePage <= 1}
+              aria-label="Previous page"
+              title="Previous page"
+            >
+              <ChevronLeft aria-hidden="true" size={16} />
+            </button>
+            <label htmlFor="studio-page-jump">
+              <span>Page</span>
+              <input
+                id="studio-page-jump"
+                type="number"
+                min={1}
+                max={pageCount}
+                value={state.isLoadingPreview ? "" : pageInput}
+                disabled={!document.file || state.isLoadingPreview}
+                onChange={(event) => {
+                  setPageInput(event.target.value);
+                }}
+                onBlur={commitPageInput}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              <strong>of {state.isLoadingPreview ? "..." : pageCount}</strong>
+            </label>
+            <button
+              type="button"
+              className="studio-icon-button"
+              onClick={() => onJumpToPage(activePage + 1)}
+              disabled={!document.file || activePage >= pageCount}
+              aria-label="Next page"
+              title="Next page"
+            >
+              <ChevronRight aria-hidden="true" size={16} />
+            </button>
+          </div>
+
+          <div className="studio-zoom-controls">
+            <button
+              type="button"
+              className="studio-icon-button"
+              onClick={() => changeZoom(-0.1)}
+              disabled={document.viewport.zoom <= 0.5}
+              aria-label="Zoom out"
+              title="Zoom out"
+            >
+              <Minus aria-hidden="true" size={15} />
+            </button>
+            <strong>{Math.round(document.viewport.zoom * 100)}%</strong>
+            <button
+              type="button"
+              className="studio-icon-button"
+              onClick={() => changeZoom(0.1)}
+              disabled={document.viewport.zoom >= 2}
+              aria-label="Zoom in"
+              title="Zoom in"
+            >
+              <Plus aria-hidden="true" size={15} />
+            </button>
+          </div>
+
+          <div className="studio-fit-controls" aria-label="Canvas fit mode">
+            <button
+              type="button"
+              className={`studio-fit-button ${document.viewport.fitMode === "fit-width" ? "is-active" : ""}`}
+              onClick={() => onFitModeChange("fit-width")}
+              title="Fit width"
+            >
+              <PanelTop aria-hidden="true" size={14} />
+              Fit width
+            </button>
+            <button
+              type="button"
+              className={`studio-fit-button ${document.viewport.fitMode === "fit-page" ? "is-active" : ""}`}
+              onClick={() => onFitModeChange("fit-page")}
+              title="Fit page"
+            >
+              <Maximize2 aria-hidden="true" size={14} />
+              Fit page
+            </button>
+          </div>
+
+          <div className="studio-zoom-presets" aria-label="Zoom presets">
+            {zoomPresets.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                className={`studio-preset-button ${
+                  document.viewport.fitMode === "manual" && Math.abs(document.viewport.zoom - preset) < 0.01
+                    ? "is-active"
+                    : ""
+                }`}
+                onClick={() => onZoomChange(preset)}
+              >
+                {Math.round(preset * 100)}%
+              </button>
+            ))}
+          </div>
+
+          <div className="studio-snap-controls">
+            <label className="studio-check">
+              <input
+                type="checkbox"
+                checked={document.viewport.snapToGrid}
+                onChange={(event) => onSnapToGridChange(event.target.checked)}
+              />
+              <Grid3X3 aria-hidden="true" size={14} />
+              <span>Snap grid</span>
+            </label>
+            <label className="studio-check">
+              <input
+                type="checkbox"
+                checked={document.viewport.showGuides}
+                onChange={(event) => onShowGuidesChange(event.target.checked)}
+              />
+              <span>Guides</span>
+            </label>
+          </div>
         </div>
       </div>
 
       <div className="studio-panel">
+        <div className="studio-panel__eyebrow">Document intelligence</div>
+        <h2>Find and understand</h2>
+        <p>
+          {intelligence.busy
+            ? "Reading embedded text, fields, signatures, and important entities..."
+            : intelligence.data
+              ? intelligence.data.text.ocrReason
+              : document.file
+                ? intelligence.status || "Document intelligence will appear after preview loading."
+                : "Open a PDF to analyze text, forms, signatures, dates, emails, names, and totals."}
+        </p>
+
+        <label htmlFor="studio-intelligence-search">Search extracted text</label>
+        <input
+          id="studio-intelligence-search"
+          value={intelligenceQuery}
+          onChange={(event) => setIntelligenceQuery(event.target.value)}
+          placeholder="Search dates, names, totals..."
+          disabled={!intelligence.data}
+        />
+
+        {intelligenceMatches.length > 0 ? (
+          <div className="studio-intelligence-results">
+            {intelligenceMatches.map((line) => (
+              <span key={line}>{line}</span>
+            ))}
+          </div>
+        ) : intelligenceQuery.trim() && intelligence.data ? (
+          <p className="studio-empty-copy">No extracted text matches yet.</p>
+        ) : null}
+
+        {intelligence.data ? (
+          <>
+            <div className="studio-intelligence-metrics">
+              <span>
+                <strong>{intelligence.data.pageCount}</strong>
+                Pages
+              </span>
+              <span>
+                <strong>{formatBytes(intelligence.data.sizeBytes)}</strong>
+                File size
+              </span>
+              <span>
+                <strong>{intelligence.data.detection.imageCount}</strong>
+                Images
+              </span>
+              <span>
+                <strong>{intelligence.data.text.characterCount.toLocaleString()}</strong>
+                Text chars
+              </span>
+            </div>
+
+            <div className="studio-intelligence-grid">
+              <span className={intelligence.data.text.ocrRecommended ? "is-warn" : "is-ok"}>
+                OCR {intelligence.data.text.ocrRecommended ? "recommended" : "not needed"}
+              </span>
+              <span className={intelligence.data.detection.scannedLikely ? "is-warn" : "is-ok"}>
+                Scan {intelligence.data.detection.scannedLikely ? "likely" : "unlikely"}
+              </span>
+              <span className={intelligence.data.detection.hasAcroForm ? "is-ok" : ""}>
+                Forms {intelligence.data.detection.hasAcroForm ? "detected" : "not found"}
+              </span>
+              <span className={intelligence.data.detection.hasSignatureFields ? "is-ok" : ""}>
+                Signature fields {intelligence.data.detection.hasSignatureFields ? "found" : "none"}
+              </span>
+              <span className={intelligence.data.detection.encrypted ? "is-warn" : "is-ok"}>
+                Encryption {intelligence.data.detection.encrypted ? "detected" : "none"}
+              </span>
+              <span className={intelligence.data.detection.hasRedactionRisk ? "is-warn" : "is-ok"}>
+                Redaction risk {intelligence.data.detection.hasRedactionRisk ? "found" : "low"}
+              </span>
+            </div>
+
+            <div className="studio-intelligence-block">
+              <strong>Compression estimate</strong>
+              <span>
+                About {intelligence.data.compression.estimatedSavingsPercent}% smaller, down to roughly{" "}
+                {formatBytes(intelligence.data.compression.estimatedOutputBytes)}.
+              </span>
+              <small>
+                Confidence: {intelligence.data.compression.confidence}. {intelligence.data.compression.reason}
+              </small>
+            </div>
+
+            {intelligence.data.recommendedWorkflow.length > 0 ? (
+              <div className="studio-intelligence-block">
+                <strong>Recommended workflow</strong>
+                <div className="studio-workflow-chips">
+                  {intelligence.data.recommendedWorkflow.map((step, index) => (
+                    <span key={`${step}-${index}`}>
+                      <small>{index + 1}</small>
+                      {step}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {intelligence.data.suggestedActions.length > 0 ? (
+              <div className="studio-intelligence-block">
+                <strong>Suggested actions</strong>
+                <div className="studio-action-chip-list">
+                  {intelligence.data.suggestedActions.map((action) => (
+                    <span key={action.action} title={action.reason}>
+                      {action.label}
+                    </span>
+                  ))}
+                </div>
+                {intelligence.data.suggestedActions.slice(0, 3).map((action) => (
+                  <small key={`${action.action}-reason`}>{action.reason}</small>
+                ))}
+              </div>
+            ) : null}
+
+            {intelligence.data.fileRisks.length > 0 ? (
+              <div className="studio-risk-list">
+                {intelligence.data.fileRisks.map((risk) => (
+                  <div key={`${risk.level}-${risk.label}`} className={`studio-risk-card is-${risk.level}`}>
+                    <strong>{risk.label}</strong>
+                    <span>{risk.detail}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="studio-risk-card is-info">
+                <strong>No major file risks detected</strong>
+                <span>The document looks safe for normal editing and export workflows.</span>
+              </div>
+            )}
+
+            {intelligence.data.summary.length > 0 ? (
+              <div className="studio-intelligence-block">
+                <strong>Summary</strong>
+                {intelligence.data.summary.map((line) => (
+                  <span key={line}>{line}</span>
+                ))}
+              </div>
+            ) : null}
+
+            <EntityList label="Emails" entities={intelligence.data.entities.emails} />
+            <EntityList label="Dates" entities={intelligence.data.entities.dates} />
+            <EntityList label="Names" entities={intelligence.data.entities.names} />
+            <EntityList label="Invoice totals" entities={intelligence.data.entities.invoiceTotals} />
+
+            {intelligence.data.redactionCandidates.length > 0 ? (
+              <div className="studio-intelligence-block studio-intelligence-block--warning">
+                <strong>Redaction candidates</strong>
+                <span>
+                  These values need true content removal for safe redaction. White cover boxes are only
+                  visual masking.
+                </span>
+                {intelligence.data.redactionCandidates.slice(0, 8).map((candidate) => (
+                  <small key={`${candidate.kind}-${candidate.value}`}>
+                    {candidate.kind}: {candidate.value}
+                  </small>
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+
+      <div className="studio-panel">
         <div className="studio-panel__eyebrow">Layers</div>
-        {state.layers.length === 0 ? (
+        {document.layers.length === 0 ? (
           <p className="studio-empty-copy">
             No layers yet. Pick a tool, then click directly on the PDF page to drop it in.
           </p>
         ) : (
           <ReorderableList
-            items={state.layers}
-            onReorder={onReorderLayers}
+            items={[...document.layers].reverse()}
+            onReorder={(visualLayers) => onReorderLayers([...visualLayers].reverse())}
             className="studio-layer-list"
             disabled={state.busy}
             keyForItem={(layer) => layer.id}
@@ -131,12 +520,12 @@ export function EditorSidebar({
               <button
                 type="button"
                 className={`studio-layer-card ${
-                  state.selection.layerId === layer.id ? "is-active" : ""
+                  selectedLayerIds.includes(layer.id) ? "is-active" : ""
                 }`}
-                onClick={() => onSelectLayer(layer.id)}
+                onClick={(event) => onSelectLayer(layer.id, event.shiftKey || event.metaKey || event.ctrlKey)}
               >
                 <ReorderHandle label="Drag layer to reorder stack" />
-                <span className="studio-layer-card__index">{index + 1}</span>
+                <span className="studio-layer-card__index">{document.layers.length - index}</span>
                 <span className="studio-layer-card__content">
                   <strong>
                     {layer.kind === "text"
@@ -164,7 +553,7 @@ export function EditorSidebar({
             <input
               type="number"
               min={1}
-              max={Math.max(1, state.pages.length)}
+              max={Math.max(1, document.pages.length)}
               value={state.rotationPage}
               onChange={(event) =>
                 onRotationPageChange(normalizeNumber(Number(event.target.value), state.rotationPage))
@@ -193,9 +582,9 @@ export function EditorSidebar({
           Add page rotation
         </button>
 
-        {state.pageRotations.length > 0 ? (
+        {operations.pageRotations.length > 0 ? (
           <div className="studio-layer-list">
-            {state.pageRotations.map((rotation) => (
+            {operations.pageRotations.map((rotation) => (
               <button
                 key={`rotation-${rotation.page}`}
                 type="button"
@@ -230,21 +619,21 @@ export function EditorSidebar({
           <label className="studio-check">
             <input
               type="checkbox"
-              checked={state.pageNumbers.enabled}
+              checked={operations.pageNumbers.enabled}
               onChange={(event) => onPageNumbersEnabledChange(event.target.checked)}
             />
             <span>Add page numbers</span>
           </label>
         </div>
 
-        {state.pageNumbers.enabled ? (
+        {operations.pageNumbers.enabled ? (
           <div className="studio-form-grid">
             <label>
               Start at
               <input
                 type="number"
                 min={1}
-                value={state.pageNumbers.startAt}
+                value={operations.pageNumbers.startAt}
                 onChange={(event) =>
                   onPageNumbersChange({ startAt: normalizeNumber(Number(event.target.value), 1) })
                 }
@@ -253,10 +642,10 @@ export function EditorSidebar({
             <label>
               Position
               <select
-                value={state.pageNumbers.position}
+                value={operations.pageNumbers.position}
                 onChange={(event) =>
                   onPageNumbersChange({
-                    position: event.target.value as EditorDocumentState["pageNumbers"]["position"]
+                    position: event.target.value as EditorDocumentModel["operations"]["pageNumbers"]["position"]
                   })
                 }
               >
@@ -273,7 +662,7 @@ export function EditorSidebar({
                 type="number"
                 min={6}
                 max={72}
-                value={state.pageNumbers.fontSize}
+                value={operations.pageNumbers.fontSize}
                 onChange={(event) =>
                   onPageNumbersChange({
                     fontSize: normalizeNumber(Number(event.target.value), 12)
@@ -287,7 +676,7 @@ export function EditorSidebar({
                 type="number"
                 min={0}
                 max={144}
-                value={state.pageNumbers.margin}
+                value={operations.pageNumbers.margin}
                 onChange={(event) =>
                   onPageNumbersChange({ margin: normalizeNumber(Number(event.target.value), 24) })
                 }
@@ -296,7 +685,7 @@ export function EditorSidebar({
             <label>
               Prefix
               <input
-                value={state.pageNumbers.prefix}
+                value={operations.pageNumbers.prefix}
                 onChange={(event) => onPageNumbersChange({ prefix: event.target.value })}
                 placeholder="Page "
               />
@@ -305,7 +694,7 @@ export function EditorSidebar({
               Color
               <input
                 type="color"
-                value={state.pageNumbers.color}
+                value={operations.pageNumbers.color}
                 onChange={(event) => onPageNumbersChange({ color: event.target.value })}
               />
             </label>
@@ -316,19 +705,19 @@ export function EditorSidebar({
           <label className="studio-check">
             <input
               type="checkbox"
-              checked={state.watermark.enabled}
+              checked={operations.watermark.enabled}
               onChange={(event) => onWatermarkEnabledChange(event.target.checked)}
             />
             <span>Add watermark</span>
           </label>
         </div>
 
-        {state.watermark.enabled ? (
+        {operations.watermark.enabled ? (
           <div className="studio-form-grid">
             <label>
               Watermark text
               <input
-                value={state.watermark.text}
+                value={operations.watermark.text}
                 onChange={(event) => onWatermarkChange({ text: event.target.value })}
                 placeholder="Confidential"
               />
@@ -339,7 +728,7 @@ export function EditorSidebar({
                 type="number"
                 min={18}
                 max={240}
-                value={state.watermark.fontSize}
+                value={operations.watermark.fontSize}
                 onChange={(event) =>
                   onWatermarkChange({ fontSize: normalizeNumber(Number(event.target.value), 64) })
                 }
@@ -351,7 +740,7 @@ export function EditorSidebar({
                 type="number"
                 min={-180}
                 max={180}
-                value={state.watermark.rotation}
+                value={operations.watermark.rotation}
                 onChange={(event) =>
                   onWatermarkChange({ rotation: normalizeNumber(Number(event.target.value), -32) })
                 }
@@ -364,7 +753,7 @@ export function EditorSidebar({
                 min={0.05}
                 max={0.95}
                 step={0.05}
-                value={state.watermark.opacity}
+                value={operations.watermark.opacity}
                 onChange={(event) =>
                   onWatermarkChange({ opacity: normalizeNumber(Number(event.target.value), 0.14) })
                 }
@@ -374,7 +763,7 @@ export function EditorSidebar({
               Color
               <input
                 type="color"
-                value={state.watermark.color}
+                value={operations.watermark.color}
                 onChange={(event) => onWatermarkChange({ color: event.target.value })}
               />
             </label>
@@ -384,18 +773,48 @@ export function EditorSidebar({
 
       <div className="studio-panel">
         <div className="studio-panel__eyebrow">
-          {selectedLayer ? "Selected layer" : "Tool defaults"}
+          {selectedLayerIds.length > 1 ? "Selected layers" : selectedLayer ? "Selected layer" : "Tool defaults"}
         </div>
 
-        {selectedLayer?.kind === "text" ? (
+        {selectedLayerIds.length > 1 ? (
+          <div className="studio-defaults">
+            <p>
+              <strong>{selectedLayerIds.length}</strong> layers selected. Use arrow keys to nudge,
+              Shift+arrow for larger nudges, or Cmd/Ctrl+D to duplicate.
+            </p>
+          </div>
+        ) : null}
+
+        {selectedLayerIds.length > 0 ? (
+          <div className="studio-stack-actions" aria-label="Layer order">
+            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("front")}>
+              <BringToFront aria-hidden="true" size={14} />
+              Front
+            </button>
+            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("forward")}>
+              <ChevronsUp aria-hidden="true" size={14} />
+              Forward
+            </button>
+            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("backward")}>
+              <ChevronsDown aria-hidden="true" size={14} />
+              Backward
+            </button>
+            <button type="button" className="studio-fit-button" onClick={() => onMoveSelectedLayersInStack("back")}>
+              <SendToBack aria-hidden="true" size={14} />
+              Back
+            </button>
+          </div>
+        ) : null}
+
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "text" ? (
           <TextLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
-        {selectedLayer?.kind === "rectangle" ? (
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "rectangle" ? (
           <RectangleLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
-        {selectedLayer?.kind === "image" ? (
+        {selectedLayerIds.length <= 1 && selectedLayer?.kind === "image" ? (
           <ImageLayerEditor layer={selectedLayer} onUpdateLayer={onUpdateLayer} />
         ) : null}
 
@@ -596,9 +1015,9 @@ export function EditorSidebar({
             ) : null}
 
             <p>
-              Document edits: <strong>{state.pageRotations.length}</strong> rotations,{" "}
-              <strong>{state.pageNumbers.enabled ? "page numbers on" : "page numbers off"}</strong>,{" "}
-              <strong>{state.watermark.enabled ? "watermark on" : "watermark off"}</strong>.
+              Document edits: <strong>{operations.pageRotations.length}</strong> rotations,{" "}
+              <strong>{operations.pageNumbers.enabled ? "page numbers on" : "page numbers off"}</strong>,{" "}
+              <strong>{operations.watermark.enabled ? "watermark on" : "watermark off"}</strong>.
             </p>
           </div>
         ) : (
@@ -636,16 +1055,16 @@ export function EditorSidebar({
 
         <p
           className={
-            state.signatureRequest.status.toLowerCase().includes("failed") ? "error" : "small"
+            signatureRequest.status.toLowerCase().includes("failed") ? "error" : "small"
           }
         >
-          {state.signatureRequest.status || "Use a rectangle layer to mark the signer area."}
+          {signatureRequest.status || "Use a rectangle layer to mark the signer area."}
         </p>
 
-        {state.signatureRequest.link ? (
+        {signatureRequest.link ? (
           <a
             className="download studio-download-link"
-            href={state.signatureRequest.link}
+            href={signatureRequest.link}
             target="_blank"
             rel="noreferrer"
           >
@@ -699,7 +1118,7 @@ export function EditorSidebar({
           type="button"
           className="studio-primary-button studio-primary-button--full"
           onClick={onCreateEditorInvite}
-          disabled={state.busy || invite.busy || !state.pdfFile}
+          disabled={state.busy || invite.busy || !document.file}
         >
           {invite.busy ? "Creating invite..." : invite.email.trim() ? "Send editor invite" : "Create editor link"}
         </button>
@@ -742,7 +1161,7 @@ export function EditorSidebar({
         <label htmlFor="retention-hours">Auto-expire downloads after</label>
         <select
           id="retention-hours"
-          value={state.retentionHours}
+          value={exportState.retentionHours}
           onChange={(event) => onRetentionHoursChange(Number(event.target.value))}
         >
           {RETENTION_OPTIONS.map((option) => (
@@ -756,7 +1175,7 @@ export function EditorSidebar({
           <strong>Trust note</strong>
           <span>
             This is not a browser-only editor. The file leaves the device, is written to your server,
-            and auto-expires from download after {retentionLabel(state.retentionHours)}.
+            and auto-expires from download after {retentionLabel(exportState.retentionHours)}.
           </span>
         </div>
       </div>
@@ -774,10 +1193,10 @@ export function EditorSidebar({
         <p className={state.status.toLowerCase().includes("failed") ? "error" : "small"}>
           {state.status}
         </p>
-        {state.downloadUrl ? (
+        {document.export.downloadUrl ? (
           <a
             className="download studio-download-link"
-            href={state.downloadUrl}
+            href={document.export.downloadUrl}
             target="_blank"
             rel="noreferrer"
           >
@@ -787,6 +1206,44 @@ export function EditorSidebar({
       </div>
     </aside>
   );
+}
+
+function EntityList({
+  label,
+  entities
+}: {
+  label: string;
+  entities: PdfEntity[];
+}): React.JSX.Element | null {
+  if (entities.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="studio-intelligence-block">
+      <strong>{label}</strong>
+      <div className="studio-entity-list">
+        {entities.slice(0, 8).map((entity) => (
+          <span key={`${label}-${entity.value}`}>
+            {entity.value}
+            {entity.count > 1 ? <small>{entity.count}</small> : null}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(value: string | number): string {
+  const bytes = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const amount = bytes / 1024 ** index;
+  return `${amount >= 10 || index === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function TextLayerEditor({

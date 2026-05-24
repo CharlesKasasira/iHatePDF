@@ -10,38 +10,41 @@ import type {
 import type { EditorDocumentState, EditorRectangleLayer } from "./types";
 
 export function getPageNumbersConfig(state: EditorDocumentState): EditPageNumbersInput | null {
-  if (!state.pageNumbers.enabled) {
+  const pageNumbers = state.document.operations.pageNumbers;
+  if (!pageNumbers.enabled) {
     return null;
   }
 
   return {
-    startAt: state.pageNumbers.startAt,
-    fontSize: state.pageNumbers.fontSize,
-    color: state.pageNumbers.color,
-    position: state.pageNumbers.position,
-    margin: state.pageNumbers.margin,
-    prefix: state.pageNumbers.prefix.trim() || undefined
+    startAt: pageNumbers.startAt,
+    fontSize: pageNumbers.fontSize,
+    color: pageNumbers.color,
+    position: pageNumbers.position,
+    margin: pageNumbers.margin,
+    prefix: pageNumbers.prefix.trim() || undefined
   };
 }
 
 export function getWatermarkConfig(state: EditorDocumentState): EditWatermarkInput | null {
-  if (!state.watermark.enabled) {
+  const watermark = state.document.operations.watermark;
+  if (!watermark.enabled) {
     return null;
   }
 
   return {
-    text: state.watermark.text.trim(),
-    fontSize: state.watermark.fontSize,
-    color: state.watermark.color,
-    opacity: state.watermark.opacity,
-    rotation: state.watermark.rotation
+    text: watermark.text.trim(),
+    fontSize: watermark.fontSize,
+    color: watermark.color,
+    opacity: watermark.opacity,
+    rotation: watermark.rotation
   };
 }
 
 export function hasAnyEdits(state: EditorDocumentState): boolean {
+  const document = state.document;
   return (
-    state.layers.length > 0 ||
-    state.pageRotations.length > 0 ||
+    document.layers.length > 0 ||
+    document.operations.pageRotations.length > 0 ||
     getPageNumbersConfig(state) !== null ||
     getWatermarkConfig(state) !== null
   );
@@ -51,7 +54,7 @@ export function buildEditPayload(state: EditorDocumentState): {
   textEdits: EditTextInput[];
   rectangleEdits: EditRectangleInput[];
   imageEdits: EditImageInput[];
-  pageRotations: EditorDocumentState["pageRotations"];
+  pageRotations: EditorDocumentState["document"]["operations"]["pageRotations"];
   pageNumbers?: EditPageNumbersInput;
   watermark?: EditWatermarkInput;
   retentionHours: number;
@@ -59,8 +62,9 @@ export function buildEditPayload(state: EditorDocumentState): {
   const textEdits: EditTextInput[] = [];
   const rectangleEdits: EditRectangleInput[] = [];
   const imageEdits: EditImageInput[] = [];
+  const document = state.document;
 
-  for (const layer of state.layers) {
+  for (const layer of document.layers) {
     if (layer.kind === "text") {
       textEdits.push({
         page: layer.page,
@@ -108,9 +112,9 @@ export function buildEditPayload(state: EditorDocumentState): {
     textEdits,
     rectangleEdits,
     imageEdits,
-    pageRotations: state.pageRotations,
+    pageRotations: document.operations.pageRotations,
     pageNumbers,
     watermark,
-    retentionHours: state.retentionHours
+    retentionHours: document.export.retentionHours
   };
 }

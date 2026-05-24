@@ -6,6 +6,13 @@ import type { EditorLayer, EditorPage, EditorTool } from "./types";
 import { clamp, cssFontFamily, previewPageNumber } from "./utils";
 
 type ResizeHandle = "nw" | "ne" | "se" | "sw";
+type AlignmentGuides = {
+  vertical: number[];
+  horizontal: number[];
+};
+
+const SNAP_DISTANCE = 6;
+const GRID_SIZE = 12;
 
 function colorWithOpacity(color: string, opacity: number): string {
   const normalized = color.trim();
@@ -29,6 +36,11 @@ export function EditorPageSurface({
   watermark,
   activeTool,
   selectedLayerId,
+  selectedLayerIds,
+  zoom,
+  fitMode,
+  snapToGrid,
+  showGuides,
   onSelectLayer,
   onCreateUndoCheckpoint,
   onUpdateLayer,
@@ -44,7 +56,12 @@ export function EditorPageSurface({
   watermark: EditWatermarkInput | null;
   activeTool: EditorTool;
   selectedLayerId: string | null;
-  onSelectLayer: (layerId: string) => void;
+  selectedLayerIds: string[];
+  zoom: number;
+  fitMode: "fit-width" | "fit-page" | "manual";
+  snapToGrid: boolean;
+  showGuides: boolean;
+  onSelectLayer: (layerId: string, additive?: boolean) => void;
   onCreateUndoCheckpoint: () => void;
   onUpdateLayer: (
     layerId: string,
@@ -54,19 +71,28 @@ export function EditorPageSurface({
   onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onPlaceLayer: (x: number, y: number) => void;
 }): React.JSX.Element {
+  const frameRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [renderWidth, setRenderWidth] = useState<number>(page.width);
   const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
   const [editingTextLayerId, setEditingTextLayerId] = useState<string | null>(null);
+  const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuides>({ vertical: [], horizontal: [] });
 
   useEffect(() => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) {
+    const frame = frameRef.current;
+    if (!frame) {
       return;
     }
 
     const updateWidth = (): void => {
-      setRenderWidth(wrapper.clientWidth || page.width);
+      const availableWidth = Math.min(frame.clientWidth || page.width, 920);
+      if (fitMode !== "fit-page") {
+        setRenderWidth(availableWidth);
+        return;
+      }
+
+      const availableHeight = Math.max(360, window.innerHeight - 230);
+      setRenderWidth(Math.min(availableWidth, (availableHeight / page.height) * page.width));
     };
 
     updateWidth();
@@ -74,12 +100,13 @@ export function EditorPageSurface({
     const observer = new ResizeObserver(() => {
       updateWidth();
     });
-    observer.observe(wrapper);
+    observer.observe(frame);
 
     return () => observer.disconnect();
-  }, [page.width]);
+  }, [fitMode, page.height, page.width]);
 
-  const scale = renderWidth / page.width;
+  const scale = (renderWidth / page.width) * (fitMode === "manual" ? zoom : 1);
+  const pageWidth = page.width * scale;
   const pageHeight = page.height * scale;
   const pageNumberPreview = pageNumbers ? previewPageNumber(page.pageNumber, pageNumbers) : null;
   const pageNumberStyle: React.CSSProperties | null = pageNumbers
@@ -103,11 +130,13 @@ export function EditorPageSurface({
 
   useEffect(() => {
     if (!draggingLayerId) {
+      setAlignmentGuides({ vertical: [], horizontal: [] });
       return;
     }
 
     const stopDragging = (): void => {
       setDraggingLayerId(null);
+      setAlignmentGuides({ vertical: [], horizontal: [] });
     };
 
     window.addEventListener("pointerup", stopDragging);
@@ -118,6 +147,91 @@ export function EditorPageSurface({
       window.removeEventListener("pointercancel", stopDragging);
     };
   }, [draggingLayerId]);
+
+  const selectedLayerIdSet = new Set(selectedLayerIds);
+
+  const getLayerDimensions = (layer: EditorLayer): { width: number; height: number } =>
+    layer.kind === "text" ? { width: 0, height: 0 } : { width: layer.width, height: layer.height };
+
+  const buildSnapTargets = (layer: EditorLayer): AlignmentGuides => {
+    const targets: AlignmentGuides = {
+      vertical: [0, page.width / 2, page.width],
+      horizontal: [0, page.height / 2, page.height]
+    };
+
+    layers.forEach((candidate) => {
+      if (candidate.id === layer.id || candidate.page !== layer.page) {
+        return;
+      }
+
+      if (candidate.kind === "text") {
+        targets.vertical.push(candidate.x);
+        targets.horizontal.push(candidate.y);
+        return;
+      }
+
+      targets.vertical.push(candidate.x, candidate.x + candidate.width / 2, candidate.x + candidate.width);
+      targets.horizontal.push(candidate.y, candidate.y + candidate.height / 2, candidate.y + candidate.height);
+    });
+
+    return targets;
+  };
+
+  const snapLayerPosition = (
+    layer: EditorLayer,
+    x: number,
+    y: number,
+    width: number,
+    height: number
+  ): { x: number; y: number } => {
+    const targets = showGuides ? buildSnapTargets(layer) : { vertical: [], horizontal: [] };
+    const layerVerticalAnchors = [
+      { value: x, offset: 0 },
+      { value: x + width / 2, offset: width / 2 },
+      { value: x + width, offset: width }
+    ];
+    const layerHorizontalAnchors = [
+      { value: y, offset: 0 },
+      { value: y + height / 2, offset: height / 2 },
+      { value: y + height, offset: height }
+    ];
+
+    let snappedX = x;
+    let snappedY = y;
+    const nextGuides: AlignmentGuides = { vertical: [], horizontal: [] };
+
+    if (snapToGrid) {
+      snappedX = Math.round(snappedX / GRID_SIZE) * GRID_SIZE;
+      snappedY = Math.round(snappedY / GRID_SIZE) * GRID_SIZE;
+    }
+
+    if (showGuides) {
+      for (const target of targets.vertical) {
+        const anchor = layerVerticalAnchors.find((item) => Math.abs(item.value - target) <= SNAP_DISTANCE);
+        if (anchor) {
+          snappedX = target - anchor.offset;
+          nextGuides.vertical.push(target);
+          break;
+        }
+      }
+
+      for (const target of targets.horizontal) {
+        const anchor = layerHorizontalAnchors.find((item) => Math.abs(item.value - target) <= SNAP_DISTANCE);
+        if (anchor) {
+          snappedY = target - anchor.offset;
+          nextGuides.horizontal.push(target);
+          break;
+        }
+      }
+    }
+
+    setAlignmentGuides(showGuides ? nextGuides : { vertical: [], horizontal: [] });
+
+    return {
+      x: clamp(snappedX, 0, Math.max(0, page.width - width)),
+      y: clamp(snappedY, 0, Math.max(0, page.height - height))
+    };
+  };
 
   useEffect(() => {
     if (!editingTextLayerId || layers.some((layer) => layer.id === editingTextLayerId)) {
@@ -135,6 +249,13 @@ export function EditorPageSurface({
       return;
     }
 
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      onSelectLayer(layer.id, true);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     const surface = wrapperRef.current;
     if (!surface) {
       return;
@@ -146,6 +267,12 @@ export function EditorPageSurface({
     const offsetBottom = layerRect.bottom - event.clientY;
     const layerWidth = layerRect.width / scale;
     const layerHeight = layerRect.height / scale;
+    const draggedLayers = selectedLayerIdSet.has(layer.id)
+      ? layers.filter((candidate) => selectedLayerIdSet.has(candidate.id))
+      : [layer];
+    const initialLayerPositions = new Map(
+      draggedLayers.map((candidate) => [candidate.id, { x: candidate.x, y: candidate.y }])
+    );
     let hasUndoCheckpoint = false;
 
     const updatePosition = (clientX: number, clientY: number): void => {
@@ -159,22 +286,48 @@ export function EditorPageSurface({
         layerRect.height,
         surfaceRect.height
       );
-      const x = clamp(visualLeft / scale, 0, Math.max(0, page.width - layerWidth));
-      const y = clamp(
+      const rawX = clamp(visualLeft / scale, 0, Math.max(0, page.width - layerWidth));
+      const rawY = clamp(
         (surfaceRect.height - visualBottom) / scale,
         0,
         Math.max(0, page.height - layerHeight)
       );
+      const { x, y } = snapLayerPosition(layer, rawX, rawY, layerWidth, layerHeight);
 
-      if (!hasUndoCheckpoint && (Math.abs(x - layer.x) > 0.1 || Math.abs(y - layer.y) > 0.1)) {
+      const deltaX = x - layer.x;
+      const deltaY = y - layer.y;
+
+      if (!hasUndoCheckpoint && (Math.abs(deltaX) > 0.1 || Math.abs(deltaY) > 0.1)) {
         onCreateUndoCheckpoint();
         hasUndoCheckpoint = true;
       }
 
-      onMoveLayer(layer.id, x, y, false);
+      if (draggedLayers.length === 1) {
+        onMoveLayer(layer.id, x, y, false);
+        return;
+      }
+
+      draggedLayers.forEach((draggedLayer) => {
+        const initialPosition = initialLayerPositions.get(draggedLayer.id);
+        if (!initialPosition) {
+          return;
+        }
+        const draggedLayerSize = getLayerDimensions(draggedLayer);
+        onUpdateLayer(
+          draggedLayer.id,
+          (current) => ({
+            ...current,
+            x: clamp(initialPosition.x + deltaX, 0, Math.max(0, page.width - draggedLayerSize.width)),
+            y: clamp(initialPosition.y + deltaY, 0, Math.max(0, page.height - draggedLayerSize.height))
+          }),
+          false
+        );
+      });
     };
 
-    onSelectLayer(layer.id);
+    if (!selectedLayerIdSet.has(layer.id)) {
+      onSelectLayer(layer.id);
+    }
     setDraggingLayerId(layer.id);
     event.preventDefault();
     event.stopPropagation();
@@ -187,6 +340,7 @@ export function EditorPageSurface({
 
     const handlePointerUp = (): void => {
       setDraggingLayerId((current) => (current === layer.id ? null : current));
+      setAlignmentGuides({ vertical: [], horizontal: [] });
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
@@ -289,7 +443,7 @@ export function EditorPageSurface({
   const renderResizeHandles = (layer: EditorLayer): React.JSX.Element | null => {
     if (
       activeTool !== "select" ||
-      selectedLayerId !== layer.id ||
+      !selectedLayerIdSet.has(layer.id) ||
       (layer.kind !== "rectangle" && layer.kind !== "image")
     ) {
       return null;
@@ -318,20 +472,25 @@ export function EditorPageSurface({
         </span>
       </div>
 
-      <div
-        ref={wrapperRef}
-        className="studio-page-surface"
-        style={{ height: `${pageHeight}px`, cursor: activeTool === "select" ? "default" : "crosshair" }}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          const relativeX = event.clientX - rect.left;
-          const relativeY = event.clientY - rect.top;
-          const x = (relativeX / rect.width) * page.width;
-          const y = (1 - relativeY / rect.height) * page.height;
-          onPlaceLayer(x, y);
-        }}
-      >
-        <div className="studio-page-paper">
+      <div ref={frameRef} className="studio-page-zoom-frame">
+        <div
+          ref={wrapperRef}
+          className={`studio-page-surface ${snapToGrid ? "has-snap-grid" : ""}`}
+          style={{
+            width: `${pageWidth}px`,
+            height: `${pageHeight}px`,
+            cursor: activeTool === "select" ? "default" : "crosshair"
+          }}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const relativeX = event.clientX - rect.left;
+            const relativeY = event.clientY - rect.top;
+            const x = (relativeX / rect.width) * page.width;
+            const y = (1 - relativeY / rect.height) * page.height;
+            onPlaceLayer(x, y);
+          }}
+        >
+          <div className="studio-page-paper">
           {previewUrl ? (
             <img
               className="studio-page-paper__preview"
@@ -367,9 +526,23 @@ export function EditorPageSurface({
               {pageNumberPreview}
             </div>
           ) : null}
-        </div>
+          </div>
 
-        <div className="studio-layer-overlay">
+          <div className="studio-layer-overlay">
+            {alignmentGuides.vertical.map((guide) => (
+              <span
+                key={`vertical-${guide}`}
+                className="studio-alignment-guide studio-alignment-guide--vertical"
+                style={{ left: `${guide * scale}px` }}
+              />
+            ))}
+            {alignmentGuides.horizontal.map((guide) => (
+              <span
+                key={`horizontal-${guide}`}
+                className="studio-alignment-guide studio-alignment-guide--horizontal"
+                style={{ top: `${pageHeight - guide * scale}px` }}
+              />
+            ))}
           {layers.map((layer) => {
             if (layer.kind === "text") {
               const isEditing = editingTextLayerId === layer.id;
@@ -415,7 +588,7 @@ export function EditorPageSurface({
                   key={layer.id}
                   type="button"
                   className={`studio-layer-ghost studio-layer-ghost--text ${
-                    selectedLayerId === layer.id ? "is-active" : ""
+                    selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                   }`}
                   style={{
                     ...textStyle,
@@ -428,12 +601,11 @@ export function EditorPageSurface({
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onSelectLayer(layer.id);
                   }}
                   onDoubleClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onSelectLayer(layer.id);
+                    onSelectLayer(layer.id, event.shiftKey || event.metaKey || event.ctrlKey);
                     setEditingTextLayerId(layer.id);
                   }}
                   onPointerDown={(event) => beginLayerDrag(event, layer)}
@@ -449,7 +621,7 @@ export function EditorPageSurface({
                   key={layer.id}
                   type="button"
                   className={`studio-layer-ghost studio-layer-ghost--rectangle ${
-                    selectedLayerId === layer.id ? "is-active" : ""
+                    selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                   }`}
                   style={{
                     left: `${layer.x * scale}px`,
@@ -466,7 +638,6 @@ export function EditorPageSurface({
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onSelectLayer(layer.id);
                   }}
                   onPointerDown={(event) => beginLayerDrag(event, layer)}
                 >
@@ -480,7 +651,7 @@ export function EditorPageSurface({
                 key={layer.id}
                 type="button"
                 className={`studio-layer-ghost studio-layer-ghost--image ${
-                  selectedLayerId === layer.id ? "is-active" : ""
+                  selectedLayerIdSet.has(layer.id) ? "is-active" : ""
                 }`}
                 style={{
                   left: `${layer.x * scale}px`,
@@ -496,7 +667,6 @@ export function EditorPageSurface({
                 }}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onSelectLayer(layer.id);
                 }}
                 onPointerDown={(event) => beginLayerDrag(event, layer)}
               >
@@ -505,7 +675,8 @@ export function EditorPageSurface({
               </button>
             );
           })}
-        </div>
+          </div>
+      </div>
       </div>
     </article>
   );

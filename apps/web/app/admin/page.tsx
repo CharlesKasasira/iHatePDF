@@ -53,6 +53,10 @@ function label(value: string): string {
   return value.replaceAll("_", " ").replaceAll("-", " ");
 }
 
+function percent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
 export default function AdminPage(): React.JSX.Element {
   const { user, loading } = useAuth();
   const [dashboard, setDashboard] = useState<AdminDashboardResponse | null>(null);
@@ -365,6 +369,108 @@ export default function AdminPage(): React.JSX.Element {
                         {apiKey.rateLimitedAt ? "Clear limit" : "Rate-limit"}
                       </button>
                     </div>
+                  </div>
+                ))}
+              </article>
+
+              <article className="account-panel">
+                <div className="account-panel-heading">
+                  <span><Database aria-hidden="true" size={18} /> Retention dashboard</span>
+                  <strong>{dashboard.retention.expiredPendingDeletionCount}</strong>
+                </div>
+                <div className="account-meta-list">
+                  <span>Expiring 24h <strong>{dashboard.retention.expiring24hCount}</strong></span>
+                  <span>Expiring 7d <strong>{dashboard.retention.expiring7dCount}</strong></span>
+                  <span>No expiry <strong>{dashboard.retention.filesWithoutExpiryCount}</strong></span>
+                  <span>Cleanup <strong>{dashboard.retention.cleanupEnabled ? `${dashboard.retention.cleanupIntervalMinutes} min` : "Off"}</strong></span>
+                </div>
+                <div className="activity-card">
+                  <strong>Next expiry</strong>
+                  <span>{dashboard.retention.oldestExpiryAt ? formatDate(dashboard.retention.oldestExpiryAt) : "No retained files are scheduled for deletion."}</span>
+                </div>
+              </article>
+
+              <article className="account-panel">
+                <div className="account-panel-heading">
+                  <span><ShieldCheck aria-hidden="true" size={18} /> Antivirus scanning</span>
+                  <strong>{dashboard.antivirus.enabled ? "On" : "Off"}</strong>
+                </div>
+                <div className={`activity-card ${dashboard.antivirus.enabled ? "" : "is-error"}`}>
+                  <strong>{dashboard.antivirus.engine}</strong>
+                  <span>{dashboard.antivirus.lastScanPolicy}</span>
+                </div>
+              </article>
+
+              <article className="account-panel account-panel--wide">
+                <div className="account-panel-heading">
+                  <span><Gauge aria-hidden="true" size={18} /> Storage quotas</span>
+                  <strong>{dashboard.storageQuotas.length}</strong>
+                </div>
+                {dashboard.storageQuotas.map((quota) => (
+                  <div className={`activity-card ${quota.percentUsed >= 90 ? "is-error" : ""}`} key={quota.ownerId || "guest-quota"}>
+                    <div className="activity-card__title">
+                      <HardDrive aria-hidden="true" size={18} />
+                      <strong>{quota.ownerEmail || "Guest uploads"}</strong>
+                    </div>
+                    <span>
+                      {formatBytes(quota.usedBytes)} / {quota.quotaBytes === "0" ? "unmetered" : formatBytes(quota.quotaBytes)} · {quota.fileCount} files
+                    </span>
+                    {quota.quotaBytes !== "0" ? (
+                      <small>{percent(quota.percentUsed)} used</small>
+                    ) : null}
+                  </div>
+                ))}
+              </article>
+
+              <article className="account-panel">
+                <div className="account-panel-heading">
+                  <span><Activity aria-hidden="true" size={18} /> Audit logs</span>
+                  <strong>{dashboard.auditLog.length}</strong>
+                </div>
+                {dashboard.auditLog.map((event) => (
+                  <div className="activity-card" key={event.id}>
+                    <strong>{label(event.type)}</strong>
+                    <span>{event.email || "System"} · {event.actorEmail ? `by ${event.actorEmail}` : event.ipAddress || "no IP"}</span>
+                    <small>{event.description} · {formatDate(event.createdAt)}</small>
+                  </div>
+                ))}
+              </article>
+
+              <article className="account-panel">
+                <div className="account-panel-heading">
+                  <span><FileText aria-hidden="true" size={18} /> Deletion receipts</span>
+                  <strong>{dashboard.deletionReceipts.length}</strong>
+                </div>
+                {dashboard.deletionReceipts.map((receipt) => (
+                  <div className={`activity-card ${receipt.storageDeleted ? "" : "is-error"}`} key={receipt.id}>
+                    <strong>{receipt.fileName}</strong>
+                    <span>{receipt.ownerEmail || "Guest"} · {formatBytes(receipt.sizeBytes)} · {label(receipt.reason)}</span>
+                    <small>
+                      Deleted {formatDate(receipt.deletedAt)}
+                      {receipt.storageDeleted ? " · storage removed" : ` · storage issue: ${receipt.storageError || "unknown"}`}
+                    </small>
+                  </div>
+                ))}
+              </article>
+
+              <article className="account-panel account-panel--wide">
+                <div className="account-panel-heading">
+                  <span><ServerCog aria-hidden="true" size={18} /> Job history</span>
+                  <strong>{dashboard.jobHistory.length}</strong>
+                </div>
+                {dashboard.jobHistory.map((task) => (
+                  <div className={`activity-card ${task.status === "failed" ? "is-error" : ""}`} key={task.id}>
+                    <div className="activity-card__title">
+                      <ServerCog aria-hidden="true" size={18} />
+                      <strong>{label(task.type)}</strong>
+                    </div>
+                    <span>{task.ownerEmail || "Guest"} · {label(task.status)} · {task.progressPercent}%</span>
+                    <small>
+                      Updated {formatDate(task.updatedAt)}
+                      {task.retryCount > 0 ? ` · ${task.retryCount} retries` : ""}
+                      {task.outputFileName ? ` · output ${task.outputFileName}` : ""}
+                    </small>
+                    {task.errorMessage ? <p>{task.errorMessage}</p> : null}
                   </div>
                 ))}
               </article>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Copy, KeyRound, Plus, Terminal, Trash2 } from "lucide-react";
+import { AlertTriangle, BarChart3, BookOpen, Code2, Copy, KeyRound, Play, Plus, Terminal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { SiteHeader } from "../components/site-header";
 import { useAuth } from "../components/auth-provider";
@@ -24,6 +24,39 @@ const expirationPresets: Array<{ value: ExpirationPreset; label: string }> = [
   { value: "none", label: "No expiry" },
   { value: "custom", label: "Custom" }
 ];
+
+const sdkExamples = {
+  node: `const apiKey = process.env.IHATEPDF_API_KEY;
+const baseUrl = process.env.IHATEPDF_API_URL ?? "${API_BASE_URL}";
+
+const upload = await fetch(\`\${baseUrl}/v1/files\`, {
+  method: "POST",
+  headers: { Authorization: \`Bearer \${apiKey}\` },
+  body: formData
+});
+
+const queued = await fetch(\`\${baseUrl}/v1/tasks/compress\`, {
+  method: "POST",
+  headers: {
+    Authorization: \`Bearer \${apiKey}\`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ fileId, outputName: "compressed.pdf" })
+});`,
+  python: `import os, requests
+
+base_url = os.getenv("IHATEPDF_API_URL", "${API_BASE_URL}")
+headers = {"Authorization": f"Bearer {os.environ['IHATEPDF_API_KEY']}"}
+
+with open("contract.pdf", "rb") as source:
+    upload = requests.post(
+        f"{base_url}/v1/files",
+        headers=headers,
+        files={"file": source},
+        data={"retentionHours": "24"},
+    )
+upload.raise_for_status()`
+};
 
 function formatDate(value: string | null): string {
   return formatEatDateTime(value);
@@ -49,6 +82,12 @@ export default function DeveloperPage(): React.JSX.Element {
   const [status, setStatus] = useState("Loading developer tools...");
   const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [tryApiKey, setTryApiKey] = useState("");
+  const [tryMethod, setTryMethod] = useState<"GET" | "POST">("GET");
+  const [tryPath, setTryPath] = useState("/v1/queue/status");
+  const [tryBody, setTryBody] = useState('{\n  "fileId": "file_...",\n  "outputName": "compressed.pdf"\n}');
+  const [tryResponse, setTryResponse] = useState("");
+  const [tryingRequest, setTryingRequest] = useState(false);
 
   const activeKeys = useMemo(() => keys.filter((key) => !key.revokedAt), [keys]);
 
@@ -126,6 +165,38 @@ export default function DeveloperPage(): React.JSX.Element {
   const copyText = async (value: string, message: string): Promise<void> => {
     await navigator.clipboard.writeText(value);
     setStatus(message);
+  };
+
+  const sendTryRequest = async (): Promise<void> => {
+    if (!tryApiKey.trim()) {
+      setStatus("Paste an API key before trying the request.");
+      return;
+    }
+
+    try {
+      setTryingRequest(true);
+      setTryResponse("Sending request...");
+      const response = await fetch(`${API_BASE_URL}${tryPath}`, {
+        method: tryMethod,
+        headers: {
+          Authorization: `Bearer ${tryApiKey.trim()}`,
+          ...(tryMethod === "POST" ? { "Content-Type": "application/json" } : {})
+        },
+        body: tryMethod === "POST" ? tryBody : undefined
+      });
+      const text = await response.text();
+      try {
+        setTryResponse(JSON.stringify(JSON.parse(text), null, 2));
+      } catch {
+        setTryResponse(text || `HTTP ${response.status}`);
+      }
+      setStatus(`Try request completed with HTTP ${response.status}.`);
+    } catch (error) {
+      setTryResponse((error as Error).message);
+      setStatus("Try request failed.");
+    } finally {
+      setTryingRequest(false);
+    }
   };
 
   const curlExample = `curl -X POST "${API_BASE_URL}/v1/files" \\
@@ -236,6 +307,110 @@ export default function DeveloperPage(): React.JSX.Element {
               </button>
             </article>
 
+            <article className="account-panel">
+              <div className="account-panel-heading">
+                <span><BookOpen aria-hidden="true" size={18} /> OpenAPI docs</span>
+                <strong>3.1</strong>
+              </div>
+              <p>Use the machine-readable schema for generated clients, Postman imports, and endpoint discovery.</p>
+              <div className="management-actions">
+                <a className="activity-action-button" href={`${API_BASE_URL}/v1/openapi.json`} target="_blank" rel="noreferrer">
+                  <BookOpen aria-hidden="true" size={16} />
+                  Open schema
+                </a>
+                <button className="activity-action-button" type="button" onClick={() => void copyText("docs/API.md", "Docs path copied.")}>
+                  <Code2 aria-hidden="true" size={16} />
+                  API guide
+                </button>
+              </div>
+            </article>
+
+            <article className="account-panel account-panel--wide">
+              <div className="account-panel-heading">
+                <span><Play aria-hidden="true" size={18} /> Try this request</span>
+                <strong>{tryMethod}</strong>
+              </div>
+              <div className="developer-try-grid">
+                <label>
+                  API key
+                  <input
+                    value={tryApiKey}
+                    onChange={(event) => setTryApiKey(event.target.value)}
+                    placeholder="ihp_..."
+                    type="password"
+                  />
+                </label>
+                <label>
+                  Method
+                  <select value={tryMethod} onChange={(event) => setTryMethod(event.target.value as "GET" | "POST")}>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                  </select>
+                </label>
+                <label>
+                  Path
+                  <select
+                    value={tryPath}
+                    onChange={(event) => {
+                      setTryPath(event.target.value);
+                      setTryMethod(event.target.value.includes("/tasks/") ? "POST" : "GET");
+                    }}
+                  >
+                    <option value="/v1/queue/status">/v1/queue/status</option>
+                    <option value="/v1/tasks/compress">/v1/tasks/compress</option>
+                    <option value="/v1/tasks/merge">/v1/tasks/merge</option>
+                  </select>
+                </label>
+              </div>
+              {tryMethod === "POST" ? (
+                <>
+                  <label htmlFor="try-request-body">JSON body</label>
+                  <textarea
+                    id="try-request-body"
+                    className="developer-try-body"
+                    value={tryBody}
+                    onChange={(event) => setTryBody(event.target.value)}
+                  />
+                </>
+              ) : null}
+              <button className="start-process-btn" type="button" disabled={tryingRequest} onClick={() => void sendTryRequest()}>
+                {tryingRequest ? "Sending..." : "Send request"}
+              </button>
+              <pre className="developer-code"><code>{tryResponse || "Response appears here."}</code></pre>
+            </article>
+
+            <article className="account-panel account-panel--wide">
+              <div className="account-panel-heading">
+                <span><Code2 aria-hidden="true" size={18} /> SDK examples</span>
+                <strong>Node + Python</strong>
+              </div>
+              <div className="developer-sdk-grid">
+                <div>
+                  <strong>Node.js</strong>
+                  <pre className="developer-code"><code>{sdkExamples.node}</code></pre>
+                </div>
+                <div>
+                  <strong>Python</strong>
+                  <pre className="developer-code"><code>{sdkExamples.python}</code></pre>
+                </div>
+              </div>
+            </article>
+
+            <article className="account-panel account-panel--wide">
+              <div className="account-panel-heading">
+                <span><AlertTriangle aria-hidden="true" size={18} /> Error codes</span>
+                <strong>Predictable</strong>
+              </div>
+              <div className="developer-error-grid">
+                <span><strong>400</strong> Invalid payload, unsupported file type, or missing task fields.</span>
+                <span><strong>401</strong> Missing, expired, revoked, or invalid API key.</span>
+                <span><strong>404</strong> File, task, signature workflow, or webhook delivery was not found for this owner.</span>
+                <span><strong>410</strong> File retention window expired.</span>
+                <span><strong>429</strong> Rate limit exceeded. Retry after slowing the caller.</span>
+                <span><strong>500</strong> Unexpected processing failure. Check task status and retry safely.</span>
+              </div>
+            </article>
+
             <article className="account-panel account-panel--wide">
               <div className="account-panel-heading">
                 <span><KeyRound aria-hidden="true" size={18} /> API keys</span>
@@ -256,6 +431,19 @@ export default function DeveloperPage(): React.JSX.Element {
                   </div>
                   <span>{key.keyPrefix} - created {formatDate(key.createdAt)}</span>
                   <small>Last used {formatDate(key.lastUsedAt)} - expires {formatDate(key.expiresAt)}</small>
+                  <div className="developer-usage-grid">
+                    <span><BarChart3 aria-hidden="true" size={15} /> {key.usage.total} total calls</span>
+                    <span>{key.usage.last30Days} calls in 30 days</span>
+                  </div>
+                  {key.usage.byRoute.length > 0 ? (
+                    <div className="developer-route-list">
+                      {key.usage.byRoute.map((route) => (
+                        <small key={`${key.id}-${route.method}-${route.route}`}>
+                          {route.method} {route.route} - {route.count} calls
+                        </small>
+                      ))}
+                    </div>
+                  ) : null}
                   {key.revokedAt ? (
                     <small>Revoked {formatDate(key.revokedAt)}</small>
                   ) : (

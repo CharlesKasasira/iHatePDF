@@ -96,6 +96,101 @@ export class ApiV1Controller {
     return { ownerId: principal.user.id, apiKeyId: principal.apiKeyId };
   }
 
+  @Get("openapi.json")
+  openApi(): Record<string, unknown> {
+    return {
+      openapi: "3.1.0",
+      info: {
+        title: "iHatePDF API",
+        version: API_SCHEMA_VERSION,
+        description: "Stable API-key-authenticated document automation endpoints."
+      },
+      servers: [{ url: "/api/v1" }],
+      components: {
+        securitySchemes: {
+          apiKeyBearer: { type: "http", scheme: "bearer" },
+          apiKeyHeader: { type: "apiKey", in: "header", name: "X-API-Key" }
+        },
+        schemas: {
+          Error: {
+            type: "object",
+            properties: {
+              statusCode: { type: "number" },
+              message: { oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
+              error: { type: "string" }
+            }
+          },
+          TaskStatus: {
+            type: "object",
+            properties: {
+              schemaVersion: { type: "string" },
+              task: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  type: { type: "string" },
+                  status: { enum: ["queued", "processing", "completed", "failed"] },
+                  progress: {
+                    type: "object",
+                    properties: {
+                      percent: { type: "number" },
+                      message: { type: ["string", "null"] }
+                    }
+                  },
+                  result: {
+                    type: "object",
+                    properties: {
+                      fileId: { type: ["string", "null"] },
+                      downloadUrl: { type: ["string", "null"] },
+                      expiresAt: { type: ["string", "null"], format: "date-time" }
+                    }
+                  },
+                  error: { type: ["object", "null"], properties: { message: { type: "string" } } }
+                }
+              }
+            }
+          }
+        }
+      },
+      security: [{ apiKeyBearer: [] }, { apiKeyHeader: [] }],
+      paths: {
+        "/files": {
+          post: {
+            summary: "Upload a source file",
+            requestBody: { content: { "multipart/form-data": { schema: { type: "object" } } } },
+            responses: { "201": { description: "Uploaded file" }, "400": { description: "Invalid upload" } }
+          }
+        },
+        "/tasks/{operation}": {
+          post: {
+            summary: "Queue a document task",
+            parameters: [{ name: "operation", in: "path", required: true, schema: { type: "string" } }],
+            responses: { "201": { description: "Queued task", content: { "application/json": { schema: { $ref: "#/components/schemas/TaskStatus" } } } } }
+          }
+        },
+        "/tasks/{id}/status": {
+          get: {
+            summary: "Poll task status",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: { "200": { description: "Task status", content: { "application/json": { schema: { $ref: "#/components/schemas/TaskStatus" } } } } }
+          }
+        },
+        "/queue/status": {
+          get: {
+            summary: "Inspect queue health",
+            responses: { "200": { description: "Queue status" } }
+          }
+        },
+        "/signature-requests": {
+          post: {
+            summary: "Create a signing workflow",
+            responses: { "201": { description: "Created signing workflow" } }
+          }
+        }
+      }
+    };
+  }
+
   private async recordUsage(
     request: FastifyRequest,
     context: ApiRequestContext,

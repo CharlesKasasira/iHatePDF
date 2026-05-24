@@ -44,6 +44,8 @@ const EnvSchema = z.object({
   CLEANUP_BATCH_SIZE: z.coerce.number().int().positive().max(1000).default(100),
   CLEANUP_WORKFLOW_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(50),
+  USER_STORAGE_QUOTA_MB: z.coerce.number().int().positive().default(1024),
+  ANTIVIRUS_ENABLED: BooleanFlagSchema.default(true),
   RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().positive().default(5),
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   RATE_LIMIT_SIGNUP_MAX: z.coerce.number().int().positive().default(3),

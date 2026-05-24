@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronDown, LogOut, Menu, UserRound, X } from "lucide-react";
+import { ChevronDown, Code2, FileCheck2, Layers3, LogOut, Menu, ShieldCheck, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "./auth-provider";
 import { ToolIcon } from "./tool-icon";
@@ -32,6 +32,7 @@ function activeGroup(active: SiteHeaderProps["active"]): ToolGroupId | null {
 export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Element {
   const { user, loading, logout } = useAuth();
   const [openGroup, setOpenGroup] = useState<ToolGroupId | null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const activeTool = active && active !== "all-tools" && active !== "image-tools" ? active : null;
@@ -47,6 +48,7 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
     try {
       setLoggingOut(true);
       setOpenGroup(null);
+      setAccountMenuOpen(false);
       setMobileOpen(false);
       await logout();
     } catch {
@@ -107,41 +109,77 @@ export function SiteHeader({ active = null }: SiteHeaderProps): React.JSX.Elemen
         </button>
 
         <div className="auth-actions">
-          <Link href="/developer" className="auth-link">
-            Developer
-          </Link>
-          <Link href="/legal-validity" className="auth-link">
-            Validity
-          </Link>
-          <Link href="/signature-levels" className="auth-link">
-            Levels
-          </Link>
           {!loading && user ? (
-            <>
-              {user.isAdmin ? (
-                <Link href="/admin" className="auth-link">
-                  Admin
-                </Link>
-              ) : null}
-              <Link href="/account" className="auth-link auth-link-user">
+            <div
+              className="account-menu-wrap"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  setAccountMenuOpen(false);
+                }
+              }}
+            >
+              <button
+                className={`auth-link auth-link-user account-menu-trigger ${accountMenuOpen ? "is-open" : ""}`}
+                type="button"
+                onClick={() => setAccountMenuOpen((current) => !current)}
+                aria-expanded={accountMenuOpen}
+                aria-haspopup="menu"
+              >
                 <UserRound aria-hidden="true" size={16} />
                 <span>{user.name || user.email}</span>
-              </Link>
-              <button
-                className="auth-link auth-link-button"
-                type="button"
-                disabled={loggingOut}
-                onClick={() => void handleLogout()}
-              >
-                <LogOut aria-hidden="true" size={15} />
-                <span>{loggingOut ? "Logging out..." : "Log out"}</span>
+                <ChevronDown aria-hidden="true" size={14} />
               </button>
-            </>
+
+              {accountMenuOpen ? (
+                <div className="account-menu" role="menu">
+                  <Link href="/account" className="account-menu__item account-menu__item--identity" role="menuitem">
+                    <UserRound aria-hidden="true" size={17} />
+                    <span>
+                      <strong>{user.name || "Account"}</strong>
+                      <small>{user.email}</small>
+                    </span>
+                  </Link>
+                  <Link href="/developer" className="account-menu__item" role="menuitem">
+                    <Code2 aria-hidden="true" size={17} />
+                    <span>Developer</span>
+                  </Link>
+                  <Link href="/legal-validity" className="account-menu__item" role="menuitem">
+                    <FileCheck2 aria-hidden="true" size={17} />
+                    <span>Validity</span>
+                  </Link>
+                  <Link href="/signature-levels" className="account-menu__item" role="menuitem">
+                    <Layers3 aria-hidden="true" size={17} />
+                    <span>Levels</span>
+                  </Link>
+                  {user.isAdmin ? (
+                    <Link href="/admin" className="account-menu__item" role="menuitem">
+                      <ShieldCheck aria-hidden="true" size={17} />
+                      <span>Admin</span>
+                    </Link>
+                  ) : null}
+                  <button
+                    className="account-menu__item account-menu__button"
+                    type="button"
+                    disabled={loggingOut}
+                    onClick={() => void handleLogout()}
+                    role="menuitem"
+                  >
+                    <LogOut aria-hidden="true" size={17} />
+                    <span>{loggingOut ? "Logging out..." : "Log out"}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           {!loading && !user ? (
-            <Link href="/login" className="auth-link auth-link-strong">
-              Log in
-            </Link>
+            <div className="guest-actions">
+              <Link href="/developer" className="auth-link">
+                Developer
+              </Link>
+              <Link href="/login" className="auth-link auth-link-strong">
+                Log in
+              </Link>
+            </div>
           ) : null}
           <Link
             href="/editor-studio"

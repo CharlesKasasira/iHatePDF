@@ -72,6 +72,7 @@ export type EditorDraftDefaults = {
 
 export type EditorSelection = {
   layerId: string | null;
+  layerIds: string[];
 };
 
 export type EditorHistorySnapshot = {
@@ -87,11 +88,22 @@ export type EditorHistoryState = {
   future: EditorHistorySnapshot[];
 };
 
+export type EditorFitMode = "fit-width" | "fit-page" | "manual";
+export type EditorScrollBehavior = "auto" | "smooth";
+
+export type EditorScrollTarget = {
+  page: number;
+  behavior: EditorScrollBehavior;
+  requestedAt: number;
+} | null;
+
 export type EditorViewport = {
   zoom: number;
-  fitMode: "fit-width";
+  fitMode: EditorFitMode;
   activePage: number | null;
-  scrollAnchor: number | null;
+  scrollTarget: EditorScrollTarget;
+  snapToGrid: boolean;
+  showGuides: boolean;
 };
 
 export type EditorPageNumbersState = {
@@ -124,8 +136,44 @@ export type EditorSignatureRequestState = {
   link: string;
 };
 
+export type EditorDocumentOperations = {
+  pageRotations: EditPageRotationInput[];
+  pageNumbers: EditorPageNumbersState;
+  watermark: EditorWatermarkState;
+};
+
+export type EditorExportHistoryItem = {
+  id: string;
+  outputName: string;
+  downloadUrl: string;
+  retentionHours: number;
+  createdAt: string;
+};
+
+export type EditorDocumentModel = {
+  file: File | null;
+  sourceFileId: string | null;
+  sourceRetentionHours: number | null;
+  pages: EditorPage[];
+  layers: EditorLayer[];
+  selection: EditorSelection;
+  operations: EditorDocumentOperations;
+  signatures: {
+    request: EditorSignatureRequestState;
+    flowStep: SignatureFlowStep;
+  };
+  export: {
+    outputName: string;
+    retentionHours: number;
+    downloadUrl: string;
+    history: EditorExportHistoryItem[];
+  };
+  viewport: EditorViewport;
+};
+
 export type EditorDocumentState = {
   mode: EditorMode;
+  document: EditorDocumentModel;
   pdfFile: File | null;
   sourceFileId: string | null;
   sourceRetentionHours: number | null;
@@ -168,7 +216,8 @@ export type EditorAction =
     }
   | { type: "load-preview-failed"; message: string }
   | { type: "set-tool"; tool: EditorTool }
-  | { type: "set-selection"; layerId: string | null }
+  | { type: "set-selection"; layerId: string | null; additive?: boolean }
+  | { type: "set-selection-many"; layerIds: string[] }
   | { type: "commit-history"; status?: string }
   | { type: "add-layer"; layer: EditorLayer; status: string }
   | {
@@ -184,6 +233,13 @@ export type EditorAction =
   | { type: "set-download-url"; downloadUrl: string }
   | { type: "set-output-name"; outputName: string }
   | { type: "set-retention-hours"; retentionHours: number }
+  | { type: "set-active-page"; activePage: number }
+  | { type: "set-zoom"; zoom: number }
+  | { type: "set-fit-mode"; fitMode: EditorViewport["fitMode"] }
+  | { type: "set-snap-to-grid"; enabled: boolean }
+  | { type: "set-show-guides"; enabled: boolean }
+  | { type: "set-scroll-target"; page: number; behavior?: EditorScrollBehavior }
+  | { type: "restore-draft"; snapshot: EditorHistorySnapshot; outputName: string; retentionHours: number }
   | { type: "set-text-defaults"; patch: Partial<EditorDraftDefaults["text"]> }
   | { type: "set-rectangle-defaults"; patch: Partial<EditorDraftDefaults["rectangle"]> }
   | { type: "set-image-defaults"; patch: Partial<EditorDraftDefaults["image"]> }

@@ -41,6 +41,43 @@ X-API-Key: ihp_...
 
 API keys are hashed at rest and scoped to the owning user. Files, tasks, and signing workflows created with a key inherit that user ownership.
 
+## OpenAPI
+
+The machine-readable schema is available at:
+
+```text
+GET /api/v1/openapi.json
+```
+
+Import it into Postman, Insomnia, Stoplight, or an SDK generator to bootstrap clients. The schema describes the stable `/api/v1` automation surface and the shared task status response.
+
+## API Key Usage Stats
+
+The Developer page shows per-key usage totals, calls in the last 30 days, and the busiest routes. The same data is returned by:
+
+```text
+GET /api/api-keys
+```
+
+Each key includes:
+
+```json
+{
+  "usage": {
+    "total": 42,
+    "last30Days": 18,
+    "byRoute": [
+      {
+        "method": "POST",
+        "route": "/v1/tasks/compress",
+        "count": 12,
+        "lastUsedAt": "2026-05-14T00:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
 ## Files
 
 Upload a source file:
@@ -256,3 +293,79 @@ Supported events:
 - `signing.notification_sent`
 
 Use `["*"]` to subscribe to all events.
+
+### Delivery Logs and Retries
+
+Webhook delivery attempts are stored with status, HTTP response code, response body excerpt, error message, attempt count, and timestamps.
+
+List recent deliveries:
+
+```bash
+curl "$API_BASE_URL/webhooks/deliveries" \
+  -b cookies.txt
+```
+
+List deliveries for one endpoint:
+
+```bash
+curl "$API_BASE_URL/webhooks/$WEBHOOK_ID/deliveries" \
+  -b cookies.txt
+```
+
+Retry a delivery:
+
+```bash
+curl -X POST "$API_BASE_URL/webhooks/deliveries/$DELIVERY_ID/retry" \
+  -b cookies.txt
+```
+
+Retries reuse the original payload and delivery id, increment the attempt count, and re-sign the body with the endpoint's current signing secret.
+
+## Error Codes
+
+| Code | Meaning | Caller action |
+| --- | --- | --- |
+| `400` | Invalid payload, unsupported file type, malformed page range, or missing task fields. | Fix request data and retry. |
+| `401` | Missing, expired, revoked, or invalid API key. | Create or rotate the key and update the caller. |
+| `404` | File, task, signature workflow, webhook endpoint, or delivery was not found for this owner. | Confirm ids belong to the authenticated user. |
+| `410` | File retention window expired. | Re-upload the source file. |
+| `429` | Rate limit exceeded. | Back off and retry later. |
+| `500` | Unexpected processing failure. | Check task status and logs, then retry idempotently where safe. |
+
+## SDK Examples
+
+Node.js:
+
+```js
+const apiKey = process.env.IHATEPDF_API_KEY;
+const baseUrl = process.env.IHATEPDF_API_URL ?? "http://localhost:4000/api";
+
+const formData = new FormData();
+formData.set("file", new Blob([await fs.promises.readFile("contract.pdf")]), "contract.pdf");
+formData.set("retentionHours", "24");
+
+const upload = await fetch(`${baseUrl}/v1/files`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${apiKey}` },
+  body: formData
+});
+```
+
+Python:
+
+```python
+import os
+import requests
+
+base_url = os.getenv("IHATEPDF_API_URL", "http://localhost:4000/api")
+headers = {"Authorization": f"Bearer {os.environ['IHATEPDF_API_KEY']}"}
+
+with open("contract.pdf", "rb") as source:
+    response = requests.post(
+        f"{base_url}/v1/files",
+        headers=headers,
+        files={"file": source},
+        data={"retentionHours": "24"},
+    )
+response.raise_for_status()
+```

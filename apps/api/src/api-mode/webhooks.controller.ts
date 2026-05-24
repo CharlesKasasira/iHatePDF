@@ -50,6 +50,19 @@ export class WebhooksController {
     return this.webhooksService.list(request);
   }
 
+  @Get("deliveries")
+  deliveries(@Req() request: FastifyRequest): ReturnType<WebhooksService["listDeliveries"]> {
+    return this.webhooksService.listDeliveries(request);
+  }
+
+  @Post("deliveries/:deliveryId/retry")
+  retryDelivery(
+    @Param("deliveryId") deliveryId: string,
+    @Req() request: FastifyRequest
+  ): ReturnType<WebhooksService["retryDelivery"]> {
+    return this.webhooksService.retryDelivery(request, deliveryId);
+  }
+
   @Post()
   create(@Body() dto: CreateWebhookDto, @Req() request: FastifyRequest): ReturnType<WebhooksService["create"]> {
     return this.webhooksService.create(request, dto);
@@ -70,6 +83,14 @@ export class WebhooksController {
     @Req() request: FastifyRequest
   ): ReturnType<WebhooksService["rotateSecret"]> {
     return this.webhooksService.rotateSecret(request, id);
+  }
+
+  @Get(":id/deliveries")
+  endpointDeliveries(
+    @Param("id") id: string,
+    @Req() request: FastifyRequest
+  ): ReturnType<WebhooksService["listDeliveries"]> {
+    return this.webhooksService.listDeliveries(request, id);
   }
 
   @Delete(":id")

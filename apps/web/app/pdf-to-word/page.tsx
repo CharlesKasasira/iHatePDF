@@ -1,6 +1,7 @@
 "use client";
 
 import { BatchOperationPage } from "../components/batch-operation-page";
+import { pdfToWordGuide } from "../components/conversion-guides";
 import { queuePdfToWord } from "../lib/pdf-api";
 
 function deriveOutputName(file: File): string {
@@ -22,6 +23,7 @@ export default function PdfToWordPage(): React.JSX.Element {
       runningLabel="Converting..."
       downloadLabel="Download Word file"
       helperText="Each PDF becomes its own DOCX output so the batch can complete even if one file fails."
+      conversionGuide={pdfToWordGuide}
       deriveOutputName={deriveOutputName}
       queueTask={(fileId, outputName) => queuePdfToWord(fileId, outputName)}
     />

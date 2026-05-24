@@ -177,9 +177,19 @@ export type ApiKeyItem = {
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+  usage: {
+    total: number;
+    last30Days: number;
+    byRoute: Array<{
+      route: string;
+      method: string;
+      count: number;
+      lastUsedAt: string;
+    }>;
+  };
 };
 
-export type CreatedApiKey = ApiKeyItem & {
+export type CreatedApiKey = Omit<ApiKeyItem, "usage"> & {
   key: string;
 };
 
@@ -245,6 +255,50 @@ export type AdminDashboardResponse = {
     } | null;
     failedTasks: Array<AccountActivityResponse["tasks"][number] & { ownerEmail: string | null }>;
   };
+  retention: {
+    expiring24hCount: number;
+    expiring7dCount: number;
+    expiredPendingDeletionCount: number;
+    filesWithoutExpiryCount: number;
+    oldestExpiryAt: string | null;
+    cleanupEnabled: boolean;
+    cleanupIntervalMinutes: number;
+  };
+  antivirus: {
+    enabled: boolean;
+    engine: string;
+    lastScanPolicy: string;
+  };
+  storageQuotas: Array<{
+    ownerId: string | null;
+    ownerEmail: string | null;
+    usedBytes: string;
+    quotaBytes: string;
+    percentUsed: number;
+    fileCount: number;
+  }>;
+  auditLog: Array<{
+    id: string;
+    type: string;
+    email: string | null;
+    actorEmail: string | null;
+    ipAddress: string | null;
+    description: string;
+    createdAt: string;
+  }>;
+  deletionReceipts: Array<{
+    id: string;
+    fileId: string | null;
+    fileName: string;
+    ownerEmail: string | null;
+    sizeBytes: string;
+    reason: string;
+    storageDeleted: boolean;
+    storageError: string | null;
+    expiresAt: string | null;
+    deletedAt: string;
+  }>;
+  jobHistory: Array<AccountActivityResponse["tasks"][number] & { ownerEmail: string | null }>;
   fileHistory: Array<AccountActivityResponse["files"][number] & { ownerEmail: string | null }>;
 };
 
@@ -485,6 +539,63 @@ export type PdfFileMetadataResponse = {
   }>;
 };
 
+export type PdfEntity = {
+  value: string;
+  count: number;
+};
+
+export type PdfIntelligenceResponse = {
+  fileId: string;
+  fileName: string;
+  sizeBytes: string;
+  pageCount: number;
+  compression: {
+    estimatedSavingsPercent: number;
+    estimatedOutputBytes: string;
+    confidence: "low" | "medium" | "high";
+    reason: string;
+  };
+  text: {
+    lineCount: number;
+    characterCount: number;
+    sampleLines: string[];
+    ocrRecommended: boolean;
+    ocrReason: string;
+  };
+  summary: string[];
+  entities: {
+    emails: PdfEntity[];
+    dates: PdfEntity[];
+    names: PdfEntity[];
+    invoiceTotals: PdfEntity[];
+  };
+  detection: {
+    imageCount: number;
+    scannedLikely: boolean;
+    encrypted: boolean;
+    hasAcroForm: boolean;
+    hasSignatureFields: boolean;
+    hasDigitalSignatures: boolean;
+    hasLikelyHandwrittenSignature: boolean;
+    hasRedactionRisk: boolean;
+  };
+  fileRisks: Array<{
+    level: "info" | "warning" | "critical";
+    label: string;
+    detail: string;
+  }>;
+  suggestedActions: Array<{
+    action: "ocr" | "compress" | "sign" | "protect" | "redact" | "search" | "organize" | "convert";
+    label: string;
+    reason: string;
+  }>;
+  recommendedWorkflow: string[];
+  redactionCandidates: Array<{
+    kind: "email" | "date" | "invoice-total";
+    value: string;
+  }>;
+};
+
 export type FileShareResponse = {
   id: string;
   token: string;
@@ -495,12 +606,25 @@ export type FileShareResponse = {
   emailSent: boolean;
 };
 
+export type SharedFileComment = {
+  id: string;
+  authorName: string | null;
+  authorEmail: string | null;
+  pageNumber: number;
+  body: string;
+  x: number | null;
+  y: number | null;
+  createdAt: string;
+};
+
 export type SharedFileMetadataResponse = {
   fileName: string;
   mimeType: string;
   sizeBytes: string;
   expiresAt: string;
   downloadUrl: string;
+  reviewUrl: string;
+  comments: SharedFileComment[];
 };
 
 async function readError(response: Response): Promise<string> {
@@ -643,6 +767,10 @@ export async function getPdfMetadata(fileId: string): Promise<PdfFileMetadataRes
   return jsonFetch<PdfFileMetadataResponse>(`/files/${fileId}/metadata`);
 }
 
+export async function getPdfIntelligence(fileId: string): Promise<PdfIntelligenceResponse> {
+  return jsonFetch<PdfIntelligenceResponse>(`/files/${fileId}/intelligence`);
+}
+
 export async function createFileShare(input: {
   fileId: string;
   email?: string;
@@ -663,6 +791,23 @@ export async function createFileShare(input: {
 
 export async function getSharedFile(token: string): Promise<SharedFileMetadataResponse> {
   return jsonFetch<SharedFileMetadataResponse>(`/files/shared/${encodeURIComponent(token)}`);
+}
+
+export async function createSharedFileComment(
+  token: string,
+  input: {
+    authorName?: string;
+    authorEmail?: string;
+    pageNumber: number;
+    body: string;
+    x?: number;
+    y?: number;
+  }
+): Promise<SharedFileComment> {
+  return jsonFetch<SharedFileComment>(`/files/shared/${encodeURIComponent(token)}/comments`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
 export function getPdfPagePreviewUrl(fileId: string, pageNumber: number): string {
@@ -756,6 +901,18 @@ export async function listWebhookEvents(): Promise<{ events: string[] }> {
 
 export async function listWebhooks(): Promise<WebhookEndpointItem[]> {
   return jsonFetch<WebhookEndpointItem[]>("/webhooks");
+}
+
+export async function listWebhookDeliveries(endpointId?: string): Promise<WebhookDeliveryItem[]> {
+  return jsonFetch<WebhookDeliveryItem[]>(
+    endpointId ? `/webhooks/${endpointId}/deliveries` : "/webhooks/deliveries"
+  );
+}
+
+export async function retryWebhookDelivery(deliveryId: string): Promise<WebhookDeliveryItem> {
+  return jsonFetch<WebhookDeliveryItem>(`/webhooks/deliveries/${deliveryId}/retry`, {
+    method: "POST"
+  });
 }
 
 export async function createWebhook(input: {

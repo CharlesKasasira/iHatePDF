@@ -2,9 +2,10 @@
 
 import { useRef } from "react";
 import { SiteHeader } from "../site-header";
-import type { FileShareResponse } from "../../lib/pdf-api";
+import type { FileShareResponse, PdfIntelligenceResponse } from "../../lib/pdf-api";
 import type {
   EditorDocumentState,
+  EditorDocumentModel,
   EditorDraftDefaults,
   EditorLayer,
   EditorMode,
@@ -14,11 +15,13 @@ import { EditorToolbar } from "./editor-toolbar";
 import { EditorSidebar } from "./editor-sidebar";
 import { EditorCanvas } from "./editor-canvas";
 import { SignatureRequestModal } from "./signature-request-modal";
+import { getPdfPagePreviewUrl } from "../../lib/pdf-api";
 
 export function EditorShell({
   mode,
   state,
   selectedLayer,
+  selectedLayerIds,
   selectedSignatureBox,
   pageRotationMap,
   pageNumberConfig,
@@ -43,6 +46,14 @@ export function EditorShell({
   onPageNumbersChange,
   onWatermarkEnabledChange,
   onWatermarkChange,
+  onActivePageChange,
+  onZoomChange,
+  onFitModeChange,
+  onSnapToGridChange,
+  onShowGuidesChange,
+  onScrollTargetChange,
+  onUndo,
+  onRedo,
   onOpenSignatureChooser,
   onRetentionHoursChange,
   onExport,
@@ -54,8 +65,10 @@ export function EditorShell({
   onSendSignatureRequest,
   onMoveLayer,
   onReorderLayers,
+  onMoveSelectedLayersInStack,
   onPlaceLayer,
   invite,
+  intelligence,
   onInviteEmailChange,
   onInviteMessageChange,
   onInviteExpiresInHoursChange,
@@ -65,6 +78,7 @@ export function EditorShell({
   mode: EditorMode;
   state: EditorDocumentState;
   selectedLayer: EditorLayer | null;
+  selectedLayerIds: string[];
   selectedSignatureBox: EditorRectangleLayer | null;
   pageRotationMap: Map<number, number>;
   pageNumberConfig: ReturnType<typeof import("./adapter").getPageNumbersConfig>;
@@ -76,7 +90,7 @@ export function EditorShell({
   onRectangleDefaultsChange: (patch: Partial<EditorDraftDefaults["rectangle"]>) => void;
   onImageDefaultsChange: (patch: Partial<EditorDraftDefaults["image"]>) => void;
   onSignatureDefaultsChange: (patch: Partial<EditorDraftDefaults["signature"]>) => void;
-  onSelectLayer: (layerId: string | null) => void;
+  onSelectLayer: (layerId: string | null, additive?: boolean) => void;
   onCreateUndoCheckpoint: () => void;
   onUpdateLayer: (
     layerId: string,
@@ -90,9 +104,20 @@ export function EditorShell({
   onQueuePageRotation: () => void;
   onRemovePageRotation: (page: number) => void;
   onPageNumbersEnabledChange: (enabled: boolean) => void;
-  onPageNumbersChange: (patch: Partial<EditorDocumentState["pageNumbers"]>) => void;
+  onPageNumbersChange: (patch: Partial<EditorDocumentModel["operations"]["pageNumbers"]>) => void;
   onWatermarkEnabledChange: (enabled: boolean) => void;
-  onWatermarkChange: (patch: Partial<EditorDocumentState["watermark"]>) => void;
+  onWatermarkChange: (patch: Partial<EditorDocumentModel["operations"]["watermark"]>) => void;
+  onActivePageChange: (page: number) => void;
+  onZoomChange: (zoom: number) => void;
+  onFitModeChange: (fitMode: EditorDocumentModel["viewport"]["fitMode"]) => void;
+  onSnapToGridChange: (enabled: boolean) => void;
+  onShowGuidesChange: (enabled: boolean) => void;
+  onScrollTargetChange: (
+    page: number,
+    behavior?: NonNullable<EditorDocumentModel["viewport"]["scrollTarget"]>["behavior"]
+  ) => void;
+  onUndo: () => void;
+  onRedo: () => void;
   onOpenSignatureChooser: () => void;
   onRetentionHoursChange: (retentionHours: number) => void;
   onExport: () => Promise<void>;
@@ -100,10 +125,11 @@ export function EditorShell({
   onOnlyMeSignature: () => void;
   onChooseSeveralPeople: () => void;
   onBackSignatureRequest: () => void;
-  onSignatureRequestChange: (patch: Partial<EditorDocumentState["signatureRequest"]>) => void;
+  onSignatureRequestChange: (patch: Partial<EditorDocumentModel["signatures"]["request"]>) => void;
   onSendSignatureRequest: () => Promise<void>;
   onMoveLayer: (layerId: string, x: number, y: number, trackHistory?: boolean) => void;
   onReorderLayers: (layers: EditorLayer[]) => void;
+  onMoveSelectedLayersInStack: (direction: "front" | "forward" | "backward" | "back") => void;
   onPlaceLayer: (pageNumber: number, x: number, y: number) => void;
   invite: {
     email: string;
@@ -114,6 +140,11 @@ export function EditorShell({
     status: string;
     share: FileShareResponse | null;
   };
+  intelligence: {
+    data: PdfIntelligenceResponse | null;
+    busy: boolean;
+    status: string;
+  };
   onInviteEmailChange: (email: string) => void;
   onInviteMessageChange: (message: string) => void;
   onInviteExpiresInHoursChange: (expiresInHours: number) => void;
@@ -123,6 +154,7 @@ export function EditorShell({
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
+  const document = state.document;
 
   const handleToolSelection = (tool: EditorDocumentState["tool"]): void => {
     onToolSelect(tool);
@@ -132,6 +164,11 @@ export function EditorShell({
     if (tool === "sign" && !state.assets.sign) {
       signatureInputRef.current?.click();
     }
+  };
+
+  const jumpToPage = (page: number): void => {
+    const targetPage = Math.min(Math.max(1, page), Math.max(1, state.document.pages.length));
+    onScrollTargetChange(targetPage, "smooth");
   };
 
   return (
@@ -164,7 +201,7 @@ export function EditorShell({
                 onClick={() => pdfInputRef.current?.click()}
                 disabled={state.busy}
               >
-                {state.pdfFile ? "Replace PDF" : "Open PDF"}
+                {document.file ? "Replace PDF" : "Open PDF"}
               </button>
               <input
                 ref={pdfInputRef}
@@ -236,24 +273,41 @@ export function EditorShell({
                 <div className="studio-panel__eyebrow">Placement</div>
                 <strong>{state.tool === "select" ? "Select and drag" : `Drop ${state.tool} on the page`}</strong>
                 <span>
-                  {state.pdfFile
+                  {document.file
                     ? "Click the document surface to place the active tool. Use the inspector on the right for exact values."
                     : "Open a PDF to enable the page surface."}
-                </span>
+                  </span>
               </div>
+
+              <ThumbnailRail
+                fileName={document.file?.name ?? "PDF"}
+                sourceFileId={document.sourceFileId}
+                pages={document.pages}
+                activePage={document.viewport.activePage ?? 1}
+                isLoading={state.isLoadingPreview}
+                onJumpToPage={jumpToPage}
+              />
             </aside>
 
             <EditorCanvas
-              pdfFile={state.pdfFile}
-              sourceFileId={state.sourceFileId}
-              pages={state.pages}
-              layers={state.layers}
+              pdfFile={document.file}
+              sourceFileId={document.sourceFileId}
+              pages={document.pages}
+              layers={document.layers}
               pageRotationMap={pageRotationMap}
               pageNumbers={pageNumberConfig}
               watermark={watermarkConfig}
               activeTool={state.tool}
-              selectedLayerId={state.selection.layerId}
-              onSelectLayer={(layerId) => onSelectLayer(layerId)}
+              selectedLayerId={document.selection.layerId}
+              selectedLayerIds={document.selection.layerIds}
+              activePage={document.viewport.activePage ?? 1}
+              scrollTarget={document.viewport.scrollTarget}
+              zoom={document.viewport.zoom}
+              fitMode={document.viewport.fitMode}
+              snapToGrid={document.viewport.snapToGrid}
+              showGuides={document.viewport.showGuides}
+              onSelectLayer={(layerId, additive) => onSelectLayer(layerId, additive)}
+              onActivePageChange={onActivePageChange}
               onCreateUndoCheckpoint={onCreateUndoCheckpoint}
               onUpdateLayer={onUpdateLayer}
               onMoveLayer={onMoveLayer}
@@ -263,6 +317,7 @@ export function EditorShell({
             <EditorSidebar
               state={state}
               selectedLayer={selectedLayer}
+              selectedLayerIds={selectedLayerIds}
               selectedSignatureBox={selectedSignatureBox}
               onSelectLayer={onSelectLayer}
               onUpdateLayer={onUpdateLayer}
@@ -276,6 +331,14 @@ export function EditorShell({
               onPageNumbersChange={onPageNumbersChange}
               onWatermarkEnabledChange={onWatermarkEnabledChange}
               onWatermarkChange={onWatermarkChange}
+              onActivePageChange={onActivePageChange}
+              onZoomChange={onZoomChange}
+              onFitModeChange={onFitModeChange}
+              onSnapToGridChange={onSnapToGridChange}
+              onShowGuidesChange={onShowGuidesChange}
+              onJumpToPage={jumpToPage}
+              onUndo={onUndo}
+              onRedo={onRedo}
               onTextDefaultsChange={onTextDefaultsChange}
               onRectangleDefaultsChange={onRectangleDefaultsChange}
               onImageDefaultsChange={onImageDefaultsChange}
@@ -286,7 +349,9 @@ export function EditorShell({
               onRetentionHoursChange={onRetentionHoursChange}
               onExport={onExport}
               onReorderLayers={onReorderLayers}
+              onMoveSelectedLayersInStack={onMoveSelectedLayersInStack}
               invite={invite}
+              intelligence={intelligence}
               onInviteEmailChange={onInviteEmailChange}
               onInviteMessageChange={onInviteMessageChange}
               onInviteExpiresInHoursChange={onInviteExpiresInHoursChange}
@@ -296,8 +361,8 @@ export function EditorShell({
           </section>
 
           <SignatureRequestModal
-            signatureFlowStep={state.signatureFlowStep}
-            signatureRequest={state.signatureRequest}
+            signatureFlowStep={document.signatures.flowStep}
+            signatureRequest={document.signatures.request}
             selectedSignatureBox={selectedSignatureBox}
             busy={state.busy}
             onClose={onCloseSignatureFlow}
@@ -315,5 +380,51 @@ export function EditorShell({
         </section>
       </main>
     </div>
+  );
+}
+
+function ThumbnailRail({
+  fileName,
+  sourceFileId,
+  pages,
+  activePage,
+  isLoading,
+  onJumpToPage
+}: {
+  fileName: string;
+  sourceFileId: string | null;
+  pages: EditorDocumentModel["pages"];
+  activePage: number;
+  isLoading: boolean;
+  onJumpToPage: (page: number) => void;
+}): React.JSX.Element {
+  return (
+    <section className="studio-thumbnail-rail" aria-label="Page thumbnails">
+      <div className="studio-panel__eyebrow">Pages</div>
+      <div className="studio-thumbnail-list">
+        {pages.map((page) => (
+          <button
+            key={page.pageNumber}
+            type="button"
+            className={`studio-thumbnail ${activePage === page.pageNumber ? "is-active" : ""}`}
+            onClick={() => onJumpToPage(page.pageNumber)}
+            disabled={isLoading}
+          >
+            <span className="studio-thumbnail__preview">
+              {sourceFileId ? (
+                <img
+                  src={getPdfPagePreviewUrl(sourceFileId, page.pageNumber)}
+                  alt={`${fileName} page ${page.pageNumber}`}
+                  draggable={false}
+                />
+              ) : (
+                <span />
+              )}
+            </span>
+            <strong>{page.pageNumber}</strong>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }

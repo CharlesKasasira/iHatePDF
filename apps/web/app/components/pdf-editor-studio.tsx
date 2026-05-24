@@ -3,17 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createFileShare,
+  getPdfIntelligence,
   getSharedFile,
   getPdfMetadata,
   pollTask,
   queueEditPdf,
   uploadPdfWithRetention,
-  type FileShareResponse
+  type FileShareResponse,
+  type PdfIntelligenceResponse
 } from "../lib/pdf-api";
 import { buildEditPayload, getWatermarkConfig } from "./editor/adapter";
 import { EditorShell } from "./editor/editor-shell";
 import { usePdfEditor } from "./editor/use-pdf-editor";
-import type { EditorMode } from "./editor/types";
+import type { EditorHistorySnapshot, EditorLayer, EditorMode } from "./editor/types";
 import { fileToDataUrl, retentionLabel } from "./editor/utils";
 
 const INVITE_EXPIRY_OPTIONS = [
@@ -22,6 +24,16 @@ const INVITE_EXPIRY_OPTIONS = [
   { value: 168, label: "7 days" },
   { value: 720, label: "30 days" }
 ];
+
+const DRAFT_STORAGE_PREFIX = "ihatepdf:editor-draft:";
+
+type StoredEditorDraft = {
+  version: 1;
+  savedAt: string;
+  outputName: string;
+  retentionHours: number;
+  snapshot: EditorHistorySnapshot;
+};
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -35,6 +47,27 @@ function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
 }
 
+function draftStorageKey(file: File): string {
+  return `${DRAFT_STORAGE_PREFIX}${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function isStoredEditorDraft(value: unknown): value is StoredEditorDraft {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const draft = value as Partial<StoredEditorDraft>;
+  return (
+    draft.version === 1 &&
+    typeof draft.savedAt === "string" &&
+    typeof draft.outputName === "string" &&
+    typeof draft.retentionHours === "number" &&
+    Boolean(draft.snapshot) &&
+    Array.isArray(draft.snapshot?.layers) &&
+    Array.isArray(draft.snapshot?.pageRotations)
+  );
+}
+
 export function PdfEditorStudio({
   mode = "edit"
 }: {
@@ -42,15 +75,22 @@ export function PdfEditorStudio({
 } = {}): React.JSX.Element {
   const previewLoadIdRef = useRef(0);
   const sharedLoadTokenRef = useRef<string | null>(null);
+  const copiedLayersRef = useRef<EditorLayer[]>([]);
+  const restoredDraftKeyRef = useRef<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteMessage, setInviteMessage] = useState("");
   const [inviteExpiresInHours, setInviteExpiresInHours] = useState(72);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteStatus, setInviteStatus] = useState("");
   const [inviteShare, setInviteShare] = useState<FileShareResponse | null>(null);
+  const [intelligence, setIntelligence] = useState<PdfIntelligenceResponse | null>(null);
+  const [intelligenceBusy, setIntelligenceBusy] = useState(false);
+  const [intelligenceStatus, setIntelligenceStatus] = useState("");
   const {
     state,
     selectedLayer,
+    selectedLayers,
+    selectedLayerIds,
     selectedSignatureBox,
     pageRotationMap,
     pageNumberConfig,
@@ -58,7 +98,7 @@ export function PdfEditorStudio({
     hasAnyEdits,
     actions
   } = usePdfEditor(mode);
-  const { redo, removeSelectedLayer, undo } = actions;
+  const { duplicateSelectedLayers, nudgeSelectedLayers, pasteLayers, redo, removeSelectedLayer, undo } = actions;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
@@ -67,7 +107,7 @@ export function PdfEditorStudio({
       }
 
       if (
-        state.selection.layerId &&
+        selectedLayerIds.length > 0 &&
         !event.ctrlKey &&
         !event.metaKey &&
         !event.altKey &&
@@ -75,6 +115,20 @@ export function PdfEditorStudio({
       ) {
         event.preventDefault();
         removeSelectedLayer();
+        return;
+      }
+
+      if (selectedLayerIds.length > 0 && event.key.startsWith("Arrow")) {
+        event.preventDefault();
+        const step = event.shiftKey ? 10 : 1;
+        const deltaByKey: Record<string, [number, number]> = {
+          ArrowLeft: [-step, 0],
+          ArrowRight: [step, 0],
+          ArrowUp: [0, step],
+          ArrowDown: [0, -step]
+        };
+        const [deltaX, deltaY] = deltaByKey[event.key] ?? [0, 0];
+        nudgeSelectedLayers(deltaX, deltaY);
         return;
       }
 
@@ -97,12 +151,45 @@ export function PdfEditorStudio({
       if (key === "y") {
         event.preventDefault();
         redo();
+        return;
+      }
+
+      if (key === "d" && selectedLayerIds.length > 0) {
+        event.preventDefault();
+        duplicateSelectedLayers();
+        return;
+      }
+
+      if (key === "c" && selectedLayers.length > 0) {
+        event.preventDefault();
+        copiedLayersRef.current = selectedLayers;
+        actions.setStatus(
+          selectedLayers.length === 1
+            ? "Copied the selected layer."
+            : `Copied ${selectedLayers.length} selected layers.`
+        );
+        return;
+      }
+
+      if (key === "v" && copiedLayersRef.current.length > 0) {
+        event.preventDefault();
+        pasteLayers(copiedLayersRef.current);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [redo, removeSelectedLayer, state.selection.layerId, undo]);
+  }, [
+    actions,
+    duplicateSelectedLayers,
+    nudgeSelectedLayers,
+    pasteLayers,
+    redo,
+    removeSelectedLayer,
+    selectedLayerIds,
+    selectedLayers,
+    undo
+  ]);
 
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get("shared");
@@ -135,17 +222,24 @@ export function PdfEditorStudio({
   }, [actions]);
 
   useEffect(() => {
-    const pdfFile = state.pdfFile;
+    const pdfFile = state.document.file;
     if (!pdfFile) {
       previewLoadIdRef.current += 1;
+      restoredDraftKeyRef.current = null;
       actions.setSourceFile(null, null);
+      setIntelligence(null);
+      setIntelligenceStatus("");
+      setIntelligenceBusy(false);
       return;
     }
 
     const loadId = previewLoadIdRef.current + 1;
     previewLoadIdRef.current = loadId;
-    const retentionHours = state.retentionHours;
+    const retentionHours = state.document.export.retentionHours;
     actions.loadPreviewStarted(pdfFile.name);
+    setIntelligence(null);
+    setIntelligenceStatus("");
+    setIntelligenceBusy(true);
 
     void (async () => {
       try {
@@ -163,22 +257,109 @@ export function PdfEditorStudio({
           pageCount: metadata.pageCount,
           fileName: pdfFile.name
         });
+
+        try {
+          const analysis = await getPdfIntelligence(uploaded.fileId);
+          if (previewLoadIdRef.current === loadId) {
+            setIntelligence(analysis);
+            setIntelligenceStatus("Document intelligence is ready.");
+          }
+        } catch (analysisError) {
+          if (previewLoadIdRef.current === loadId) {
+            setIntelligenceStatus(`Document intelligence failed: ${(analysisError as Error).message}`);
+          }
+        }
       } catch (error) {
         if (previewLoadIdRef.current !== loadId) {
           return;
         }
         actions.loadPreviewFailed(`PDF preview metadata failed: ${(error as Error).message}`);
+        setIntelligenceStatus("");
+      } finally {
+        if (previewLoadIdRef.current === loadId) {
+          setIntelligenceBusy(false);
+        }
       }
     })();
-  }, [state.pdfFile]);
+  }, [state.document.file, state.document.export.retentionHours]);
+
+  useEffect(() => {
+    const pdfFile = state.document.file;
+    if (!pdfFile || state.isLoadingPreview) {
+      return;
+    }
+
+    const key = draftStorageKey(pdfFile);
+    if (restoredDraftKeyRef.current === key) {
+      return;
+    }
+
+    restoredDraftKeyRef.current = key;
+
+    try {
+      const rawDraft = window.localStorage.getItem(key);
+      if (!rawDraft) {
+        return;
+      }
+
+      const parsed = JSON.parse(rawDraft) as unknown;
+      if (!isStoredEditorDraft(parsed)) {
+        return;
+      }
+
+      actions.restoreDraft(parsed.snapshot, parsed.outputName, parsed.retentionHours);
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }, [actions, state.document.file, state.isLoadingPreview]);
+
+  useEffect(() => {
+    const pdfFile = state.document.file;
+    if (!pdfFile || state.isLoadingPreview) {
+      return;
+    }
+
+    const key = draftStorageKey(pdfFile);
+    const draft: StoredEditorDraft = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      outputName: state.document.export.outputName,
+      retentionHours: state.document.export.retentionHours,
+      snapshot: {
+        layers: state.document.layers,
+        selection: state.document.selection,
+        pageRotations: state.document.operations.pageRotations,
+        pageNumbers: state.document.operations.pageNumbers,
+        watermark: state.document.operations.watermark
+      }
+    };
+
+    const timeout = window.setTimeout(() => {
+      window.localStorage.setItem(key, JSON.stringify(draft));
+    }, 450);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    state.document.export.outputName,
+    state.document.export.retentionHours,
+    state.document.file,
+    state.document.layers,
+    state.document.operations.pageNumbers,
+    state.document.operations.pageRotations,
+    state.document.operations.watermark,
+    state.document.selection,
+    state.isLoadingPreview
+  ]);
 
   const processDocument = async (): Promise<void> => {
-    if (!state.pdfFile) {
+    const document = state.document;
+
+    if (!document.file) {
       actions.setStatus("Upload a PDF document first.");
       return;
     }
 
-    if (!state.outputName.trim()) {
+    if (!document.export.outputName.trim()) {
       actions.setStatus("Name the edited PDF before exporting.");
       return;
     }
@@ -197,22 +378,22 @@ export function PdfEditorStudio({
     try {
       actions.setBusy(true);
       actions.setDownloadUrl("");
-      let uploadedFileId = state.sourceFileId;
+      let uploadedFileId = document.sourceFileId;
 
-      if (!uploadedFileId || state.sourceRetentionHours !== state.retentionHours) {
+      if (!uploadedFileId || document.sourceRetentionHours !== document.export.retentionHours) {
         actions.setStatus("Uploading the source PDF to your self-hosted workspace...");
-        uploadedFileId = (await uploadPdfWithRetention(state.pdfFile, state.retentionHours)).fileId;
-        actions.setSourceFile(uploadedFileId, state.retentionHours);
+        uploadedFileId = (await uploadPdfWithRetention(document.file, document.export.retentionHours)).fileId;
+        actions.setSourceFile(uploadedFileId, document.export.retentionHours);
       }
 
       actions.setStatus("Applying studio layers to the document...");
-      const { taskId } = await queueEditPdf(uploadedFileId, state.outputName.trim(), buildEditPayload(state));
+      const { taskId } = await queueEditPdf(uploadedFileId, document.export.outputName.trim(), buildEditPayload(state));
       const completed = await pollTask(taskId);
 
       if (completed.status === "completed" && completed.outputDownloadUrl) {
         actions.setDownloadUrl(completed.outputDownloadUrl);
         actions.setStatus(
-          `Studio export completed. Download remains active for ${retentionLabel(state.retentionHours)}.`
+          `Studio export completed. Download remains active for ${retentionLabel(document.export.retentionHours)}.`
         );
       } else {
         actions.setStatus(`Studio export failed: ${completed.errorMessage ?? "unknown error"}`);
@@ -240,7 +421,9 @@ export function PdfEditorStudio({
   };
 
   const createEditorInvite = async (): Promise<void> => {
-    if (!state.pdfFile) {
+    const document = state.document;
+
+    if (!document.file) {
       setInviteStatus("Open a PDF before inviting collaborators.");
       return;
     }
@@ -250,11 +433,11 @@ export function PdfEditorStudio({
       setInviteStatus("Preparing editor invite...");
       setInviteShare(null);
 
-      let fileId = state.sourceFileId;
-      if (!fileId || state.sourceRetentionHours !== state.retentionHours) {
-        const uploaded = await uploadPdfWithRetention(state.pdfFile, state.retentionHours);
+      let fileId = document.sourceFileId;
+      if (!fileId || document.sourceRetentionHours !== document.export.retentionHours) {
+        const uploaded = await uploadPdfWithRetention(document.file, document.export.retentionHours);
         fileId = uploaded.fileId;
-        actions.setSourceFile(fileId, state.retentionHours);
+        actions.setSourceFile(fileId, document.export.retentionHours);
       }
 
       const share = await createFileShare({
@@ -284,7 +467,9 @@ export function PdfEditorStudio({
   };
 
   const openSignatureChooser = (): void => {
-    if (!state.pdfFile || !state.sourceFileId) {
+    const document = state.document;
+
+    if (!document.file || !document.sourceFileId) {
       actions.setSignatureRequestFeedback("Open a PDF first.");
       return;
     }
@@ -303,6 +488,7 @@ export function PdfEditorStudio({
       mode={mode}
       state={state}
       selectedLayer={selectedLayer}
+      selectedLayerIds={selectedLayerIds}
       selectedSignatureBox={selectedSignatureBox}
       pageRotationMap={pageRotationMap}
       pageNumberConfig={pageNumberConfig}
@@ -327,6 +513,14 @@ export function PdfEditorStudio({
       onPageNumbersChange={actions.setPageNumbers}
       onWatermarkEnabledChange={actions.setWatermarkEnabled}
       onWatermarkChange={actions.setWatermark}
+      onActivePageChange={actions.setActivePage}
+      onZoomChange={actions.setZoom}
+      onFitModeChange={actions.setFitMode}
+      onSnapToGridChange={actions.setSnapToGrid}
+      onShowGuidesChange={actions.setShowGuides}
+      onScrollTargetChange={actions.setScrollTarget}
+      onUndo={actions.undo}
+      onRedo={actions.redo}
       onOpenSignatureChooser={openSignatureChooser}
       onRetentionHoursChange={actions.setRetentionHours}
       onExport={processDocument}
@@ -341,6 +535,7 @@ export function PdfEditorStudio({
       onSendSignatureRequest={sendSignatureRequest}
       onMoveLayer={actions.moveLayer}
       onReorderLayers={actions.reorderLayers}
+      onMoveSelectedLayersInStack={actions.moveSelectedLayersInStack}
       onPlaceLayer={(pageNumber, x, y) => actions.createLayerAt(pageNumber, x, y)}
       invite={{
         email: inviteEmail,
@@ -350,6 +545,11 @@ export function PdfEditorStudio({
         busy: inviteBusy,
         status: inviteStatus,
         share: inviteShare
+      }}
+      intelligence={{
+        data: intelligence,
+        busy: intelligenceBusy,
+        status: intelligenceStatus
       }}
       onInviteEmailChange={setInviteEmail}
       onInviteMessageChange={setInviteMessage}

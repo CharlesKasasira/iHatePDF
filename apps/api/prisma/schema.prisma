@@ -126,6 +126,26 @@ model FileObject {
   @@index([ownerId, createdAt])
 }
 
+model FileDeletionReceipt {
+  id             String   @id @default(cuid())
+  fileId         String?
+  objectKey      String
+  fileName       String
+  mimeType       String
+  sizeBytes      BigInt
+  ownerId        String?
+  ownerEmail     String?
+  reason         String
+  storageDeleted Boolean  @default(false)
+  storageError   String?
+  fileCreatedAt  DateTime?
+  expiresAt      DateTime?
+  deletedAt      DateTime @default(now())
+
+  @@index([deletedAt])
+  @@index([ownerId, deletedAt])
+}
+
 model FileShare {
   id             String    @id @default(cuid())
   token          String    @unique
@@ -140,10 +160,30 @@ model FileShare {
   createdById    String?
   file           FileObject @relation(fields: [fileId], references: [id], onDelete: Cascade)
   createdBy      User?      @relation("fileShareCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  comments       FileShareComment[]
 
   @@index([fileId, createdAt])
   @@index([createdById, createdAt])
   @@index([expiresAt])
+}
+
+model FileShareComment {
+  id          String   @id @default(cuid())
+  authorName  String?
+  authorEmail String?
+  pageNumber  Int
+  body        String
+  x           Float?
+  y           Float?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  shareId     String
+  share       FileShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  @@index([shareId, createdAt])
+  @@index([shareId, pageNumber])
 }
 
 model Task {

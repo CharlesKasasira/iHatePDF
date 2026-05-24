@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { SiteHeader } from "./site-header";
 import { isAllowedFileType, pollTask, type TaskStatusResponse, uploadFile } from "../lib/pdf-api";
 import { TaskProgressState } from "./task-progress-state";
@@ -50,6 +50,15 @@ type BatchOperationPageProps = {
   deriveOutputName: (file: File) => string;
   queueTask: (fileId: string, outputName: string, extraValue: string) => Promise<{ taskId: string }>;
   extraInput?: ExtraInputConfig;
+  conversionGuide?: {
+    bestFor: string;
+    bestAvoidedFor: string;
+    qualityExpectation: string;
+    scannedDocumentGuidance: string;
+    digitalPdfGuidance: string;
+    estimateOutputSize: (file: File) => string;
+    previewMode?: "pdf" | "source";
+  };
 };
 
 const PARALLEL_LIMIT = 2;
@@ -97,6 +106,52 @@ function statusTone(item: BatchTaskItem): "error" | "success" | "neutral" {
   return "neutral";
 }
 
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function BatchFilePreview({
+  file,
+  mode
+}: {
+  file: File;
+  mode: "pdf" | "source";
+}): React.JSX.Element {
+  const [url, setUrl] = useState("");
+
+  useEffect(() => {
+    if (mode !== "pdf" || file.type !== "application/pdf") {
+      setUrl("");
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(file);
+    setUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file, mode]);
+
+  if (mode === "pdf" && url) {
+    return (
+      <div className="conversion-preview">
+        <iframe title={`Preview of ${file.name}`} src={`${url}#page=1&view=FitH`} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="conversion-preview conversion-preview--source">
+      <strong>{file.name}</strong>
+      <span>{formatFileSize(file.size)} source file</span>
+    </div>
+  );
+}
+
 export function BatchOperationPage({
   active,
   title,
@@ -111,7 +166,8 @@ export function BatchOperationPage({
   helperText,
   deriveOutputName,
   queueTask,
-  extraInput
+  extraInput,
+  conversionGuide
 }: BatchOperationPageProps): React.JSX.Element {
   const [items, setItems] = useState<BatchTaskItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -323,6 +379,26 @@ export function BatchOperationPage({
             <span style={{ width: `${averageProgress}%` }} />
           </div>
 
+          {conversionGuide ? (
+            <section className="conversion-honesty-panel" aria-label="Conversion expectations">
+              <div className="conversion-honesty-grid">
+                <div>
+                  <span className="conversion-honesty-label">Best for</span>
+                  <strong>{conversionGuide.bestFor}</strong>
+                </div>
+                <div>
+                  <span className="conversion-honesty-label">Be careful with</span>
+                  <strong>{conversionGuide.bestAvoidedFor}</strong>
+                </div>
+              </div>
+              <p>{conversionGuide.qualityExpectation}</p>
+              <div className="conversion-honesty-grid">
+                <span>{conversionGuide.digitalPdfGuidance}</span>
+                <span>{conversionGuide.scannedDocumentGuidance}</span>
+              </div>
+            </section>
+          ) : null}
+
           {extraInput ? (
             <>
               <label htmlFor={extraInput.id}>{extraInput.label}</label>
@@ -380,6 +456,17 @@ export function BatchOperationPage({
                       Remove
                     </button>
                   </div>
+
+                  {conversionGuide ? (
+                    <div className="conversion-item-insight">
+                      <BatchFilePreview file={item.file} mode={conversionGuide.previewMode ?? "source"} />
+                      <div className="conversion-item-copy">
+                        <span>Estimated output</span>
+                        <strong>{conversionGuide.estimateOutputSize(item.file)}</strong>
+                        <small>Estimate is based on source size and conversion type; final output depends on images, fonts, and page complexity.</small>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <label htmlFor={`output-${item.id}`}>Output filename</label>
                   <input

@@ -1,6 +1,7 @@
 "use client";
 
 import { BatchOperationPage } from "../components/batch-operation-page";
+import { pdfToPowerPointGuide } from "../components/conversion-guides";
 import { queuePdfToPowerpoint } from "../lib/pdf-api";
 
 function deriveOutputName(file: File): string {
@@ -22,6 +23,7 @@ export default function PdfToPowerpointPage(): React.JSX.Element {
       runningLabel="Converting..."
       downloadLabel="Download PowerPoint file"
       helperText="Large PDFs stay visible while the worker renders pages and builds the slide deck."
+      conversionGuide={pdfToPowerPointGuide}
       deriveOutputName={deriveOutputName}
       queueTask={(fileId, outputName) => queuePdfToPowerpoint(fileId, outputName)}
     />
