@@ -244,9 +244,15 @@ export class CleanupService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async deleteExpiredFiles(now: Date): Promise<number> {
+    const legacyExpiryCutoff = new Date(
+      now.getTime() - env.DEFAULT_FILE_RETENTION_HOURS * 60 * 60 * 1000
+    );
     const files = await this.prisma.fileObject.findMany({
       where: {
-        expiresAt: { lt: now }
+        OR: [
+          { expiresAt: { lt: now } },
+          { expiresAt: null, createdAt: { lt: legacyExpiryCutoff } }
+        ]
       },
       select: {
         id: true,

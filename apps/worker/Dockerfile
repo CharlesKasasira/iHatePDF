@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:24-alpine
 
 RUN apk add --no-cache openssl qpdf poppler-utils libc6-compat
 
@@ -9,10 +9,12 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared/package.json packages/shared/package.json
 
-RUN corepack enable && pnpm install --no-frozen-lockfile
+RUN corepack enable && pnpm install --frozen-lockfile
 
 COPY . .
 
 RUN pnpm --filter @ihatepdf/api prisma:generate && pnpm --filter @ihatepdf/worker build
 
-CMD ["pnpm", "--filter", "@ihatepdf/worker", "start"]
+USER node
+
+CMD ["node", "apps/worker/dist/index.js"]

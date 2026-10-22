@@ -43,6 +43,9 @@ const EnvSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().default("iHatePDF <no-reply@ihatepdf.local>"),
+  DEFAULT_FILE_RETENTION_HOURS: z.coerce.number().int().positive().max(24 * 365).default(72),
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().max(16).default(2),
+  WORKER_PROCESS_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60 * 60 * 1_000).default(300_000),
   QPDF_BIN: z.string().default("qpdf"),
   PDFTOPPM_BIN: z.string().default("pdftoppm"),
   PDFTOTEXT_BIN: z.string().default("pdftotext"),
@@ -698,14 +701,21 @@ async function buildAuditCertificate(envelope: any, finalBuffer: Buffer): Promis
 
 async function runCommand(command: string, args: string[]): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args);
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, env.WORKER_PROCESS_TIMEOUT_MS);
+    timeout.unref();
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
 
     child.on("error", (error) => {
+      clearTimeout(timeout);
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         const installHint =
           command === env.QPDF_BIN
@@ -721,6 +731,13 @@ async function runCommand(command: string, args: string[]): Promise<void> {
     });
 
     child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (timedOut) {
+        rejectPromise(
+          new Error(`${command} exceeded the ${env.WORKER_PROCESS_TIMEOUT_MS}ms worker process limit.`)
+        );
+        return;
+      }
       if (code === 0) {
         resolvePromise();
         return;
@@ -776,7 +793,7 @@ async function uploadObject(
   contentType: string,
   body: Buffer,
   fileName: string,
-  expiresAt?: Date
+  expiresAt = new Date(Date.now() + env.DEFAULT_FILE_RETENTION_HOURS * 60 * 60 * 1000)
 ): Promise<string> {
   const path = resolveStoragePath(objectKey);
   await mkdir(dirname(path), { recursive: true });
@@ -4133,7 +4150,7 @@ async function bootstrap(): Promise<void> {
     },
     {
       connection: redisConnection,
-      concurrency: 4
+      concurrency: env.WORKER_CONCURRENCY
     }
   );
 

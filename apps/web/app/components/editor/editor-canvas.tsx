@@ -110,7 +110,6 @@ export function EditorCanvas({
 
   useEffect(() => {
     let cancelled = false;
-    let loadedDocument: PDFDocumentProxy | null = null;
     const loadingTaskRef: { current: ReturnType<PdfJsModule["getDocument"]> | null } = { current: null };
 
     setPdfDocument(null);
@@ -131,10 +130,10 @@ export function EditorCanvas({
         const data = new Uint8Array(await pdfFile.arrayBuffer());
         const loadingTask = pdfjs.getDocument({ data });
         loadingTaskRef.current = loadingTask;
-        loadedDocument = await loadingTask.promise;
+        const loadedDocument = await loadingTask.promise;
 
         if (cancelled) {
-          await loadedDocument.destroy();
+          await loadingTask.destroy();
           return;
         }
 
@@ -150,7 +149,6 @@ export function EditorCanvas({
     return () => {
       cancelled = true;
       void loadingTaskRef.current?.destroy();
-      void loadedDocument?.destroy();
     };
   }, [pdfFile]);
 

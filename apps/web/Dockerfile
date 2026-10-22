@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:24-alpine
 
 RUN apk add --no-cache libc6-compat
 
@@ -10,7 +10,7 @@ ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/web/package.json apps/web/package.json
 
-RUN corepack enable && pnpm install --no-frozen-lockfile
+RUN corepack enable && pnpm install --frozen-lockfile
 
 COPY . .
 

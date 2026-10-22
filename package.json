@@ -2,17 +2,37 @@
   "name": "ihatepdf",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm -r --parallel --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker dev",
     "dev:desktop": "pnpm --filter @ihatepdf/desktop dev",
     "build": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker build",
     "build:desktop": "pnpm --filter @ihatepdf/desktop build",
-    "lint": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker lint",
-    "test": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker test",
+    "lint": "eslint apps/api/src apps/api/test apps/worker/src apps/web/app apps/desktop/src packages/*/src",
+    "test": "vitest run",
+    "security:audit": "pnpm audit --prod --audit-level high",
     "format": "pnpm -r --filter @ihatepdf/api --filter @ihatepdf/web --filter @ihatepdf/worker format"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "@eslint/js": "^10.0.1",
+    "@next/eslint-plugin-next": "16.4.2",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@fastify/busboy": "3.2.2",
+      "ajv@8": "8.18.0",
+      "baseline-browser-mapping": "2.11.0",
+      "browserslist": "4.28.7",
+      "fast-uri@3": "3.1.8",
+      "fastify": "5.12.7",
+      "source-map-js": "1.2.2",
+      "uuid@11": "11.1.1"
+    }
   }
 }

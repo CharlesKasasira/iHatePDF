@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "lucide-react": "^1.16.0",
-    "next": "16.2.6",
-    "pdfjs-dist": "^5.7.284",
+    "next": "16.4.2",
+    "pdfjs-dist": "^6.4.299",
     "qrcode": "^1.5.4",
     "react": "19.0.0",
     "react-dom": "19.0.0"

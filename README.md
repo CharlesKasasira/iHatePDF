@@ -1,5 +1,9 @@
 # iHatePDF (Open-Source iLovePDF Alternative)
 
+[![CI](https://github.com/CharlesKasasira/iHatePDF/actions/workflows/ci.yml/badge.svg)](https://github.com/CharlesKasasira/iHatePDF/actions/workflows/ci.yml)
+[![Security Scan](https://github.com/CharlesKasasira/iHatePDF/actions/workflows/security.yml/badge.svg)](https://github.com/CharlesKasasira/iHatePDF/actions/workflows/security.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ![iHatePDF screenshot](ihatepdf.png)
 
 This repo is a self-hosted, open-source PDF platform starter with these implemented features:
@@ -123,6 +127,7 @@ pnpm dev
 ## Feature API Endpoints
 
 - `POST /api/uploads` (`multipart/form-data` with a `file` field)
+- `DELETE /api/files/:id` (authenticated owner deletion)
 - `GET /api/files/:id/metadata`
 - `GET /api/files/:id/download`
 - `POST /api/tasks/merge`
@@ -175,6 +180,9 @@ Examples:
   - ZIP when multiple ranges are requested
 - Sign coordinates (`x`, `y`) use PDF points from bottom-left origin.
 - Uploaded and processed files are stored under `./storage` by default.
+- Uploads are limited to `MAX_UPLOAD_MB` (50 MB by default), one file per request.
+- Files expire after `DEFAULT_FILE_RETENTION_HOURS` (72 hours by default) unless a shorter or longer retention period is requested, up to one year.
+- Automated cleanup deletes expired database records and stored objects and records deletion receipts. Authenticated owners can delete their files immediately unless an active signature workflow still references them.
 - Protect PDF uses `qpdf`; install locally with `brew install qpdf` if running without Docker.
 - Unlock PDF uses `qpdf` and requires the current document password.
 - JPG to PDF preserves the upload order and creates one PDF page per image.
@@ -223,3 +231,24 @@ sudo systemctl reload nginx
 5. The bundled Nginx config already uses `pdf.devops.renu.ac.ug`; add TLS with Certbot after copying it into place.
 
 The production compose file automatically runs `prisma migrate deploy` before the API and worker start.
+
+## Security and worker isolation
+
+- Production uploads are size-limited, MIME allowlisted, rate-limited, and checked against per-user storage quotas.
+- Storage object keys are confined to `STORAGE_DIR`; traversal attempts are covered by automated tests.
+- The production worker runs as an unprivileged user with a read-only root filesystem, no Linux capabilities, `no-new-privileges`, bounded CPU/memory/PIDs, a size-limited temporary filesystem, configurable concurrency, and subprocess timeouts.
+- Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+
+When using the production Compose file, make the bind-mounted storage directory writable by UID/GID 1000 before starting the unprivileged worker.
+
+## Releases
+
+Source and desktop binaries are published on [GitHub Releases](https://github.com/CharlesKasasira/iHatePDF/releases). Generated installers and `*.tsbuildinfo` files are intentionally excluded from Git. See [docs/DESKTOP.md](docs/DESKTOP.md) for release packaging and signing status.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and verification workflow.
+
+## License
+
+iHatePDF is available under the [MIT License](LICENSE).

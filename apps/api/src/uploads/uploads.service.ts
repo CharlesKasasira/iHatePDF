@@ -33,9 +33,9 @@ function fieldValue(field?: unknown): string | undefined {
   return undefined;
 }
 
-function parseRetentionHours(value: string | undefined): number | null {
+function parseRetentionHours(value: string | undefined): number {
   if (!value) {
-    return null;
+    return env.DEFAULT_FILE_RETENTION_HOURS;
   }
 
   const parsed = Number(value);
@@ -132,9 +132,7 @@ export class UploadsService {
         mimeType: stored.mimeType,
         sizeBytes: BigInt(stored.sizeBytes),
         ownerId: ownerId ?? null,
-        expiresAt: retentionHours
-          ? new Date(Date.now() + retentionHours * 60 * 60 * 1000)
-          : null
+        expiresAt: new Date(Date.now() + retentionHours * 60 * 60 * 1000)
       }
     });
 

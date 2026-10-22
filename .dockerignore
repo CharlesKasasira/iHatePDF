@@ -10,3 +10,4 @@ apps/api/.env
 apps/worker/.env
 apps/web/.env.local
 apps/web/.env.production
+apps/web/public/downloads/desktop/*

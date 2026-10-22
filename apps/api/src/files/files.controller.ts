@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
+  Delete,
   Get,
   GoneException,
   NotFoundException,
@@ -215,6 +217,13 @@ export class FilesController {
 
     const user = await this.authService.currentUser(request);
     if (user?.id !== file.ownerId) {
+      throw new NotFoundException("File not found.");
+    }
+  }
+
+  private async assertOwnedFile(file: FileObject, request: FastifyRequest): Promise<void> {
+    const user = await this.authService.currentUser(request);
+    if (!user || file.ownerId !== user.id) {
       throw new NotFoundException("File not found.");
     }
   }
@@ -627,6 +636,84 @@ export class FilesController {
 
     await this.assertCanAccessFile(file, request);
     return this.inspectPdfMetadata(file);
+  }
+
+  @Delete(":id")
+  async deleteFile(@Param("id") id: string, @Req() request: FastifyRequest): Promise<{ ok: true }> {
+    const file = await this.prisma.fileObject.findUnique({
+      where: { id },
+      include: { owner: { select: { email: true } } }
+    });
+    if (!file) {
+      throw new NotFoundException("File not found.");
+    }
+
+    await this.assertOwnedFile(file, request);
+
+    await this.prisma.$transaction(async (tx) => {
+      const references = await tx.fileObject.findUnique({
+        where: { id: file.id },
+        select: {
+          _count: {
+            select: {
+              signatureRequests: true,
+              signatureEnvelopesAsSource: true
+            }
+          }
+        }
+      });
+
+      if (!references) {
+        throw new NotFoundException("File not found.");
+      }
+
+      if (
+        references._count.signatureRequests > 0 ||
+        references._count.signatureEnvelopesAsSource > 0
+      ) {
+        throw new ConflictException("This file is attached to a signature workflow and cannot be deleted yet.");
+      }
+
+      await tx.task.updateMany({
+        where: { inputFileId: file.id },
+        data: { inputFileId: null }
+      });
+      await tx.task.updateMany({
+        where: { outputFileId: file.id },
+        data: { outputFileId: null }
+      });
+      await tx.signatureEnvelope.updateMany({
+        where: { finalFileId: file.id },
+        data: { finalFileId: null }
+      });
+      await tx.fileObject.delete({ where: { id: file.id } });
+    });
+
+    let storageDeleted = true;
+    let storageError: string | null = null;
+    await this.storageService.deleteObject(file.objectKey).catch((error) => {
+      storageDeleted = false;
+      storageError = error instanceof Error ? error.message : String(error);
+    });
+
+    await this.prisma.fileDeletionReceipt.create({
+      data: {
+        fileId: file.id,
+        objectKey: file.objectKey,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        ownerId: file.ownerId,
+        ownerEmail: file.owner?.email ?? null,
+        reason: "user_requested",
+        storageDeleted,
+        storageError,
+        fileCreatedAt: file.createdAt,
+        expiresAt: file.expiresAt
+      }
+    });
+
+    return { ok: true };
   }
 
   @Get(":id/intelligence")
