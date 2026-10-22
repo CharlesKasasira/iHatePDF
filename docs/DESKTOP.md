@@ -49,7 +49,7 @@ pnpm build:desktop
 Expected artifact type:
 
 ```text
-.dmg
+.app (package as a .zip release asset)
 ```
 
 Windows:
@@ -77,7 +77,7 @@ Expected artifact types:
 .deb
 ```
 
-## Publish Web Downloads
+## Publish Release Assets
 
 The web app has a desktop downloads page at:
 
@@ -85,32 +85,38 @@ The web app has a desktop downloads page at:
 /desktop
 ```
 
-By default, it links to these public paths:
+By default, it links to the latest GitHub Release asset:
 
 ```text
-/downloads/desktop/ihatepdf-desktop-macos.dmg
-/downloads/desktop/ihatepdf-desktop-windows.msi
-/downloads/desktop/ihatepdf-desktop-linux.AppImage
-/downloads/desktop/ihatepdf-desktop-linux.deb
+https://github.com/CharlesKasasira/iHatePDF/releases/latest/download/ihatepdf-desktop-macos.zip
 ```
 
-After building installers on each OS, copy or upload the artifacts to:
+Do not commit installers under `apps/web/public`. Package the macOS app and
+upload it directly to a GitHub Release:
 
 ```text
-apps/web/public/downloads/desktop/
+ditto -c -k --sequesterRsrc --keepParent \
+  apps/desktop/src-tauri/target/release/bundle/macos/iHatePDF.app \
+  ihatepdf-desktop-macos.zip
+shasum -a 256 ihatepdf-desktop-macos.zip > SHA256SUMS
+gh release upload v0.1.0 ihatepdf-desktop-macos.zip SHA256SUMS
 ```
 
-Use exactly these filenames:
+Use stable asset names when additional platforms are ready:
 
 ```text
-ihatepdf-desktop-macos.dmg
+ihatepdf-desktop-macos.zip
 ihatepdf-desktop-windows.msi
 ihatepdf-desktop-linux.AppImage
 ihatepdf-desktop-linux.deb
 ```
 
-Alternatively, set this environment variable to point the web app at a release bucket or GitHub Releases URL:
+Set this environment variable to use a mirror or a different release repository:
 
 ```bash
-NEXT_PUBLIC_DESKTOP_DOWNLOAD_BASE_URL=https://example.com/ihatepdf/desktop
+NEXT_PUBLIC_DESKTOP_DOWNLOAD_BASE_URL=https://github.com/OWNER/REPO/releases/latest/download
 ```
+
+The current macOS preview is Apple-silicon-only, ad-hoc signed, and not
+notarized. Keep that limitation visible in release notes until Developer ID
+signing and Apple notarization are part of the release pipeline.

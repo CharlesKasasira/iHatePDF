@@ -10,3 +10,5 @@ coverage
 *.log
 /storage/
 .turbo
+*.tsbuildinfo
+apps/web/public/downloads/desktop/*

@@ -63,6 +63,7 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       MAIL_FROM: ${MAIL_FROM:-no-reply@pdf.devops.renu.ac.ug}
       SIGN_TOKEN_TTL_HOURS: ${SIGN_TOKEN_TTL_HOURS:-72}
+      DEFAULT_FILE_RETENTION_HOURS: ${DEFAULT_FILE_RETENTION_HOURS:-72}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       QPDF_BIN: ${QPDF_BIN:-qpdf}
     depends_on:
@@ -82,12 +83,26 @@ services:
       context: .
       dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: ${WORKER_MEMORY_LIMIT:-2g}
+    cpus: ${WORKER_CPU_LIMIT:-2.0}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
     environment:
       TZ: ${TZ:-Africa/Kampala}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       REDIS_URL: redis://valkey:6379
       NODE_ENV: production
       STORAGE_DIR: /storage
+      DEFAULT_FILE_RETENTION_HOURS: ${DEFAULT_FILE_RETENTION_HOURS:-72}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_PROCESS_TIMEOUT_MS: ${WORKER_PROCESS_TIMEOUT_MS:-300000}
       QPDF_BIN: ${QPDF_BIN:-qpdf}
     depends_on:
       postgres:

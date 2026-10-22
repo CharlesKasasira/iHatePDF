@@ -2,35 +2,16 @@ import Link from "next/link";
 import { Download, Laptop, Monitor, Settings, ShieldCheck } from "lucide-react";
 import { SiteHeader } from "../components/site-header";
 
-const DOWNLOAD_BASE_URL = process.env.NEXT_PUBLIC_DESKTOP_DOWNLOAD_BASE_URL ?? "/downloads/desktop";
+const DOWNLOAD_BASE_URL =
+  process.env.NEXT_PUBLIC_DESKTOP_DOWNLOAD_BASE_URL ??
+  "https://github.com/CharlesKasasira/iHatePDF/releases/latest/download";
 
 const DOWNLOADS = [
   {
     os: "macOS",
-    format: "DMG",
-    href: `${DOWNLOAD_BASE_URL}/ihatepdf-desktop-macos.dmg`,
-    detail: "For Apple silicon and Intel Macs.",
-    command: "pnpm build:desktop"
-  },
-  {
-    os: "Windows",
-    format: "MSI",
-    href: `${DOWNLOAD_BASE_URL}/ihatepdf-desktop-windows.msi`,
-    detail: "For Windows 10 and Windows 11.",
-    command: "pnpm build:desktop"
-  },
-  {
-    os: "Linux",
-    format: "AppImage",
-    href: `${DOWNLOAD_BASE_URL}/ihatepdf-desktop-linux.AppImage`,
-    detail: "Portable Linux build for common desktop distributions.",
-    command: "pnpm build:desktop"
-  },
-  {
-    os: "Linux",
-    format: "DEB",
-    href: `${DOWNLOAD_BASE_URL}/ihatepdf-desktop-linux.deb`,
-    detail: "Debian and Ubuntu package.",
+    format: "ZIP",
+    href: `${DOWNLOAD_BASE_URL}/ihatepdf-desktop-macos.zip`,
+    detail: "Apple silicon developer preview. Ad-hoc signed and not notarized.",
     command: "pnpm build:desktop"
   }
 ];
@@ -56,8 +37,8 @@ export default function DesktopDownloadsPage(): React.JSX.Element {
           <div className="desktop-download-summary" aria-label="Desktop app highlights">
             <article>
               <Monitor aria-hidden="true" size={20} />
-              <strong>macOS, Windows, Linux</strong>
-              <span>Installers are published per operating system.</span>
+              <strong>Release assets</strong>
+              <span>Verified binaries and checksums are published on GitHub Releases.</span>
             </article>
             <article>
               <ShieldCheck aria-hidden="true" size={20} />
